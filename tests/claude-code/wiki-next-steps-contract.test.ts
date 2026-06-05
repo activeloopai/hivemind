@@ -60,34 +60,40 @@ describe("wiki Next Steps prompt contract", () => {
         expect(section.length).toBeGreaterThan(0);
       });
 
-      it("defaults to `none`", () => {
-        expect(section).toContain("Default to writing exactly: none");
+      it("fires on genuinely unfinished work (the primary positive trigger)", () => {
+        // The dominant legitimate case is a session that ended mid-task. The
+        // gate must require — not merely permit — a next step there, and must
+        // NOT gate it behind a catastrophe ("substantial consequences") bar.
+        expect(section).toMatch(/not finished and you MUST write/i);
+        expect(section).toMatch(/mid-task/i);
+        expect(section).toMatch(/never suppress a genuinely unfinished task/i);
       });
 
-      it("enforces the substantial-consequence gate", () => {
-        expect(section).toContain("MISS SOMETHING IMPORTANT WITH SUBSTANTIAL CONSEQUENCES");
-        // The model must name a concrete bad outcome before writing anything
-        // other than `none`.
-        expect(section).toMatch(/concrete[^.]*bad outcome/i);
+      it("treats the session's last messages as the strongest signal", () => {
+        // Directly addresses the failure mode where the final message says the
+        // work isn't done but no next step was emitted.
+        expect(section).toMatch(/last messages are the strongest signal/i);
       });
 
-      it("drops the base-rate framing that biased the judgment", () => {
-        // The old wording asserted a frequency ("most sessions are DONE",
-        // "overwhelming majority"); the right frequency is use-case dependent
-        // and must not be baked into the prompt.
-        expect(section).not.toMatch(/overwhelming majority/i);
-        expect(section).not.toMatch(/most sessions are done/i);
-        expect(section).toMatch(/do not assume any base rate/i);
+      it("defaults to `none` only when the core work is finished", () => {
+        expect(section).toMatch(/if the core work IS finished, default to exactly: none/i);
       });
 
       it("treats administrative wrap-up as already done", () => {
         expect(section).toMatch(/administrative wrap-up/i);
         expect(section).toMatch(/already done/i);
       });
+
+      it("does not gate unfinished work behind a catastrophe bar", () => {
+        // Regression guard for the over-tightened wording that suppressed real
+        // next steps: the strict consequence test must apply ONLY to the
+        // finished-work exception, never to unfinished work.
+        expect(section).not.toMatch(/MISS SOMETHING IMPORTANT WITH SUBSTANTIAL CONSEQUENCES/);
+      });
     });
   }
 
-  it("keeps the ## Next Steps block byte-identical across all four agent copies", () => {
+  it("keeps the ## Next Steps block byte-identical across all agent copies", () => {
     const sections = Object.values(TEMPLATES).map(nextStepsSection);
     const [reference, ...rest] = sections;
     for (const s of rest) {
