@@ -35,6 +35,18 @@ describe("proposeSkillEdit", () => {
     expect(model.mock.calls[0][1]).toContain("CONFIRMED FAILURES");
   });
 
+  it("steers toward concrete, anchored edits — not append-at-end", async () => {
+    const model = vi.fn(async (_s: string, _u: string) =>
+      '[{"op":"insert_after","target":"## Rules","content":"0. verify on the real client first"}]');
+    const p = await proposeSkillEdit(body, failures, { model });
+    expect(p.changed).toBe(true);
+    const system = model.mock.calls[0][0];
+    expect(system).toMatch(/anchor/i);            // place the fix where it fires
+    expect(system).toMatch(/concrete|operational/i);
+    expect(system).toMatch(/replace the weak/i);  // strengthen, don't only append
+    expect(model.mock.calls[0][1]).toMatch(/name the single recurring weakness/i);
+  });
+
   it("enforces the edit budget", async () => {
     const model = vi.fn(async (_s: string, _u: string) =>
       '[{"op":"append","content":"a"},{"op":"append","content":"b"},{"op":"append","content":"c"}]');
