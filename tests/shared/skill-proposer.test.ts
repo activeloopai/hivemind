@@ -18,6 +18,16 @@ describe("parseEdits", () => {
   it("returns [] when there's no array", () => {
     expect(parseEdits("the model refused")).toEqual([]);
   });
+  it("extracts the edits array past a weakness line that itself contains brackets", () => {
+    const raw = 'Weakness: the doc never says to verify [the real client] before reporting.\n' +
+      '[{"op":"append","content":"verify via API"}]';
+    expect(parseEdits(raw)).toEqual([{ op: "append", content: "verify via API" }]);
+  });
+  it("falls back to first-[..last-] when content holds an unbalanced bracket", () => {
+    // the inner "]" defeats the balanced back-scan; the fallback still parses it
+    const raw = '[{"op":"append","content":"use arr] carefully"}]';
+    expect(parseEdits(raw)).toEqual([{ op: "append", content: "use arr] carefully" }]);
+  });
 });
 
 describe("proposeSkillEdit", () => {
@@ -44,7 +54,7 @@ describe("proposeSkillEdit", () => {
     expect(system).toContain("anchor it to the RELEVANT existing section");
     expect(system).toContain("CONCRETE and OPERATIONAL");
     expect(system).toContain("REPLACE the weak existing instruction");
-    expect(model.mock.calls[0][1]).toContain("Diagnose the single recurring weakness");
+    expect(model.mock.calls[0][1]).toContain("First name the single recurring weakness in one line");
   });
 
   it("includes prior edits so the proposer doesn't repeat them", async () => {

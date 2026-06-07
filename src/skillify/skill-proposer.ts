@@ -40,32 +40,51 @@ const SYSTEM =
   "- TRACEABLE: each edit must directly prevent a specific failure listed below.\n" +
   "Prefer strengthening/replacing an existing instruction over adding new text. Do " +
   `NOT rewrite the whole doc, and do NOT touch anything between ${SU_START} and ` +
-  `${SU_END}. Reply with ONLY a JSON array of edits, each: {"op":"append|` +
-  'insert_after|replace|delete","target":"<exact existing text to anchor on; ' +
-  'required for insert_after/replace/delete>","content":"<new text; required for ' +
-  'append/insert_after/replace>"}. Prefer the smallest change that fixes the weakness.';
+  `${SU_END}. Reply in TWO parts: first ONE line naming the single recurring ` +
+  "weakness, then a JSON array of edits (the array is what gets parsed), each: " +
+  '{"op":"append|insert_after|replace|delete","target":"<exact existing text to ' +
+  'anchor on; required for insert_after/replace/delete>","content":"<new text; ' +
+  'required for append/insert_after/replace>"}. Prefer the smallest change that fixes the weakness.';
 
 function buildUserPrompt(body: string, failures: string[], priorEdits: string[]): string {
   const cases = failures.slice(0, 8).map((f, i) => `${i + 1}. ${f}`).join("\n");
   const prior = priorEdits.length
     ? `\n\nALREADY TRIED for this skill on earlier runs (do NOT repeat these — propose something different, or nothing):\n${priorEdits.slice(0, 12).map((p) => `- ${p}`).join("\n")}`
     : "";
-  return `CURRENT SKILL:\n${body}\n\nCONFIRMED FAILURES it produced (user pushed back AND a judge confirmed the task was not accomplished):\n${cases}${prior}\n\nDiagnose the single recurring weakness, then output the edits that anchor the fix into the relevant existing section. JSON array only.`;
+  return `CURRENT SKILL:\n${body}\n\nCONFIRMED FAILURES it produced (user pushed back AND a judge confirmed the task was not accomplished):\n${cases}${prior}\n\nFirst name the single recurring weakness in one line, then output the JSON array of edits that anchor the fix into the relevant existing section.`;
 }
 
 const OPS = new Set<EditOp>(["append", "insert_after", "replace", "delete"]);
+
+/**
+ * Extract the JSON array from noisy model output. Robust to a leading prose line
+ * (the "weakness" the proposer is asked to state first) even if it contains
+ * brackets: scan back from the last `]` to its balanced `[`, and fall back to
+ * first-`[`..last-`]` if that doesn't parse.
+ */
+function extractArray(s: string): unknown[] | null {
+  const b = s.lastIndexOf("]");
+  if (b === -1) return null;
+  let depth = 0;
+  for (let i = b; i >= 0; i--) {
+    if (s[i] === "]") depth++;
+    else if (s[i] === "[" && --depth === 0) {
+      try { const a = JSON.parse(s.slice(i, b + 1)); if (Array.isArray(a)) return a; } catch { /* fall through */ }
+      break;
+    }
+  }
+  const first = s.indexOf("[");
+  if (first !== -1 && b > first) { try { const a = JSON.parse(s.slice(first, b + 1)); if (Array.isArray(a)) return a; } catch { /* none */ } }
+  return null;
+}
 
 /** Tolerant parse of a JSON array of edits (handles ```fences / surrounding prose). */
 export function parseEdits(raw: string): Edit[] {
   let s = raw.trim();
   const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fence) s = fence[1].trim();
-  const a = s.indexOf("[");
-  const b = s.lastIndexOf("]");
-  if (a === -1 || b <= a) return [];
-  let arr: unknown;
-  try { arr = JSON.parse(s.slice(a, b + 1)); } catch { return []; }
-  if (!Array.isArray(arr)) return [];
+  const arr = extractArray(s);
+  if (!arr) return [];
   const out: Edit[] = [];
   for (const e of arr) {
     if (!e || typeof e !== "object") continue;
