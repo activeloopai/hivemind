@@ -26,13 +26,23 @@ export interface ProposeConfig {
 }
 
 const SYSTEM =
-  "You improve an engineering SKILL document that has been producing repeated, " +
-  "confirmed failures. Diagnose the SINGLE recurring weakness behind the failures " +
-  "and propose a SMALL set of structured edits that fix it. Do NOT rewrite the " +
-  `whole doc, and do NOT touch anything between ${SU_START} and ${SU_END}. Reply ` +
-  'with ONLY a JSON array of edits, each: {"op":"append|insert_after|replace|' +
-  'delete","target":"<exact existing text to anchor on; required for ' +
-  'insert_after/replace/delete>","content":"<new text; required for ' +
+  "You improve an engineering SKILL document that produced repeated, confirmed " +
+  "failures. Work in two steps: (1) diagnose the SINGLE recurring weakness — the " +
+  "specific thing the doc told the agent to do, or failed to tell it, that caused " +
+  "the pushback; (2) propose a SMALL set of structured edits that fix exactly that.\n" +
+  "Every edit MUST be:\n" +
+  "- CONCRETE and OPERATIONAL: a specific rule, check, command, or step the agent " +
+  "can follow — never vague advice ('be careful', 'communicate clearly').\n" +
+  "- PLACED WHERE IT FIRES: anchor it to the RELEVANT existing section " +
+  "(insert_after that heading), or REPLACE the weak existing instruction that " +
+  "allowed the failure. Do NOT just append a paragraph at the end of a long doc — " +
+  "that gets skipped.\n" +
+  "- TRACEABLE: each edit must directly prevent a specific failure listed below.\n" +
+  "Prefer strengthening/replacing an existing instruction over adding new text. Do " +
+  `NOT rewrite the whole doc, and do NOT touch anything between ${SU_START} and ` +
+  `${SU_END}. Reply with ONLY a JSON array of edits, each: {"op":"append|` +
+  'insert_after|replace|delete","target":"<exact existing text to anchor on; ' +
+  'required for insert_after/replace/delete>","content":"<new text; required for ' +
   'append/insert_after/replace>"}. Prefer the smallest change that fixes the weakness.';
 
 function buildUserPrompt(body: string, failures: string[], priorEdits: string[]): string {
@@ -40,7 +50,7 @@ function buildUserPrompt(body: string, failures: string[], priorEdits: string[])
   const prior = priorEdits.length
     ? `\n\nALREADY TRIED for this skill on earlier runs (do NOT repeat these — propose something different, or nothing):\n${priorEdits.slice(0, 12).map((p) => `- ${p}`).join("\n")}`
     : "";
-  return `CURRENT SKILL:\n${body}\n\nCONFIRMED FAILURES it produced (user pushed back AND a judge confirmed the task was not accomplished):\n${cases}${prior}\n\nPropose the bounded edits. JSON array only.`;
+  return `CURRENT SKILL:\n${body}\n\nCONFIRMED FAILURES it produced (user pushed back AND a judge confirmed the task was not accomplished):\n${cases}${prior}\n\nFirst name the single recurring weakness in one line, then output the edits that anchor the fix into the relevant existing section. JSON array only.`;
 }
 
 const OPS = new Set<EditOp>(["append", "insert_after", "replace", "delete"]);
