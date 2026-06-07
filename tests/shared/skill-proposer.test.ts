@@ -41,10 +41,18 @@ describe("proposeSkillEdit", () => {
     const p = await proposeSkillEdit(body, failures, { model });
     expect(p.changed).toBe(true);
     const system = model.mock.calls[0][0];
-    expect(system).toMatch(/anchor/i);            // place the fix where it fires
-    expect(system).toMatch(/concrete|operational/i);
-    expect(system).toMatch(/replace the weak/i);  // strengthen, don't only append
-    expect(model.mock.calls[0][1]).toMatch(/name the single recurring weakness/i);
+    expect(system).toContain("anchor it to the RELEVANT existing section");
+    expect(system).toContain("CONCRETE and OPERATIONAL");
+    expect(system).toContain("REPLACE the weak existing instruction");
+    expect(model.mock.calls[0][1]).toContain("Diagnose the single recurring weakness");
+  });
+
+  it("includes prior edits so the proposer doesn't repeat them", async () => {
+    const model = vi.fn(async (_s: string, _u: string) => "[]");
+    await proposeSkillEdit(body, failures, { model, priorEdits: ["append: verify via API"] });
+    const user = model.mock.calls[0][1];
+    expect(user).toContain("ALREADY TRIED");
+    expect(user).toContain("append: verify via API");
   });
 
   it("enforces the edit budget", async () => {

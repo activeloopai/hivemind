@@ -50,7 +50,7 @@ function buildUserPrompt(body: string, failures: string[], priorEdits: string[])
   const prior = priorEdits.length
     ? `\n\nALREADY TRIED for this skill on earlier runs (do NOT repeat these — propose something different, or nothing):\n${priorEdits.slice(0, 12).map((p) => `- ${p}`).join("\n")}`
     : "";
-  return `CURRENT SKILL:\n${body}\n\nCONFIRMED FAILURES it produced (user pushed back AND a judge confirmed the task was not accomplished):\n${cases}${prior}\n\nFirst name the single recurring weakness in one line, then output the edits that anchor the fix into the relevant existing section. JSON array only.`;
+  return `CURRENT SKILL:\n${body}\n\nCONFIRMED FAILURES it produced (user pushed back AND a judge confirmed the task was not accomplished):\n${cases}${prior}\n\nDiagnose the single recurring weakness, then output the edits that anchor the fix into the relevant existing section. JSON array only.`;
 }
 
 const OPS = new Set<EditOp>(["append", "insert_after", "replace", "delete"]);
