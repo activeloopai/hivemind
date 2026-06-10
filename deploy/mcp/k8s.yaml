@@ -1,0 +1,149 @@
+# Kubernetes manifest for the Hivemind HTTP MCP server.
+#
+# This is a starting template — adapt to your cluster's namespacing,
+# image registry, and ingress conventions before applying.
+#
+# Reaching the server from ChatGPT requires public HTTPS. The bundled
+# Ingress example assumes nginx-ingress + cert-manager on the existing
+# deeplake.ai cluster, routing `api.deeplake.ai/mcp/*` to this Service.
+#
+# Apply with:
+#   kubectl apply -f deploy/mcp/k8s.yaml
+#
+# Required env: HIVEMIND_MCP_AUTH_ISSUER (Auth0 issuer URL).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hivemind-mcp
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hivemind-mcp-config
+  namespace: hivemind-mcp
+data:
+  # The Auth0 issuer URL — advertised in WWW-Authenticate on 401 so
+  # ChatGPT knows where to send the user to sign in.
+  HIVEMIND_MCP_AUTH_ISSUER: "https://auth-beta.deeplake.ai/"
+  HIVEMIND_API_URL: "https://api.deeplake.ai"
+  HIVEMIND_MCP_PORT: "8787"
+  HIVEMIND_MCP_HOST: "0.0.0.0"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hivemind-mcp
+  namespace: hivemind-mcp
+  labels:
+    app.kubernetes.io/name: hivemind-mcp
+    app.kubernetes.io/component: mcp-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hivemind-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hivemind-mcp
+        app.kubernetes.io/component: mcp-server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: server
+          # TODO: set to the published image tag once the CI build pipeline
+          # is wired up (e.g. ghcr.io/activeloopai/hivemind-mcp:0.7.67).
+          image: ghcr.io/activeloopai/hivemind-mcp:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8787
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: hivemind-mcp-config
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hivemind-mcp
+  namespace: hivemind-mcp
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: hivemind-mcp
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+# Routes api.deeplake.ai/mcp and /.well-known paths to the MCP service.
+# Everything else on api.deeplake.ai (the existing API) stays on its
+# current backend — adjust the host's other path rules accordingly.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hivemind-mcp
+  namespace: hivemind-mcp
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"  # SSE streams must not be buffered.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.deeplake.ai
+      secretName: api-deeplake-ai-tls
+  rules:
+    - host: api.deeplake.ai
+      http:
+        paths:
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: hivemind-mcp
+                port:
+                  number: 80
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: hivemind-mcp
+                port:
+                  number: 80

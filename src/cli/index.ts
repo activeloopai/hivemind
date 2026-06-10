@@ -24,6 +24,7 @@ import { getVersion } from "./version.js";
 import { runUpdate } from "./update.js";
 import { renderCliHelpBlock } from "./skillify-spec.js";
 import { canOfferInstallScan, runInstallScan, formatScanResult } from "./install-scan.js";
+import { runServeMcp } from "./serve-mcp.js";
 
 const AUTH_SUBCOMMANDS = new Set([
   "whoami",
@@ -67,6 +68,15 @@ Usage:
   hivemind update [--dry-run]
       Check npm for a newer @deeplake/hivemind, upgrade the CLI, and refresh
       every detected agent bundle. Single command for all agents.
+
+  hivemind serve-mcp
+      Run the HTTP MCP server (Streamable HTTP transport) used by remote
+      clients like the ChatGPT App Directory. Configure with env vars:
+      HIVEMIND_MCP_AUTH_ISSUER (required, e.g. https://auth-beta.deeplake.ai/),
+      HIVEMIND_MCP_PORT (default 8787), HIVEMIND_MCP_HOST (default 0.0.0.0),
+      HIVEMIND_API_URL (default https://api.deeplake.ai). Bearer tokens
+      arrive in the Authorization header; missing token → 401 with
+      WWW-Authenticate pointing at the Auth0 issuer.
 
   hivemind dashboard [--cwd <path>] [--out <path>] [--no-open]
                      [--serve] [--port <n>]
@@ -466,6 +476,11 @@ async function main(): Promise<void> {
 
   if (cmd === "dashboard") {
     const code = await runDashboardCommand(args.slice(1));
+    process.exit(code);
+  }
+
+  if (cmd === "serve-mcp") {
+    const code = await runServeMcp(args.slice(1));
     process.exit(code);
   }
 
