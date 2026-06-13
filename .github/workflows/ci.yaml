@@ -301,8 +301,8 @@ jobs:
             harnesses/claude-code/bundle/skillify-worker.js \
             harnesses/codex/bundle/capture.js \
             harnesses/codex/bundle/session-start.js \
-            cursor/bundle/capture.js \
-            cursor/bundle/session-start.js \
+            harnesses/cursor/bundle/capture.js \
+            harnesses/cursor/bundle/session-start.js \
             harnesses/hermes/bundle/capture.js \
             harnesses/hermes/bundle/session-start.js \
             mcp/bundle/server.js \
@@ -424,8 +424,8 @@ jobs:
             harnesses/claude-code/bundle/skillify-worker.js \
             harnesses/codex/bundle/capture.js \
             harnesses/codex/bundle/session-start.js \
-            cursor/bundle/capture.js \
-            cursor/bundle/session-start.js \
+            harnesses/cursor/bundle/capture.js \
+            harnesses/cursor/bundle/session-start.js \
             harnesses/hermes/bundle/capture.js \
             harnesses/hermes/bundle/session-start.js \
             mcp/bundle/server.js \

@@ -435,7 +435,7 @@ Setup, BYOC, agent integrations, or workflow. Come ask in the community:
 git clone https://github.com/activeloopai/hivemind.git
 cd hivemind
 npm install
-npm run build     # tsc + esbuild → harnesses/claude-code/bundle/ + harnesses/codex/bundle/ + cursor/bundle/ + harnesses/openclaw/dist/ + mcp/bundle/ + bundle/cli.js
+npm run build     # tsc + esbuild → harnesses/claude-code/bundle/ + harnesses/codex/bundle/ + harnesses/cursor/bundle/ + harnesses/openclaw/dist/ + mcp/bundle/ + bundle/cli.js
 npm test          # vitest
 ```
 

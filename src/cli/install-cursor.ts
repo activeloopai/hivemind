@@ -99,7 +99,7 @@ export function stripHooksFromConfig(existing: Record<string, unknown> | null): 
 }
 
 export function installCursor(): void {
-  const srcBundle = join(pkgRoot(), "cursor", "bundle");
+  const srcBundle = join(pkgRoot(), "harnesses", "cursor", "bundle");
   if (!existsSync(srcBundle)) {
     throw new Error(`Cursor bundle missing at ${srcBundle}. Run 'npm run build' first.`);
   }

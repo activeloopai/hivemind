@@ -21,11 +21,11 @@ beforeEach(() => {
   tmpHome = join(tmpRoot, "home");
   tmpPkg = join(tmpRoot, "pkg");
   mkdirSync(join(tmpHome, ".cursor"), { recursive: true });
-  mkdirSync(join(tmpPkg, "cursor", "bundle"), { recursive: true });
-  writeFileSync(join(tmpPkg, "cursor", "bundle", "session-start.js"), "// fake bundle");
-  writeFileSync(join(tmpPkg, "cursor", "bundle", "capture.js"), "// fake bundle");
-  writeFileSync(join(tmpPkg, "cursor", "bundle", "pre-tool-use.js"), "// fake bundle");
-  writeFileSync(join(tmpPkg, "cursor", "bundle", "session-end.js"), "// fake bundle");
+  mkdirSync(join(tmpPkg, "harnesses", "cursor", "bundle"), { recursive: true });
+  writeFileSync(join(tmpPkg, "harnesses", "cursor", "bundle", "session-start.js"), "// fake bundle");
+  writeFileSync(join(tmpPkg, "harnesses", "cursor", "bundle", "capture.js"), "// fake bundle");
+  writeFileSync(join(tmpPkg, "harnesses", "cursor", "bundle", "pre-tool-use.js"), "// fake bundle");
+  writeFileSync(join(tmpPkg, "harnesses", "cursor", "bundle", "session-end.js"), "// fake bundle");
   writeFileSync(join(tmpPkg, "package.json"), JSON.stringify({ version: "9.9.9" }));
 
   vi.stubEnv("HOME", tmpHome);
@@ -112,7 +112,7 @@ describe("installCursor", () => {
   });
 
   it("throws when the bundle source is missing (build hasn't run)", async () => {
-    rmSync(join(tmpPkg, "cursor", "bundle"), { recursive: true, force: true });
+    rmSync(join(tmpPkg, "harnesses", "cursor", "bundle"), { recursive: true, force: true });
     const { installCursor } = await importInstaller();
     expect(() => installCursor()).toThrow(/Cursor bundle missing/);
   });

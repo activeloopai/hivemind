@@ -18,7 +18,7 @@ How Hivemind wires into Cursor 1.7+ via hooks.json, what each hook does, and how
 
 Cursor 1.7 introduced a `hooks.json` mechanism that fires TypeScript/Node scripts at named lifecycle events. Hivemind uses this surface as its Cursor integration shim: the same capture, recall, wiki-summary, and skillify mechanics that power the Claude Code plugin are re-expressed here, normalising Cursor's event payload shapes into the shared `HookInput` format consumed by `src/` core.
 
-The Cursor integration is the fourth integration in the fleet (after Claude Code, Codex, and OpenClaw). Its hooks live at `src/hooks/cursor/` and are built by `npm run build` into `cursor/bundle/`.
+The Cursor integration is the fourth integration in the fleet (after Claude Code, Codex, and OpenClaw). Its hooks live at `src/hooks/cursor/` and are built by `npm run build` into `harnesses/cursor/bundle/`.
 
 ---
 
@@ -168,4 +168,4 @@ sequenceDiagram
 | `src/hooks/cursor/pre-tool-use.ts` | Recall intercept for Shell tool |
 | `src/hooks/cursor/spawn-wiki-worker.ts` | Wiki worker spawner for Cursor |
 | `src/hooks/cursor/wiki-worker.ts` | Cursor wiki worker (calls `cursor-agent --print`) |
-| `cursor/bundle/` | Compiled build output distributed via npm |
+| `harnesses/cursor/bundle/` | Compiled build output distributed via npm |

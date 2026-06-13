@@ -34,8 +34,8 @@ const AGENTS: AgentBundle[] = [
   },
   {
     agent: "cursor",
-    embedDaemon: join(repoRoot, "cursor", "bundle", "embeddings", "embed-daemon.js"),
-    captureHook: join(repoRoot, "cursor", "bundle", "capture.js"),
+    embedDaemon: join(repoRoot, "harnesses", "cursor", "bundle", "embeddings", "embed-daemon.js"),
+    captureHook: join(repoRoot, "harnesses", "cursor", "bundle", "capture.js"),
   },
   {
     agent: "hermes",
@@ -111,8 +111,8 @@ describe("shipped shell/deeplake-shell.js — embed daemon path resolves to an e
       join(repoRoot, "harnesses", "codex", "bundle", "shell", "deeplake-shell.js"),
       join(repoRoot, "harnesses", "codex", "bundle", "embeddings", "embed-daemon.js")],
     ["cursor",
-      join(repoRoot, "cursor", "bundle", "shell", "deeplake-shell.js"),
-      join(repoRoot, "cursor", "bundle", "embeddings", "embed-daemon.js")],
+      join(repoRoot, "harnesses", "cursor", "bundle", "shell", "deeplake-shell.js"),
+      join(repoRoot, "harnesses", "cursor", "bundle", "embeddings", "embed-daemon.js")],
   ];
 
   it.each(SHELL_BUNDLES)("%s shell bundle exists", (_label, shellPath) => {

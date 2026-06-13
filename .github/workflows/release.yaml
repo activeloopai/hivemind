@@ -116,7 +116,7 @@ jobs:
             bundle \
             harnesses/claude-code/bundle \
             harnesses/codex/bundle \
-            cursor/bundle \
+            harnesses/cursor/bundle \
             harnesses/hermes/bundle \
             mcp/bundle \
             harnesses/pi/bundle
@@ -135,7 +135,7 @@ jobs:
             bundle \
             harnesses/claude-code/bundle \
             harnesses/codex/bundle \
-            cursor/bundle \
+            harnesses/cursor/bundle \
             harnesses/hermes/bundle \
             mcp/bundle \
             harnesses/pi/bundle

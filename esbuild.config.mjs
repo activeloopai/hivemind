@@ -204,7 +204,7 @@ await build({
   bundle: true,
   platform: "node",
   format: "esm",
-  outdir: "cursor/bundle",
+  outdir: "harnesses/cursor/bundle",
   external: [
     "node:*",
     "node-liblzma",
@@ -231,9 +231,9 @@ await build({
 });
 
 for (const h of cursorAll) {
-  chmodSync(`cursor/bundle/${h.out}.js`, 0o755);
+  chmodSync(`harnesses/cursor/bundle/${h.out}.js`, 0o755);
 }
-writeFileSync("cursor/bundle/package.json", esmPackageJson);
+writeFileSync("harnesses/cursor/bundle/package.json", esmPackageJson);
 
 // Hermes Agent bundle (auto-capture via on_session_start / pre_llm_call /
 // post_tool_call / post_llm_call / on_session_end).

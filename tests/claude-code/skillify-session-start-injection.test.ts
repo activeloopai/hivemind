@@ -23,7 +23,7 @@ const BUNDLE_ROOT = resolve(process.cwd());
 // auto-loaded `hivemind-memory` skill instead of the hook context.
 const SESSION_START_BUNDLES: Array<[string, string]> = [
   ["claude-code", resolve(BUNDLE_ROOT, "harnesses", "claude-code", "bundle", "session-start.js")],
-  ["cursor",      resolve(BUNDLE_ROOT, "cursor",      "bundle", "session-start.js")],
+  ["cursor",      resolve(BUNDLE_ROOT, "harnesses", "cursor",      "bundle", "session-start.js")],
   ["hermes",      resolve(BUNDLE_ROOT, "harnesses", "hermes",      "bundle", "session-start.js")],
 ];
 

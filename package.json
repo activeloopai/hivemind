@@ -17,7 +17,7 @@
     "bundle",
     "harnesses/codex/bundle",
     "harnesses/codex/skills",
-    "cursor/bundle",
+    "harnesses/cursor/bundle",
     "harnesses/hermes/bundle",
     "mcp/bundle",
     "harnesses/pi/extension-source",

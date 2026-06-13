@@ -111,7 +111,7 @@ Esbuild generates separate distribution bundles under the following directories:
 
 * **Claude Code:** Generated under `harnesses/claude-code/bundle/`. It packs hooks like `session-start`, `session-end`, `pre-tool-use`, `capture`, and several specialized background workers.
 * **Codex:** Generated under `harnesses/codex/bundle/`. It includes the Codex-specific lifecycle shims and background tasks.
-* **Cursor:** Generated under `cursor/bundle/`. It packages the `session-start`, `capture`, `pre-tool-use`, `session-end`, and `graph-on-stop` hooks.
+* **Cursor:** Generated under `harnesses/cursor/bundle/`. It packages the `session-start`, `capture`, `pre-tool-use`, `session-end`, and `graph-on-stop` hooks.
 * **Hermes Agent:** Generated under `harnesses/hermes/bundle/`. It bundles hooks following the NousResearch/hermes-agent shell hook protocol.
 * **pi:** Generated under `harnesses/pi/bundle/`. It bundles background workers like the `wiki-worker` and `skillify-worker`. (The main pi extension runs raw TypeScript compiled by pi's runtime.)
 * **OpenClaw:** Generated under `harnesses/openclaw/dist/`. It outputs the compiled HTTP/WebSocket plugin gateway, along with its async `skillify-worker`.

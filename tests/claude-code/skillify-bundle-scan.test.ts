@@ -19,7 +19,7 @@ const AGENTS = ["claude-code", "codex", "cursor", "hermes", "openclaw"] as const
 
 function bundlePath(agent: string, file: string): string {
   const dir = agent === "openclaw" ? "dist" : "bundle";
-  const base = agent === "cursor" ? join(ROOT, agent) : join(ROOT, "harnesses", agent);
+  const base = join(ROOT, "harnesses", agent);
   return join(base, dir, file);
 }
 

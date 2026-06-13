@@ -147,7 +147,7 @@ The plugin manifest specifies the hook entry points and declares the Claude Code
 
 ### Cursor hooks.json
 
-The Cursor integration does not ship a traditional plugin; it writes a `~/.cursor/hooks.json` file pointing at the bundled hook scripts. The build output lands in `cursor/bundle/`. The `hivemind install` CLI (via `src/cli/install-cursor.ts`) writes the hooks.json entry, creates the bundle directory, and registers `sessionStart`, `beforeSubmitPrompt`, `postToolUse`, `afterAgentResponse`, `stop`, and `sessionEnd` hooks.
+The Cursor integration does not ship a traditional plugin; it writes a `~/.cursor/hooks.json` file pointing at the bundled hook scripts. The build output lands in `harnesses/cursor/bundle/`. The `hivemind install` CLI (via `src/cli/install-cursor.ts`) writes the hooks.json entry, creates the bundle directory, and registers `sessionStart`, `beforeSubmitPrompt`, `postToolUse`, `afterAgentResponse`, `stop`, and `sessionEnd` hooks.
 
 Cursor 1.7+ introduced a hooks mechanism that is semantically similar to Claude Code's but uses lowercase event names and a different JSON output schema (`additional_context` vs `additionalContext`). The Cursor shim in `src/hooks/cursor/` normalizes these differences.
 
@@ -160,7 +160,7 @@ flowchart LR
     subgraph bundles["Build outputs"]
         ccBundle["harnesses/claude-code/bundle/\n→ Claude Code Marketplace"]
         codexBundle["harnesses/codex/bundle/\n→ npm @deeplake/hivemind"]
-        cursorBundle["cursor/bundle/\n→ npm + hooks.json"]
+        cursorBundle["harnesses/cursor/bundle/\n→ npm + hooks.json"]
         hermesBundle["harnesses/hermes/bundle/\n→ npm"]
         mcpBundle["mcp/bundle/\n→ npm (Hermes uses this)"]
         openclawDist["harnesses/openclaw/dist/\n→ ClawHub"]
