@@ -13,7 +13,7 @@
 
 import { loadConfig, type Config } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
+import { sqlIdent, sqlStr } from "../utils/sql.js";
 import { confirm } from "../cli/util.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -75,7 +75,7 @@ async function listSessions(
   const rows = await api.query(
     `SELECT path, COUNT(*) as cnt, MIN(creation_date) as first_event, ` +
     `MAX(creation_date) as last_event, MAX(project) as project ` +
-    `FROM "${sessionsTable}" WHERE author = '${sqlStr(author)}' ` +
+    `FROM "${sqlIdent(sessionsTable)}" WHERE author = '${sqlStr(author)}' ` +
     `GROUP BY path ORDER BY first_event DESC`
   );
 
@@ -106,10 +106,13 @@ async function deleteSessions(
   let sessionsDeleted = 0;
   let summariesDeleted = 0;
 
+  const sessionsTbl = sqlIdent(config.sessionsTableName);
+  const memoryTbl = sqlIdent(config.tableName);
+
   for (const sessionPath of sessionPaths) {
     // Delete all rows for this session from the sessions table
     await sessionsApi.query(
-      `DELETE FROM "${config.sessionsTableName}" WHERE path = '${sqlStr(sessionPath)}'`
+      `DELETE FROM "${sessionsTbl}" WHERE path = '${sqlStr(sessionPath)}'`
     );
     sessionsDeleted++;
 
@@ -119,11 +122,11 @@ async function deleteSessions(
     const summaryPath = `/summaries/${config.userName}/${sessionId}.md`;
 
     const existing = await memoryApi.query(
-      `SELECT path FROM "${config.tableName}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
+      `SELECT path FROM "${memoryTbl}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
     );
     if (existing.length > 0) {
       await memoryApi.query(
-        `DELETE FROM "${config.tableName}" WHERE path = '${sqlStr(summaryPath)}'`
+        `DELETE FROM "${memoryTbl}" WHERE path = '${sqlStr(summaryPath)}'`
       );
       summariesDeleted++;
     }

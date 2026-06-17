@@ -6,7 +6,7 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdtempSync, chmodSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import type { Config } from "../../config.js";
 import { makeWikiLogger } from "../../utils/wiki-log.js";
@@ -90,8 +90,8 @@ export function spawnHermesWikiWorker(opts: SpawnOptions): void {
   const { config, sessionId, cwd, bundleDir, reason } = opts;
   const projectName = projectNameFromCwd(cwd);
 
-  const tmpDir = join(tmpdir(), `deeplake-wiki-${sessionId}-${Date.now()}`);
-  mkdirSync(tmpDir, { recursive: true });
+  const tmpDir = mkdtempSync(join(tmpdir(), "deeplake-wiki-"));
+  chmodSync(tmpDir, 0o700);
 
   const pluginVersion = getInstalledVersion(bundleDir, ".claude-plugin") ?? "";
 
@@ -114,7 +114,7 @@ export function spawnHermesWikiWorker(opts: SpawnOptions): void {
     wikiLog: WIKI_LOG,
     hooksDir: join(HOME, ".hermes", "hooks"),
     promptTemplate: WIKI_PROMPT_TEMPLATE,
-  }));
+  }), { mode: 0o600 });
 
   wikiLog(`${reason}: spawning summary worker for ${sessionId}`);
 

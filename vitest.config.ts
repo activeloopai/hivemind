@@ -34,6 +34,9 @@ export default defineConfig({
       // agent scope. New tests for src/* modules go here; a follow-up
       // issue tracks the migration of the existing ones.
       "tests/shared/**/*.test.ts",
+      // Cursor extension unit tests (security-critical units: URL validation,
+      // bearer-token host gate, snapshot-path traversal guard).
+      "harnesses/cursor/extension/test/**/*.test.ts",
     ],
     setupFiles: ["./tests/test-setup.ts"],
     environment: "node",

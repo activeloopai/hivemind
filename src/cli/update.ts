@@ -302,8 +302,9 @@ export async function runUpdate(opts: UpdateOptions = {}): Promise<number> {
           // new (potentially malicious) publish lands between the version
           // check and the install.
           spawn("npm", ["install", "-g", `${PKG_NAME}@${latest}`]);
-        } catch (e: any) {
-          warn(`npm install failed: ${e.message}`);
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          warn(`npm install failed: ${msg}`);
           warn(`Try running it manually: npm install -g ${PKG_NAME}@${latest}`);
           return 1;
         }
@@ -315,8 +316,9 @@ export async function runUpdate(opts: UpdateOptions = {}): Promise<number> {
           // resolves to the freshly-installed `hivemind` regardless of how
           // npm laid it out.
           spawn("hivemind", ["install", "--skip-auth"]);
-        } catch (e: any) {
-          warn(`Agent refresh failed: ${e.message}`);
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          warn(`Agent refresh failed: ${msg}`);
           warn(`Run manually: hivemind install`);
           return 1;
         }

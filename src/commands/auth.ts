@@ -3,7 +3,7 @@
  * and org/workspace management.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { deeplakeClientHeader } from "../utils/client-header.js";
 import { hivemindInstallIDHeader } from "./install-id.js";
 import {
@@ -125,11 +125,30 @@ export async function pollForToken(deviceCode: string, apiUrl = DEFAULT_API_URL)
 }
 
 function openBrowser(url: string): boolean {
+  // The URL is server-derived (device-flow `verification_uri_complete`), so
+  // treat it as untrusted: only ever hand a parsed, https-scheme URL to an OS
+  // opener. Anything else (other schemes, malformed) is refused outright.
+  let safeUrl: string;
   try {
-    const cmd = process.platform === "darwin" ? `open "${url}"`
-      : process.platform === "win32" ? `start "${url}"`
-      : `xdg-open "${url}" 2>/dev/null`;
-    execSync(cmd, { stdio: "ignore", timeout: 5000 });
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    safeUrl = parsed.href;
+  } catch {
+    return false;
+  }
+  try {
+    // Fixed-argv spawn, never a shell. On Windows we use rundll32's
+    // FileProtocolHandler rather than `cmd /c start`: cmd re-parses its own
+    // command line (`&`, `^`, `|`), which would reintroduce an injection sink
+    // even with fixed argv. rundll32 is execFile'd directly with no
+    // interpreter, so the validated URL is passed as an opaque argument.
+    if (process.platform === "darwin") {
+      execFileSync("open", [safeUrl], { stdio: "ignore", timeout: 5000 });
+    } else if (process.platform === "win32") {
+      execFileSync("rundll32", ["url.dll,FileProtocolHandler", safeUrl], { stdio: "ignore", timeout: 5000 });
+    } else {
+      execFileSync("xdg-open", [safeUrl], { stdio: "ignore", timeout: 5000 });
+    }
     return true;
   } catch {
     return false;

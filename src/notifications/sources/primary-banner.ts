@@ -93,8 +93,8 @@ function localSavedTokens(): number {
     if (records.length === 0) return 0;
     const bytes = sumMetric(records, "memorySearchBytes");
     return bytesToSavedTokens(bytes);
-  } catch (e: any) {
-    log(`localSavedTokens threw: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    log(`localSavedTokens threw: ${e instanceof Error ? e.message : String(e)}`);
     return 0;
   }
 }

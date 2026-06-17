@@ -321,11 +321,15 @@ export class DeeplakeApi {
   }
 
   private async upsertRowSql(row: WriteRow): Promise<void> {
+    // Validate the config-driven table name before interpolation and escape
+    // the caller-supplied date values — neither is parameterized by the
+    // Deeplake HTTP endpoint, so an unescaped value/identifier is injection.
+    const tbl = sqlIdent(this.tableName);
     const ts = new Date().toISOString();
-    const cd = row.creationDate ?? ts;
-    const lud = row.lastUpdateDate ?? ts;
+    const cd = sqlStr(row.creationDate ?? ts);
+    const lud = sqlStr(row.lastUpdateDate ?? ts);
     const exists = await this.query(
-      `SELECT path FROM "${this.tableName}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`
+      `SELECT path FROM "${tbl}" WHERE path = '${sqlStr(row.path)}' LIMIT 1`
     );
     if (exists.length > 0) {
       let setClauses = `summary = E'${sqlStr(row.contentText)}', ` +
@@ -334,7 +338,7 @@ export class DeeplakeApi {
       if (row.project !== undefined) setClauses += `, project = '${sqlStr(row.project)}'`;
       if (row.description !== undefined) setClauses += `, description = '${sqlStr(row.description)}'`;
       await this.query(
-        `UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`
+        `UPDATE "${tbl}" SET ${setClauses} WHERE path = '${sqlStr(row.path)}'`
       );
     } else {
       const id = randomUUID();
@@ -343,18 +347,24 @@ export class DeeplakeApi {
       if (row.project !== undefined) { cols += ", project"; vals += `, '${sqlStr(row.project)}'`; }
       if (row.description !== undefined) { cols += ", description"; vals += `, '${sqlStr(row.description)}'`; }
       await this.query(
-        `INSERT INTO "${this.tableName}" (${cols}) VALUES (${vals})`
+        `INSERT INTO "${tbl}" (${cols}) VALUES (${vals})`
       );
     }
   }
 
   /** Update specific columns on a row by path. */
   async updateColumns(path: string, columns: Record<string, string | number>): Promise<void> {
+    // Both the table name and every column key are identifiers — validate
+    // them with sqlIdent so a tainted key can't break out of the SET clause.
+    const tbl = sqlIdent(this.tableName);
     const setClauses = Object.entries(columns)
-      .map(([col, val]) => typeof val === "number" ? `${col} = ${val}` : `${col} = '${sqlStr(String(val))}'`)
+      .map(([col, val]) => {
+        const safeCol = sqlIdent(col);
+        return typeof val === "number" ? `${safeCol} = ${val}` : `${safeCol} = '${sqlStr(String(val))}'`;
+      })
       .join(", ");
     await this.query(
-      `UPDATE "${this.tableName}" SET ${setClauses} WHERE path = '${sqlStr(path)}'`
+      `UPDATE "${tbl}" SET ${setClauses} WHERE path = '${sqlStr(path)}'`
     );
   }
 
@@ -362,7 +372,11 @@ export class DeeplakeApi {
 
   /** Create a BM25 search index on a column. */
   async createIndex(column: string): Promise<void> {
-    await this.query(`CREATE INDEX IF NOT EXISTS idx_${sqlStr(column)}_bm25 ON "${this.tableName}" USING deeplake_index ("${column}")`);
+    // Validate both identifiers — `column` is interpolated as a bare SQL
+    // identifier, so sqlStr (a value escaper) is the wrong guard here.
+    const col = sqlIdent(column);
+    const tbl = sqlIdent(this.tableName);
+    await this.query(`CREATE INDEX IF NOT EXISTS idx_${col}_bm25 ON "${tbl}" USING deeplake_index ("${col}")`);
   }
 
   private buildLookupIndexName(table: string, suffix: string): string {
@@ -377,12 +391,13 @@ export class DeeplakeApi {
     try {
       await this.query(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ${columnsSql}`);
       markers.writeIndexMarker(markerPath);
-    } catch (e: any) {
+    } catch (e: unknown) {
       if (isDuplicateIndexError(e)) {
         markers.writeIndexMarker(markerPath);
         return;
       }
-      log(`index "${indexName}" skipped: ${e.message}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      log(`index "${indexName}" skipped: ${msg}`);
     }
   }
 

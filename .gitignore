@@ -27,6 +27,9 @@ bundle/
 harnesses/claude-code/bundle/
 harnesses/codex/bundle/
 harnesses/cursor/bundle/
+harnesses/cursor/extension/node_modules/
+harnesses/cursor/extension/dist/
+harnesses/cursor/extension/*.vsix
 harnesses/hermes/bundle/
 mcp/bundle/
 harnesses/pi/bundle/

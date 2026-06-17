@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -17,7 +17,7 @@ let tmpHome: string;
 let tmpPkg: string;
 
 beforeEach(() => {
-  tmpRoot = join(tmpdir(), `hm-cursor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpRoot = mkdtempSync(join(tmpdir(), "hm-cursor-"));
   tmpHome = join(tmpRoot, "home");
   tmpPkg = join(tmpRoot, "pkg");
   mkdirSync(join(tmpHome, ".cursor"), { recursive: true });

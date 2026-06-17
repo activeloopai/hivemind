@@ -266,8 +266,9 @@ export function installClaude(): void {
     if (cleanup.removed > 0) {
       log(`  Claude Code    settings.json cleaned: removed ${cleanup.removed} stale hook entr${cleanup.removed === 1 ? "y" : "ies"} (events: ${cleanup.events.join(", ")})`);
     }
-  } catch (e: any) {
-    log(`  Claude Code    settings.json cleanup skipped: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    log(`  Claude Code    settings.json cleanup skipped: ${msg}`);
   }
 }
 

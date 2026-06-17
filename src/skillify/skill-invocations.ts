@@ -14,7 +14,7 @@
  *
  * Every query is injected (QueryFn), so this is unit-testable with no live Deeplake.
  */
-import { sqlStr } from "../utils/sql.js";
+import { sqlStr, sqlIdent } from "../utils/sql.js";
 
 export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
 
@@ -105,7 +105,7 @@ export async function listSkillInvocations(
   if (opts.untilIso) where.push(`last_update_date < '${sqlStr(opts.untilIso)}'`);
   const limit = opts.limit && opts.limit > 0 ? ` LIMIT ${Math.floor(opts.limit)}` : "";
   const rows = await query(
-    `SELECT message, last_update_date FROM "${sessionsTable}" WHERE ${where.join(" AND ")} ORDER BY last_update_date DESC${limit}`,
+    `SELECT message, last_update_date FROM "${sqlIdent(sessionsTable)}" WHERE ${where.join(" AND ")} ORDER BY last_update_date DESC${limit}`,
   );
   const out: SkillInvocation[] = [];
   for (const r of rows) {
@@ -144,7 +144,7 @@ async function sessionTurns(
 ): Promise<{ turns: Turn[]; invIndex: number }> {
   const sid = sqlStr(likeEscape(inv.sessionId));
   const rows = await query(
-    `SELECT message FROM "${sessionsTable}" WHERE path LIKE '/sessions/%${sid}%' ESCAPE '\\' ORDER BY creation_date ASC`,
+    `SELECT message FROM "${sqlIdent(sessionsTable)}" WHERE path LIKE '/sessions/%${sid}%' ESCAPE '\\' ORDER BY creation_date ASC`,
   );
   const turns: Turn[] = [];
   let invIndex = -1;

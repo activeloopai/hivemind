@@ -116,8 +116,8 @@ export function tryClaim(n: Notification): boolean {
   const claimsDir = join(home, ".deeplake", "notifications-claims");
   try {
     mkdirSync(claimsDir, { recursive: true, mode: 0o700 });
-  } catch (e: any) {
-    log(`tryClaim mkdir failed: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    log(`tryClaim mkdir failed: ${e instanceof Error ? e.message : String(e)}`);
     return true;
   }
   const claimPath = claimPathFor(claimsDir, n);
@@ -125,9 +125,9 @@ export function tryClaim(n: Notification): boolean {
     const fd = openSync(claimPath, "wx", 0o600);
     closeSync(fd);
     return true;
-  } catch (e: any) {
-    if (e?.code === "EEXIST") return false;
-    log(`tryClaim open failed: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+    log(`tryClaim open failed: ${e instanceof Error ? e.message : String(e)}`);
     return true;
   }
 }
@@ -149,9 +149,9 @@ export function releaseClaim(n: Notification): void {
   const claimPath = claimPathFor(claimsDir, n);
   try {
     unlinkSync(claimPath);
-  } catch (e: any) {
-    if (e?.code !== "ENOENT") {
-      log(`releaseClaim unlink failed: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+      log(`releaseClaim unlink failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 }

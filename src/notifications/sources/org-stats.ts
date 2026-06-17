@@ -126,8 +126,8 @@ function readCache(scopeKey: string): { fresh?: OrgStats; stale?: OrgStats } {
     // return it as "fresh" since the user has paid for newer data via a
     // SessionStart-triggered fetch — only return it after the fetch error.
     return { stale: data };
-  } catch (e: any) {
-    log(`cache read failed: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    log(`cache read failed: ${e instanceof Error ? e.message : String(e)}`);
     return {};
   }
 }
@@ -142,9 +142,9 @@ function writeCache(scopeKey: string, data: OrgStats): void {
     mkdirSync(dirname(cacheFilePath()), { recursive: true });
     const body: CacheFileShape = { fetchedAt: Date.now(), scopeKey, data };
     writeFileSync(cacheFilePath(), JSON.stringify(body), "utf-8");
-  } catch (e: any) {
+  } catch (e: unknown) {
     // Don't fail the read path if disk write fails; just log.
-    log(`cache write failed: ${e?.message ?? String(e)}`);
+    log(`cache write failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -199,8 +199,8 @@ export async function fetchOrgStats(creds: Credentials | null): Promise<OrgStats
     writeCache(scopeKey, data);
     log(`fetched org stats from ${apiUrl}`);
     return data;
-  } catch (e: any) {
-    log(`fetch ${url} failed: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    log(`fetch ${url} failed: ${e instanceof Error ? e.message : String(e)}`);
     return stale ?? null;
   } finally {
     clearTimeout(timeoutHandle);

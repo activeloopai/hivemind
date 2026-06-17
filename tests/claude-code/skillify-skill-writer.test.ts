@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import {
@@ -68,6 +68,22 @@ describe("writeNewSkill", () => {
       skillsRoot, name: "n", description: "", body: VALID_BODY, sourceSessions: [], agent: "x",
     });
     expect(existsSync(join(skillsRoot, "n"))).toBe(true);
+    expect(existsSync(result.path)).toBe(true);
+  });
+
+  // writeNewSkill stages to a unique sibling .tmp and renames into place
+  // (atomicWriteFile). A crash mid-write would otherwise wedge the skill: a
+  // half-written SKILL.md can never self-heal because writeNewSkill always
+  // throws "already exists" on the next run. A successful write must leave the
+  // final file and NO leftover staging file in the skill dir.
+  it("writes SKILL.md atomically, leaving no .tmp staging file behind", () => {
+    const result = writeNewSkill({
+      skillsRoot, name: "atomic", description: "", body: VALID_BODY, sourceSessions: [], agent: "x",
+    });
+    const dir = join(skillsRoot, "atomic");
+    const entries = readdirSync(dir);
+    expect(entries).toEqual(["SKILL.md"]);
+    expect(entries.some(e => e.endsWith(".tmp"))).toBe(false);
     expect(existsSync(result.path)).toBe(true);
   });
 });

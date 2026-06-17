@@ -8,7 +8,7 @@
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
 import { loadConfig } from "../../config.js";
-import { tryAcquireLock } from "../summary-state.js";
+import { tryAcquireLock, releaseLock } from "../summary-state.js";
 import { bundleDirFromImportMeta, spawnHermesWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 import { forceSessionEndTrigger } from "../../skillify/triggers.js";
 
@@ -59,7 +59,11 @@ async function main(): Promise<void> {
       reason: "SessionEnd",
     });
   } catch (e: any) {
+    // Spawn threw before the worker took ownership of the lock: release it
+    // so a --resume can retrigger summaries without waiting for the 10-minute
+    // stale reclaim. Mirrors src/hooks/session-end.ts and codex/stop.ts.
     wikiLog(`SessionEnd: wiki spawn failed: ${e?.message ?? e}`);
+    try { releaseLock(sessionId); } catch { /* best-effort */ }
   }
 }
 

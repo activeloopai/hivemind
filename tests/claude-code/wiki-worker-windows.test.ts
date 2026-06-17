@@ -45,8 +45,6 @@ const CLAUDE_FLAGS = [
   "--no-session-persistence",
   "--model",
   "haiku",
-  "--permission-mode",
-  "bypassPermissions",
 ];
 
 describe("resolveCliBin — Windows", () => {
@@ -124,6 +122,9 @@ describe("binNeedsShell", () => {
 });
 
 describe("buildClaudeInvocation", () => {
+  // The prompt carries the full session transcript inline, so it always goes
+  // over stdin (never the command line) on every platform, and the agent is
+  // granted no tools / no bypassPermissions.
   it("Windows .cmd: spawns through a shell with the prompt over stdin, never on the command line", () => {
     setPlatform("win32");
     const inv = buildClaudeInvocation("C:\\npm\\claude.cmd", "PROMPT-TEXT");
@@ -134,19 +135,29 @@ describe("buildClaudeInvocation", () => {
     expect(inv.args).not.toContain("PROMPT-TEXT");
   });
 
-  it("Unix: prompt is a positional arg, no shell, no stdin (byte-identical to the original)", () => {
+  it("Unix: prompt over stdin, no shell, never on the command line", () => {
     setPlatform("linux");
     const inv = buildClaudeInvocation("/usr/local/bin/claude", "PROMPT-TEXT");
     expect(inv.options.shell).toBeFalsy();
-    expect(inv.options.input).toBeUndefined();
-    expect(inv.args).toEqual(["-p", "PROMPT-TEXT", ...CLAUDE_FLAGS]);
+    expect(inv.options.input).toBe("PROMPT-TEXT");
+    expect(inv.args).toEqual(["-p", ...CLAUDE_FLAGS]);
+    expect(inv.args).not.toContain("PROMPT-TEXT");
   });
 
-  it("Windows .exe: spawns directly (no shell), prompt as arg", () => {
+  it("Windows .exe: spawns directly (no shell), prompt over stdin", () => {
     setPlatform("win32");
     const inv = buildClaudeInvocation("C:\\pf\\claude.exe", "PROMPT-TEXT");
     expect(inv.options.shell).toBeFalsy();
-    expect(inv.args).toContain("PROMPT-TEXT");
+    expect(inv.options.input).toBe("PROMPT-TEXT");
+    expect(inv.args).not.toContain("PROMPT-TEXT");
+  });
+
+  it("grants no tools and does not bypass permissions (collapsed blast radius)", () => {
+    setPlatform("linux");
+    const inv = buildClaudeInvocation("/usr/local/bin/claude", "PROMPT-TEXT");
+    expect(inv.args).not.toContain("bypassPermissions");
+    expect(inv.args).not.toContain("--allowedTools");
+    expect(inv.args).not.toContain("--permission-mode");
   });
 });
 

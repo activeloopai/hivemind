@@ -7,11 +7,18 @@
 import { execFileSync } from 'node:child_process';
 
 const FORBIDDEN = [
-  /(^|\/)\.npmrc$/,
-  /(^|\/)\.env($|\.)/,
-  /(^|\/)secrets?(\/|$)/,
+  // Case-insensitive on the secret-bearing names: on case-insensitive
+  // filesystems (macOS/Windows) `.ENV`, `ID_RSA`, `Credentials.JSON`, etc. are
+  // the same sensitive file, so the gate must catch them regardless of case.
+  /(^|\/)\.npmrc$/i,
+  /(^|\/)\.env($|\.)/i,
+  /(^|\/)secrets?(\/|$)/i,
   /(^|\/)\.github(\/|$)/,
   /(^|\/)\.git(\/|$)/,
+  // Private-key / credential material: never belongs in a published tarball.
+  /(^|\/)(id_rsa|id_dsa|id_ecdsa|id_ed25519)$/i,
+  /\.(pem|key|p12|pfx)$/i,
+  /(^|\/)credentials\.json$/i,
 ];
 
 const raw = execFileSync('npm', ['pack', '--dry-run', '--json'], {

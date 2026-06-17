@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
-import { sqlStr } from "../../utils/sql.js";
+import { sqlIdent, sqlStr } from "../../utils/sql.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
 import { readStdin } from "../../utils/stdin.js";
 import { log as _log } from "../../utils/debug.js";
@@ -30,8 +30,11 @@ const PLUGIN_VERSION = getInstalledVersion(__bundleDir, ".codex-plugin") ?? "";
 async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
   const summaryPath = `/summaries/${userName}/${sessionId}.md`;
 
+  // table is config-driven (HIVEMIND_TABLE) and interpolated raw into the
+  // Deeplake SQL API (no parameterized queries) — validate as an identifier.
+  const tbl = sqlIdent(table);
   const existing = await api.query(
-    `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
+    `SELECT path FROM "${tbl}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
   );
   if (existing.length > 0) {
     wikiLog(`SessionSetup: summary exists for ${sessionId} (resumed)`);
@@ -52,7 +55,7 @@ async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: str
   const filename = `${sessionId}.md`;
 
   await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
+    `INSERT INTO "${tbl}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
     `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'codex', '${sqlStr(PLUGIN_VERSION)}', '${now}', '${now}')`
   );

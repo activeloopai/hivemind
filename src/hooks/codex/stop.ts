@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
-import { sqlStr } from "../../utils/sql.js";
+import { sqlIdent, sqlStr } from "../../utils/sql.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
 import { log as _log } from "../../utils/debug.js";
 import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
@@ -128,7 +128,7 @@ async function main(): Promise<void> {
       const embeddingSql = embeddingSqlLiteral(embedding);
 
       const insertSql =
-        `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
+        `INSERT INTO "${sqlIdent(sessionsTable)}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
         `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ` +
         `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', 'Stop', 'codex', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}')`;
 

@@ -1,0 +1,85 @@
+{
+  "name": "hivemind-cursor-extension",
+  "displayName": "Hivemind for Cursor",
+  "description": "Shared memory, health checks, dashboard, and codebase graph inside Cursor",
+  "version": "0.1.5",
+  "publisher": "deeplake",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "hivemind.runOnboarding",
+        "title": "Hivemind: Run Onboarding"
+      },
+      {
+        "command": "hivemind.login",
+        "title": "Hivemind: Log In"
+      },
+      {
+        "command": "hivemind.logout",
+        "title": "Hivemind: Log Out"
+      },
+      {
+        "command": "hivemind.showStatus",
+        "title": "Hivemind: Show Status"
+      },
+      {
+        "command": "hivemind.wireHooks",
+        "title": "Hivemind: Wire / Refresh Hooks"
+      },
+      {
+        "command": "hivemind.unwireHooks",
+        "title": "Hivemind: Unwire Hooks"
+      },
+      {
+        "command": "hivemind.openLogs",
+        "title": "Hivemind: Open Logs"
+      },
+      {
+        "command": "hivemind.openDashboard",
+        "title": "Hivemind: Open Dashboard"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "hivemind",
+          "title": "Hivemind",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "hivemind": [
+        {
+          "id": "hivemind.dashboard",
+          "name": "Dashboard",
+          "type": "webview"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "webpack --mode production",
+    "watch": "webpack --mode development --watch",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.4.0",
+    "webpack": "^5.90.0",
+    "webpack-cli": "^5.1.4"
+  }
+}

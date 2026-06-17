@@ -66,6 +66,16 @@ describe("hermes spawn-wiki-worker source", () => {
     expect(SPAWN_SRC).toContain("export function spawnHermesWikiWorker");
     expect(SPAWN_SRC).not.toContain("export function spawnCodexWikiWorker");
   });
+
+  it("writes the token config 0o600 inside a 0o700 tmp dir (C3 credential-exposure fix; fork must not drift)", () => {
+    // The config.json carries the Activeloop token in cleartext in the shared
+    // tmpdir. mkdtempSync creates an unpredictable directory atomically,
+    // chmodSync 0o700 locks it down. This source lock-in guards the hermes fork
+    // from silently dropping the security primitives on a future refactor.
+    expect(SPAWN_SRC).toMatch(/mkdtempSync\(join\(tmpdir\(\),\s*["']deeplake-wiki-["']\)\)/);
+    expect(SPAWN_SRC).toMatch(/chmodSync\(tmpDir,\s*0o700\)/);
+    expect(SPAWN_SRC).toMatch(/\}\),\s*\{\s*mode:\s*0o600\s*\}\)/);
+  });
 });
 
 describe("hermes session-start source", () => {

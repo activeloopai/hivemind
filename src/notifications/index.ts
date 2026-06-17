@@ -146,7 +146,7 @@ export async function drainSessionStart(opts: DrainOptions): Promise<void> {
     if (queue.queue.length > 0) writeQueue({ queue: [] });
 
     log(`delivered ${claimed.length} notification(s) to ${opts.agent}`);
-  } catch (e: any) {
-    log(`drainSessionStart failed: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    log(`drainSessionStart failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }

@@ -15,7 +15,7 @@
  */
 
 import type { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr, sqlLike } from "../utils/sql.js";
+import { sqlStr, sqlLike, sqlIdent } from "../utils/sql.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -340,11 +340,11 @@ export async function searchDeeplakeTables(
 
     const memLexQuery = memLexFilter
       ? `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, 1.0 AS score ` +
-        `FROM "${memoryTable}" WHERE 1=1${pathFilter}${memLexFilter} LIMIT ${lexicalLimit}`
+        `FROM "${sqlIdent(memoryTable)}" WHERE 1=1${pathFilter}${memLexFilter} LIMIT ${lexicalLimit}`
       : null;
     const sessLexQuery = sessLexFilter
       ? `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, 1.0 AS score ` +
-        `FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessLexFilter} LIMIT ${lexicalLimit}`
+        `FROM "${sqlIdent(sessionsTable)}" WHERE 1=1${pathFilter}${sessLexFilter} LIMIT ${lexicalLimit}`
       : null;
 
     // Filter out rows with a missing OR empty embedding. ALTER TABLE ADD
@@ -358,12 +358,12 @@ export async function searchDeeplakeTables(
     const memSemQuery =
       `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, ` +
       `(summary_embedding <#> ${vecLit}) AS score ` +
-      `FROM "${memoryTable}" WHERE ARRAY_LENGTH(summary_embedding, 1) > 0${pathFilter} ` +
+      `FROM "${sqlIdent(memoryTable)}" WHERE ARRAY_LENGTH(summary_embedding, 1) > 0${pathFilter} ` +
       `ORDER BY score DESC LIMIT ${semanticLimit}`;
     const sessSemQuery =
       `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, ` +
       `(message_embedding <#> ${vecLit}) AS score ` +
-      `FROM "${sessionsTable}" WHERE ARRAY_LENGTH(message_embedding, 1) > 0${pathFilter} ` +
+      `FROM "${sqlIdent(sessionsTable)}" WHERE ARRAY_LENGTH(message_embedding, 1) > 0${pathFilter} ` +
       `ORDER BY score DESC LIMIT ${semanticLimit}`;
 
     const parts = [memSemQuery, sessSemQuery];
@@ -398,8 +398,8 @@ export async function searchDeeplakeTables(
   const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
   const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
 
-  const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
-  const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
+  const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${sqlIdent(memoryTable)}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
+  const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sqlIdent(sessionsTable)}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
 
   const rows = await api.query(
     `SELECT path, content, source_order, creation_date FROM (` +

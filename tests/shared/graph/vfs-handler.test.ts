@@ -69,7 +69,7 @@ describe("handleGraphVfs", () => {
     writeLastBuild(baseDir, {
       ts: Date.now(),
       commit_sha: commit,
-      snapshot_sha256: "x".repeat(64),
+      snapshot_sha256: "a".repeat(64),
       node_count: snap.nodes.length,
       edge_count: snap.links.length,
     }, wt);
@@ -87,8 +87,8 @@ describe("handleGraphVfs", () => {
     mkdirSync(snapshotsDir, { recursive: true });
     writeLastBuild(baseDir, {
       ts: Date.now(),
-      commit_sha: "ghost",
-      snapshot_sha256: "y".repeat(64),
+      commit_sha: "deadbeef",
+      snapshot_sha256: "b".repeat(64),
       node_count: 1, edge_count: 0,
     }, wt);
     // snapshots/ghost.json doesn't exist
@@ -98,14 +98,14 @@ describe("handleGraphVfs", () => {
 
   it("returns no-graph on corrupt snapshot JSON", () => {
     mkdirSync(snapshotsDir, { recursive: true });
-    writeFileSync(join(snapshotsDir, "corrupt.json"), "{ not valid");
+    writeFileSync(join(snapshotsDir, "c0ffee.json"), "{ not valid");
     writeLastBuild(baseDir, {
-      ts: Date.now(), commit_sha: "corrupt",
-      snapshot_sha256: "z".repeat(64), node_count: 0, edge_count: 0,
+      ts: Date.now(), commit_sha: "c0ffee",
+      snapshot_sha256: "c".repeat(64), node_count: 0, edge_count: 0,
     }, wt);
     const r = handleGraphVfs("index.md", cwd);
     expect(r.kind).toBe("no-graph");
-    if (r.kind === "no-graph") expect(r.message).toContain("Failed to parse");
+    if (r.kind === "no-graph") expect(r.message).toContain("Failed to parse snapshot");
   });
 
   // ── index.md ─────────────────────────────────────────────────────────
@@ -370,14 +370,14 @@ describe("handleGraphVfs", () => {
   it("query/ dedups repeated neighbors with a ×N count (not listed N times)", () => {
     // Seed a snapshot where foo calls bar THREE times (multigraph).
     mkdirSync(snapshotsDir, { recursive: true });
-    const snap = makeSnapshot("c9");
+    const snap = makeSnapshot("cafe1234");
     snap.links = [
       { source: "src/a.ts:foo:function", target: "src/a.ts:bar:function", relation: "calls", confidence: "EXTRACTED", ord: 0 },
       { source: "src/a.ts:foo:function", target: "src/a.ts:bar:function", relation: "calls", confidence: "EXTRACTED", ord: 1 },
       { source: "src/a.ts:foo:function", target: "src/a.ts:bar:function", relation: "calls", confidence: "EXTRACTED", ord: 2 },
     ];
-    writeFileSync(join(snapshotsDir, "c9.json"), JSON.stringify(snap));
-    writeLastBuild(baseDir, { ts: Date.now(), commit_sha: "c9", snapshot_sha256: "9".repeat(64), node_count: snap.nodes.length, edge_count: 3 }, wt);
+    writeFileSync(join(snapshotsDir, "cafe1234.json"), JSON.stringify(snap));
+    writeLastBuild(baseDir, { ts: Date.now(), commit_sha: "cafe1234", snapshot_sha256: "9".repeat(64), node_count: snap.nodes.length, edge_count: 3 }, wt);
     const r = handleGraphVfs("query/foo", cwd);
     expect(r.kind).toBe("ok");
     if (r.kind === "ok") {
@@ -479,10 +479,10 @@ describe("handleGraphVfs", () => {
     // Seed a custom snapshot: src/a.ts:foo is exported, its only incoming edge
     // comes from an id NOT in nodes[] (an external/unresolved caller).
     mkdirSync(snapshotsDir, { recursive: true });
-    const snap = makeSnapshot("c1");
+    const snap = makeSnapshot("babe1234");
     snap.links = [{ source: "external:ghost:function", target: "src/a.ts:foo:function", relation: "calls", confidence: "EXTRACTED" }];
-    writeFileSync(join(snapshotsDir, "c1.json"), JSON.stringify(snap));
-    writeLastBuild(baseDir, { ts: Date.now(), commit_sha: "c1", snapshot_sha256: "z".repeat(64), node_count: snap.nodes.length, edge_count: 1 }, wt);
+    writeFileSync(join(snapshotsDir, "babe1234.json"), JSON.stringify(snap));
+    writeLastBuild(baseDir, { ts: Date.now(), commit_sha: "babe1234", snapshot_sha256: "e".repeat(64), node_count: snap.nodes.length, edge_count: 1 }, wt);
     const r = handleGraphVfs("tour", cwd);
     expect(r.kind).toBe("ok");
     if (r.kind === "ok") {
@@ -494,11 +494,11 @@ describe("handleGraphVfs", () => {
 
   it("neighborhood: an edge to an UNRESOLVED target is not reported as a cross-file neighbor", () => {
     mkdirSync(snapshotsDir, { recursive: true });
-    const snap = makeSnapshot("c2");
+    const snap = makeSnapshot("face1234");
     // foo (in src/a.ts) imports an unresolved id — must NOT show as Outgoing cross-file.
     snap.links = [{ source: "src/a.ts:foo:function", target: "external:lodash:module", relation: "imports", confidence: "EXTRACTED" }];
-    writeFileSync(join(snapshotsDir, "c2.json"), JSON.stringify(snap));
-    writeLastBuild(baseDir, { ts: Date.now(), commit_sha: "c2", snapshot_sha256: "w".repeat(64), node_count: snap.nodes.length, edge_count: 1 }, wt);
+    writeFileSync(join(snapshotsDir, "face1234.json"), JSON.stringify(snap));
+    writeLastBuild(baseDir, { ts: Date.now(), commit_sha: "face1234", snapshot_sha256: "f".repeat(64), node_count: snap.nodes.length, edge_count: 1 }, wt);
     const r = handleGraphVfs("neighborhood/src/a.ts", cwd);
     expect(r.kind).toBe("ok");
     if (r.kind === "ok") {

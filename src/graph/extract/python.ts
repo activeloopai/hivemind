@@ -382,10 +382,22 @@ function makeModuleNode(relativePath: string): GraphNode {
 }
 
 function pushNode(result: FileExtraction, declByName: Map<string, GraphNode>, node: GraphNode): void {
-  result.nodes.push(node);
   // declByName is keyed by the id-name (label for top-level, Class.method for methods).
   /* c8 ignore next */
   const key = node.kind === "method" ? node.id.split(":")[1]! : node.label;
+  // Python admits multiple declarations that map to the SAME node id within
+  // one file: a property getter/setter pair (`@property def x` + `@x.setter
+  // def x`), a `@overload`-decorated stub plus its implementation, or a
+  // module-level name reassignment (`x = 1` ... `x = foo()`). The snapshot
+  // contract (see GraphNode.id in types.ts) and NetworkX-style consumers both
+  // REQUIRE node id uniqueness within a snapshot, so skip the duplicate while
+  // still registering the lookup key (first wins) — mirrors the shared and
+  // TypeScript extractors' pushNode.
+  if (result.nodes.some((n) => n.id === node.id)) {
+    if (!declByName.has(key)) declByName.set(key, node);
+    return;
+  }
+  result.nodes.push(node);
   /* c8 ignore next */
   if (!declByName.has(key)) declByName.set(key, node);
 }

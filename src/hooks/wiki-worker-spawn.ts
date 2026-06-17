@@ -1,13 +1,21 @@
 import type { ExecFileSyncOptions } from "node:child_process";
 import { binNeedsShell } from "../utils/resolve-cli-bin.js";
 
-/** Fixed flags for the summary-generation `claude -p` call (no user input). */
+/** Fixed flags for the summary-generation `claude -p` call (no user input).
+ *
+ * The summarizer takes its inputs inline (session transcript + any existing
+ * summary are embedded in the prompt) and emits the summary to STDOUT, so it
+ * needs NO tools at all. We therefore grant none and drop bypassPermissions:
+ * in `-p` (print) mode an unapproved tool call is auto-denied rather than
+ * prompting, so the agent simply cannot read files, write files, or run
+ * commands. This collapses the prompt-injection blast radius of the
+ * attacker-influenceable captured session content to "produce summary text",
+ * which the worker further bounds with output validation before storing.
+ */
 const CLAUDE_FLAGS = [
   "--no-session-persistence",
   "--model",
   "haiku",
-  "--permission-mode",
-  "bypassPermissions",
 ] as const;
 
 export interface ClaudeInvocation {
@@ -19,29 +27,24 @@ export interface ClaudeInvocation {
 /**
  * Build the `execFileSync` descriptor for the summary-generation claude call.
  *
- * Windows (`.cmd`/`.bat` shim): the shim cannot be spawned without a shell,
- * and the multi-KB prompt must NOT ride the command line — cmd.exe would
- * expand `%VAR%`/metacharacters in it and it can blow the ~8 KB arg limit. So
- * the prompt goes over stdin (`input`) and only the fixed flags — never user
- * text — are passed as args under the shell, which keeps the shell call free
- * of injection.
- *
- * Everywhere else (Unix, or a Windows `.exe`): unchanged from the original —
- * prompt as a positional arg, no shell — so the already-working path stays
- * byte-identical.
+ * The prompt now carries the full session transcript inline, so it must NEVER
+ * ride the command line: on macOS `ARG_MAX` is ~256 KB and a real transcript
+ * blows past that, and on a Windows `.cmd` shim cmd.exe would expand
+ * `%VAR%`/metacharacters in it. So on every platform the prompt is delivered
+ * over stdin (`input`) and only the fixed flags — never session text — are
+ * passed as args. stdout is piped so the worker can capture the summary the
+ * agent emits there (it no longer writes a file). Windows `.cmd`/`.bat` shims
+ * still need a shell to spawn; everything else runs shell-less.
  */
 export function buildClaudeInvocation(claudeBin: string, prompt: string): ClaudeInvocation {
-  if (binNeedsShell(claudeBin)) {
-    return {
-      file: claudeBin,
-      args: ["-p", ...CLAUDE_FLAGS],
-      options: { input: prompt, stdio: ["pipe", "pipe", "pipe"], shell: true },
-    };
-  }
   return {
     file: claudeBin,
-    args: ["-p", prompt, ...CLAUDE_FLAGS],
-    options: { stdio: ["ignore", "pipe", "pipe"] },
+    args: ["-p", ...CLAUDE_FLAGS],
+    options: {
+      input: prompt,
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: binNeedsShell(claudeBin),
+    },
   };
 }
 

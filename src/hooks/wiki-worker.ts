@@ -7,13 +7,14 @@
  * Invoked by session-end.ts as: node wiki-worker.js <config.json>
  */
 
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { buildClaudeInvocation } from "./wiki-worker-spawn.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { utcTimestamp, log as _log } from "../utils/debug.js";
 import { deeplakeClientHeader } from "../utils/client-header.js";
+import { sqlIdent } from "../utils/sql.js";
 
 const dlog = (msg: string) => _log("wiki-worker", msg);
 import { finalizeSummary, releaseLock } from "./summary-state.js";
@@ -41,8 +42,21 @@ interface WorkerConfig {
 
 const cfg: WorkerConfig = JSON.parse(readFileSync(process.argv[2], "utf-8"));
 const tmpDir = cfg.tmpDir;
-const tmpJsonl = join(tmpDir, "session.jsonl");
-const tmpSummary = join(tmpDir, "summary.md");
+
+/** Hard cap on the model-emitted summary we will persist. The prompt targets
+ * <4000 chars; this generous ceiling bounds a prompt-injected runaway output
+ * before it reaches the memory table. */
+const MAX_SUMMARY_CHARS = 100_000;
+
+/** Sanitize the summary the agent emitted on stdout before we trust it:
+ * strip NUL + non-printable control chars (keep tab/newline/CR) and cap the
+ * length. The session content driving the summary is attacker-influenceable,
+ * and the agent has no tools, so the only residual risk is malformed/oversized
+ * text — this neutralizes it. */
+function sanitizeSummary(raw: string): string {
+  const cleaned = raw.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+  return cleaned.length > MAX_SUMMARY_CHARS ? cleaned.slice(0, MAX_SUMMARY_CHARS) : cleaned;
+}
 
 function wlog(msg: string): void {
   try {
@@ -133,8 +147,12 @@ async function main(): Promise<void> {
     // Retry on an empty result: the async capture writes (or Deeplake read
     // consistency) may simply be lagging behind SessionEnd under load.
     wlog("fetching session events");
+    // Config-driven identifiers are interpolated raw into the Deeplake SQL
+    // API (no parameterized queries) — validate them as SQL identifiers.
+    const sessionsTable = sqlIdent(cfg.sessionsTable);
+    const memoryTable = sqlIdent(cfg.memoryTable);
     const fetchEvents = () => query(
-      `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
+      `SELECT message, creation_date FROM "${sessionsTable}" ` +
       `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
     );
     let rows = await fetchEvents();
@@ -153,7 +171,7 @@ async function main(): Promise<void> {
       wlog("no session events after retries — removing orphan placeholder");
       try {
         await query(
-          `DELETE FROM "${cfg.memoryTable}" ` +
+          `DELETE FROM "${memoryTable}" ` +
           `WHERE path = '${esc(`/summaries/${cfg.userName}/${cfg.sessionId}.md`)}' ` +
           `AND description = 'in progress'`
         );
@@ -171,58 +189,88 @@ async function main(): Promise<void> {
 
     // Derive the server path
     const pathRows = await query(
-      `SELECT DISTINCT path FROM "${cfg.sessionsTable}" ` +
+      `SELECT DISTINCT path FROM "${sessionsTable}" ` +
       `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`
     );
     const jsonlServerPath = pathRows.length > 0
       ? pathRows[0].path as string
       : `/sessions/unknown/${cfg.sessionId}.jsonl`;
 
-    writeFileSync(tmpJsonl, jsonlContent);
     wlog(`found ${jsonlLines} events at ${jsonlServerPath}`);
 
     // 2. Check for existing summary in memory table (resumed session)
     let prevOffset = 0;
+    let existingSummary = "";
     try {
       const sumRows = await query(
-        `SELECT summary FROM "${cfg.memoryTable}" ` +
+        `SELECT summary FROM "${memoryTable}" ` +
         `WHERE path = '${esc(`/summaries/${cfg.userName}/${cfg.sessionId}.md`)}' LIMIT 1`
       );
       if (sumRows.length > 0 && sumRows[0]["summary"]) {
         const existing = sumRows[0]["summary"] as string;
         const match = existing.match(/\*\*JSONL offset\*\*:\s*(\d+)/);
         if (match) prevOffset = parseInt(match[1], 10);
-        writeFileSync(tmpSummary, existing);
+        // Held in memory as the baseline for the skip-on-no-change guard and
+        // inlined into the prompt for the agent to merge onto.
+        existingSummary = existing;
         wlog(`existing summary found, offset=${prevOffset}`);
       }
     } catch { /* no existing summary */ }
 
-    // 3. Build prompt and run claude -p
+    // 3. Build prompt and run claude -p. Scalars are substituted first; the
+    // large, attacker-influenceable blobs (transcript, existing summary) are
+    // injected LAST via function replacements so their literal `$`/placeholder
+    // bytes can't be reinterpreted by a later replace pass.
     const prompt = cfg.promptTemplate
-      .replace(/__JSONL__/g, tmpJsonl)
-      .replace(/__SUMMARY__/g, tmpSummary)
       .replace(/__SESSION_ID__/g, cfg.sessionId)
       .replace(/__PROJECT__/g, cfg.project)
       .replace(/__PREV_OFFSET__/g, String(prevOffset))
       .replace(/__JSONL_LINES__/g, String(jsonlLines))
-      .replace(/__JSONL_SERVER_PATH__/g, jsonlServerPath);
+      .replace(/__JSONL_SERVER_PATH__/g, jsonlServerPath)
+      .replace(/__EXISTING_SUMMARY__/g, () => existingSummary || "(none — generate from scratch)")
+      .replace(/__JSONL_CONTENT__/g, () => jsonlContent);
 
     wlog("running claude -p");
+    let execSucceeded = false;
+    // The summary lives entirely in memory: the agent emits it on stdout (it
+    // has no Write tool), we sanitize it, and we own the upload. No tmp file is
+    // written or read back, which also removes any check-then-use race.
+    let producedSummary: string | null = null;
     try {
       const inv = buildClaudeInvocation(cfg.claudeBin, prompt);
-      execFileSync(inv.file, inv.args, {
+      const stdout = execFileSync(inv.file, inv.args, {
         ...inv.options,
         timeout: 120_000,
+        maxBuffer: 16 * 1024 * 1024,
         env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" },
       });
+      const summaryText = sanitizeSummary((stdout ?? "").toString());
+      if (summaryText.trim()) producedSummary = summaryText;
+      execSucceeded = true;
       wlog("claude -p exited (code 0)");
     } catch (e: any) {
       wlog(`claude -p failed: ${e.status ?? e.message}`);
     }
 
-    // 4. Upload summary to memory table
-    if (existsSync(tmpSummary)) {
-      const text = readFileSync(tmpSummary, "utf-8");
+    // 4. Upload summary to memory table. Prefer the freshly produced summary;
+    // fall back to the existing one (resumed session) only to drive the
+    // skip-on-no-change guard below.
+    const baseline = existingSummary || null;
+    const text = producedSummary ?? baseline;
+    if (text) {
+      // If claude -p failed without producing a new summary on a resumed
+      // session, re-uploading the unchanged existing summary and calling
+      // finalizeSummary would advance the JSONL offset, marking new events as
+      // summarized when they never were. Skip the upload in that case;
+      // SessionEnd's later run reconstructs the delta from the offset embedded
+      // in the summary body. Matches the guard in src/hooks/codex/wiki-worker.ts.
+      const summaryChanged = baseline === null
+        ? text.trim().length > 0
+        : text !== baseline;
+      if (!execSucceeded && !summaryChanged) {
+        wlog("claude -p failed without producing a new summary; skipping upload");
+        return;
+      }
       if (text.trim()) {
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;

@@ -24,6 +24,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { assertValidSkillName, parseFrontmatter, type SkillFrontmatter } from "./skill-writer.js";
+import { sqlIdent } from "../utils/sql.js";
 import type { InstallLocation } from "./scope-config.js";
 import { entriesForRoot, loadManifest, pruneOrphanedEntries, recordPull } from "./manifest.js";
 import { detectAgentSkillsRoots } from "./agent-roots.js";
@@ -139,7 +140,7 @@ export function buildPullSql(args: {
     `SELECT name, project, project_key, body, version, source_agent, scope, ` +
     `author, ${contributorsCol}description, trigger_text, source_sessions, install, ` +
     `created_at, updated_at ` +
-    `FROM "${args.tableName}"${whereClause} ` +
+    `FROM "${sqlIdent(args.tableName)}"${whereClause} ` +
     `ORDER BY project_key ASC, name ASC, version DESC`
   );
 }

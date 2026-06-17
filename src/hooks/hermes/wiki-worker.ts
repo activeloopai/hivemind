@@ -22,6 +22,7 @@ import { log as _log } from "../../utils/debug.js";
 import { EmbedClient } from "../../embeddings/client.js";
 import { embeddingsDisabled } from "../../embeddings/disable.js";
 import { deeplakeClientHeader } from "../../utils/client-header.js";
+import { sqlIdent } from "../../utils/sql.js";
 
 const dlog = (msg: string) => _log("hermes-wiki-worker", msg);
 
@@ -115,8 +116,12 @@ async function main(): Promise<void> {
   try {
     // 1. Fetch session events from sessions table
     wlog("fetching session events");
+    // Config-driven identifiers are interpolated raw into the Deeplake SQL
+    // API (no parameterized queries) — validate them as SQL identifiers.
+    const sessionsTable = sqlIdent(cfg.sessionsTable);
+    const memoryTable = sqlIdent(cfg.memoryTable);
     const rows = await query(
-      `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
+      `SELECT message, creation_date FROM "${sessionsTable}" ` +
       `WHERE path LIKE E'${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
     );
 
@@ -131,7 +136,7 @@ async function main(): Promise<void> {
     const jsonlLines = rows.length;
 
     const pathRows = await query(
-      `SELECT DISTINCT path FROM "${cfg.sessionsTable}" ` +
+      `SELECT DISTINCT path FROM "${sessionsTable}" ` +
       `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`
     );
     const jsonlServerPath = pathRows.length > 0
@@ -145,7 +150,7 @@ async function main(): Promise<void> {
     let prevOffset = 0;
     try {
       const sumRows = await query(
-        `SELECT summary FROM "${cfg.memoryTable}" ` +
+        `SELECT summary FROM "${memoryTable}" ` +
         `WHERE path = '${esc(`/summaries/${cfg.userName}/${cfg.sessionId}.md`)}' LIMIT 1`
       );
       if (sumRows.length > 0 && sumRows[0]["summary"]) {
@@ -168,6 +173,8 @@ async function main(): Promise<void> {
       .replace(/__JSONL_SERVER_PATH__/g, jsonlServerPath);
 
     wlog(`running hermes -z (provider=${cfg.hermesProvider}, model=${cfg.hermesModel})`);
+    let execSucceeded = false;
+    const summaryBeforeExec = existsSync(tmpSummary) ? readFileSync(tmpSummary, "utf-8") : null;
     try {
       // hermes -z (--oneshot) is the non-interactive mode. --yolo
       // auto-approves tool use within the spawned hermes process.
@@ -189,6 +196,7 @@ async function main(): Promise<void> {
         timeout: 120_000,
         env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" },
       });
+      execSucceeded = true;
       wlog("hermes -z exited (code 0)");
     } catch (e: any) {
       wlog(`hermes -z failed: ${e.status ?? e.message}`);
@@ -197,6 +205,19 @@ async function main(): Promise<void> {
     // 4. Upload summary to memory table
     if (existsSync(tmpSummary)) {
       const text = readFileSync(tmpSummary, "utf-8");
+      // A resumed session pre-seeds tmpSummary with the existing summary. If
+      // the agent run failed without rewriting it, re-uploading the unchanged
+      // summary and calling finalizeSummary advances the JSONL offset, marking
+      // new events as summarized when they never were. Skip the upload in that
+      // case; SessionEnd's later run reconstructs the delta from the offset in
+      // the summary body. Matches src/hooks/codex/wiki-worker.ts.
+      const summaryChanged = summaryBeforeExec === null
+        ? text.trim().length > 0
+        : text !== summaryBeforeExec;
+      if (!execSucceeded && !summaryChanged) {
+        wlog("hermes -z failed without producing a new summary; skipping upload");
+        return;
+      }
       if (text.trim()) {
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;

@@ -25,7 +25,7 @@
  * reformat it — the gate is responsible for shape.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -113,6 +113,21 @@ export function assertValidSkillName(name: string): void {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) {
     throw new Error(`invalid skill name: must be kebab-case (lowercase a-z, 0-9, hyphen): ${name}`);
   }
+}
+
+/**
+ * Write `text` to `path` atomically: stage to a unique sibling .tmp file
+ * and rename into place. A crash mid-write then leaves either the prior
+ * file or the complete new one, never a torn SKILL.md. This matters most
+ * for writeNewSkill: a half-written fresh file would otherwise wedge the
+ * skill permanently, since writeNewSkill always throws "already exists"
+ * on a subsequent run and can never self-heal the corruption. Mirrors the
+ * tmp+rename discipline already used by manifest.ts and state.ts.
+ */
+function atomicWriteFile(path: string, text: string): void {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, text);
+  renameSync(tmp, path);
 }
 
 function skillDir(skillsRoot: string, name: string): string {
@@ -217,7 +232,7 @@ export function writeNewSkill(args: WriteSkillArgs): SkillWriteResult {
     updated_at: now,
   };
   const text = `${renderFrontmatter(fm)}\n\n${args.body.trim()}\n`;
-  writeFileSync(path, text);
+  atomicWriteFile(path, text);
   return {
     path, action: "created", version: 1,
     createdAt: now, updatedAt: now,
@@ -268,7 +283,7 @@ export function mergeSkill(args: MergeSkillArgs): SkillWriteResult {
     updated_at: now,
   };
   const text = `${renderFrontmatter(fm)}\n\n${args.body.trim()}\n`;
-  writeFileSync(path, text);
+  atomicWriteFile(path, text);
   return {
     path, action: "merged", version: fm.version,
     createdAt: fm.created_at, updatedAt: fm.updated_at,

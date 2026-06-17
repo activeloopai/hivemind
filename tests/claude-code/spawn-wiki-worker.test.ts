@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { spawnWikiWorker, bundleDirFromImportMeta, findClaudeBin } from "../../src/hooks/spawn-wiki-worker.js";
@@ -176,6 +176,35 @@ describe("spawnWikiWorker (claude-code) — plugin_version threading", () => {
     const cfg = readSpawnedConfig();
     expect(cfg.pluginVersion).toBe("");
   });
+
+  // The spawn config.json carries the Activeloop token in cleartext and is
+  // staged in the shared, predictable tmpdir. Its parent dir must be 0o700 and
+  // the file itself 0o600 so no other user on the host can read the token.
+  // POSIX-only: Windows ignores Unix mode bits.
+  it.skipIf(process.platform === "win32")(
+    "writes the token config 0o600 inside a 0o700 dir (no group/other access)",
+    () => {
+      const { bundleDir } = plantBundle(".claude-plugin");
+      spawnWikiWorker({
+        config: fakeConfig(),
+        sessionId: "s-mode",
+        cwd: "/work/x",
+        bundleDir,
+        reason: "TestSpawn",
+      });
+      expect(spawnCalls).toHaveLength(1);
+      const configPath = spawnCalls[0].args[1] as string;
+
+      const fileMode = statSync(configPath).mode & 0o777;
+      expect(fileMode).toBe(0o600);
+      // Defense-in-depth: explicitly assert no group/other bits leaked.
+      expect(fileMode & 0o077).toBe(0);
+
+      const dirMode = statSync(dirname(configPath)).mode & 0o777;
+      expect(dirMode).toBe(0o700);
+      expect(dirMode & 0o077).toBe(0);
+    },
+  );
 
   it("spawns the node binary directly (NOT nohup) with worker + config path", () => {
     const { bundleDir } = plantBundle(".claude-plugin");

@@ -14,6 +14,7 @@
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { utcTimestamp } from "../utils/debug.js";
+import { sqlIdent } from "../utils/sql.js";
 import { deeplakeClientHeader } from "../utils/client-header.js";
 import { extractPairs, SessionRow, Pair } from "./extractors/index.js";
 import {
@@ -193,7 +194,7 @@ async function listCandidateSessions(lastDate: string | null): Promise<{ path: s
   const dateClause = lastDate ? ` AND creation_date > '${esc(lastDate)}'` : "";
   const sql =
     `SELECT path, MAX(creation_date) AS last_msg ` +
-    `FROM "${cfg.sessionsTable}" ` +
+    `FROM "${sqlIdent(cfg.sessionsTable)}" ` +
     `WHERE project = '${esc(cfg.project)}'${authorClause()}${dateClause} ` +
     `GROUP BY path ` +
     `ORDER BY last_msg DESC ` +
@@ -211,7 +212,7 @@ function isCurrentSession(path: string): boolean {
 async function fetchSessionRows(path: string): Promise<SessionRow[]> {
   const rows = await query(
     `SELECT message, creation_date, agent ` +
-    `FROM "${cfg.sessionsTable}" ` +
+    `FROM "${sqlIdent(cfg.sessionsTable)}" ` +
     `WHERE path = '${esc(path)}' ` +
     `ORDER BY creation_date ASC`
   );

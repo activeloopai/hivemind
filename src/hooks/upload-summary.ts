@@ -10,6 +10,7 @@
 
 import { randomUUID } from "node:crypto";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
+import { sqlIdent } from "../utils/sql.js";
 
 export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
 
@@ -70,6 +71,9 @@ export function extractDescription(text: string): string {
  */
 export async function uploadSummary(query: QueryFn, params: UploadParams): Promise<UploadResult> {
   const { tableName, vpath, fname, userName, project, agent, text } = params;
+  // tableName is config-driven (HIVEMIND_TABLE) and interpolated raw into the
+  // Deeplake SQL API, which has no parameterized queries — validate it.
+  const tbl = sqlIdent(tableName);
   const ts = params.ts ?? new Date().toISOString();
   const desc = extractDescription(text);
   const sizeBytes = Buffer.byteLength(text);
@@ -78,7 +82,7 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
   const pluginVersion = params.pluginVersion;
 
   const existing = await query(
-    `SELECT path FROM "${tableName}" WHERE path = '${esc(vpath)}' LIMIT 1`
+    `SELECT path FROM "${tbl}" WHERE path = '${esc(vpath)}' LIMIT 1`
   );
 
   if (existing.length > 0) {
@@ -91,7 +95,7 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
       ? ""
       : `plugin_version = '${esc(pluginVersion)}', `;
     const sql =
-      `UPDATE "${tableName}" SET ` +
+      `UPDATE "${tbl}" SET ` +
       `summary = E'${esc(text)}', ` +
       `summary_embedding = ${embSql}, ` +
       `size_bytes = ${sizeBytes}, ` +
@@ -106,7 +110,7 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
   // INSERT path: new row, no previous value to preserve — default to ''.
   const pluginVersionForInsert = pluginVersion ?? "";
   const sql =
-    `INSERT INTO "${tableName}" (id, path, filename, summary, summary_embedding, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
+    `INSERT INTO "${tbl}" (id, path, filename, summary, summary_embedding, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
     `VALUES ('${randomUUID()}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', ${embSql}, '${esc(userName)}', 'text/markdown', ` +
     `${sizeBytes}, '${esc(project)}', E'${esc(desc)}', '${esc(agent)}', '${esc(pluginVersionForInsert)}', '${ts}', '${ts}')`;
   await query(sql);

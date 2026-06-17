@@ -89,6 +89,17 @@ describe("listSkillInvocations", () => {
       { sessionId: "S2", name: "pg-debug", author: "sasun", ts: "t2" },
     ]);
   });
+
+  // Sweep C-series sqlIdent hardening: the sessions table name is interpolated
+  // as a bare SQL identifier (the Deeplake endpoint can't parameterize it), so
+  // a non-identifier table must throw before any query is dispatched.
+  it("rejects a non-identifier sessions table before dispatching any query", async () => {
+    const { fn, calls } = mockQuery([]);
+    await expect(
+      listSkillInvocations(fn, 'sessions"; DROP TABLE sessions; --', { limit: 1 }),
+    ).rejects.toThrow(/Invalid SQL identifier/);
+    expect(calls).toHaveLength(0);
+  });
 });
 
 describe("windowAroundInvocation", () => {

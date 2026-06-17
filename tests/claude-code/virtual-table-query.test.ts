@@ -262,6 +262,48 @@ describe("virtual-table-query", () => {
     expect(String(api.query.mock.calls[0]?.[0])).toContain("path LIKE '/summaries/a/%'");
   });
 
+  // ── Config-driven table-identifier injection guard (sqlIdent) ─────────────
+  // memoryTable / sessionsTable come from HIVEMIND_TABLE / HIVEMIND_SESSIONS_TABLE
+  // config and are interpolated raw into the Deeplake SQL API (no parameterized
+  // queries). They must be validated with sqlIdent BEFORE any query is built, so
+  // a malicious identifier can never reach the wire. These lock that guard for
+  // every exported entrypoint that interpolates a table name.
+  describe("rejects malicious table identifiers before querying", () => {
+    const EVIL = `memory" UNION SELECT token FROM secrets; --`;
+
+    it("readVirtualPathContents throws and never dispatches a query", async () => {
+      const api = { query: vi.fn() } as any;
+      await expect(
+        readVirtualPathContents(api, EVIL, "sessions", ["/summaries/a.md"]),
+      ).rejects.toThrow(/Invalid SQL identifier/);
+      expect(api.query).not.toHaveBeenCalled();
+    });
+
+    it("readVirtualPathContents validates the sessions table too", async () => {
+      const api = { query: vi.fn() } as any;
+      await expect(
+        readVirtualPathContents(api, "memory", EVIL, ["/summaries/a.md"]),
+      ).rejects.toThrow(/Invalid SQL identifier/);
+      expect(api.query).not.toHaveBeenCalled();
+    });
+
+    it("listVirtualPathRowsForDirs throws and never dispatches a query", async () => {
+      const api = { query: vi.fn() } as any;
+      await expect(
+        listVirtualPathRowsForDirs(api, EVIL, "sessions", ["/summaries"]),
+      ).rejects.toThrow(/Invalid SQL identifier/);
+      expect(api.query).not.toHaveBeenCalled();
+    });
+
+    it("findVirtualPaths throws and never dispatches a query", async () => {
+      const api = { query: vi.fn() } as any;
+      await expect(
+        findVirtualPaths(api, "memory", EVIL, "/summaries", "%.md"),
+      ).rejects.toThrow(/Invalid SQL identifier/);
+      expect(api.query).not.toHaveBeenCalled();
+    });
+  });
+
   // ── Regression coverage: /index.md must list session files too ───────────
   //
   // Bug: in workspaces where the `memory` table is empty or dropped (e.g. the

@@ -314,6 +314,36 @@ describe("DeeplakeApi.createIndex", () => {
   });
 });
 
+// ── sqlIdent identifier guards (sweep C-series SQL-injection hardening) ──────
+// The repo sweep wired sqlIdent() onto the config/caller-driven identifiers
+// (table names, column keys) that the Deeplake HTTP endpoint cannot
+// parameterize. sqlIdent itself is unit-tested in tests/claude-code/sql.test.ts;
+// these tests lock the *wiring* on the shared write paths: a non-identifier
+// must throw "Invalid SQL identifier" BEFORE any query is dispatched.
+describe("DeeplakeApi sqlIdent identifier guards", () => {
+  it("updateColumns rejects a non-identifier column key and dispatches no query", async () => {
+    const api = makeApi();
+    await expect(
+      api.updateColumns("/test.md", { "size_bytes = 0, summary = E'x'": 1 }),
+    ).rejects.toThrow(/Invalid SQL identifier/);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("updateColumns rejects a non-identifier table name and dispatches no query", async () => {
+    const api = makeApi('memory"; DROP TABLE memory; --');
+    await expect(
+      api.updateColumns("/test.md", { description: "ok" }),
+    ).rejects.toThrow(/Invalid SQL identifier/);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("createIndex rejects a non-identifier column and dispatches no query", async () => {
+    const api = makeApi();
+    await expect(api.createIndex('summary" ("x')).rejects.toThrow(/Invalid SQL identifier/);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
 // ── listTables ──────────────────────────────────────────────────────────────
 
 describe("DeeplakeApi.listTables", () => {

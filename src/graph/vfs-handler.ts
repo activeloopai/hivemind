@@ -187,6 +187,16 @@ function loadSnapshotOrError(
   // out and the user got "No local graph" even right after a successful
   // build in a loose source directory.
   const fileBase = last.commit_sha ?? last.snapshot_sha256;
+  // Path-traversal defence (mirrors src/graph/session-context.ts).
+  // readLastBuild does NOT validate hash *shape* — a tampered
+  // .last-build.json with a shape-valid string but a value like
+  // "../../../etc/foo" (or embedded "/" / "..") would escape the
+  // snapshots/ dir and let an arbitrary *.json file be read and rendered
+  // into agent context. The canonical writer always emits 40-char or
+  // 64-char hex, so legitimate files always pass. Reject anything else.
+  if (!/^[0-9a-f]{4,64}$/.test(fileBase)) {
+    return { kind: "no-graph", message: "Last-build metadata is invalid (non-hex snapshot id)." };
+  }
   const snapPath = join(baseDir, "snapshots", `${fileBase}.json`);
   if (!existsSync(snapPath)) {
     return { kind: "no-graph", message: `Snapshot file missing on disk: ${snapPath}` };

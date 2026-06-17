@@ -20,7 +20,7 @@ import { loadCredentials } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { isMissingTableError } from "../deeplake-schema.js";
-import { sqlStr, sqlLike } from "../utils/sql.js";
+import { sqlStr, sqlLike, sqlIdent } from "../utils/sql.js";
 import { searchDeeplakeTables, buildGrepSearchOptions, normalizeContent, TRUNCATION_NOTICE, type GrepMatchParams } from "../shell/grep-core.js";
 import { getVersion } from "../cli/version.js";
 
@@ -129,7 +129,7 @@ server.registerTool(
     const column = isSession ? "message::text" : "summary::text";
 
     try {
-      const sql = `SELECT path, ${column} AS content FROM "${table}" WHERE path = '${sqlStr(path)}' LIMIT 200`;
+      const sql = `SELECT path, ${column} AS content FROM "${sqlIdent(table)}" WHERE path = '${sqlStr(path)}' LIMIT 200`;
       const rows = await ctx.api.query(sql);
       if (rows.length === 0) return errorResult(`No content found at ${path}.`);
       const text = rows.map(r => normalizeContent(String(r["path"]), String(r["content"] ?? ""))).join("\n");
@@ -162,9 +162,8 @@ server.registerTool(
     const where = prefix
       ? `WHERE path LIKE '${sqlLike(prefix)}%' ESCAPE '\\'`
       : `WHERE path LIKE '/summaries/%'`;
-    const sql = `SELECT path, description, project, last_update_date FROM "${ctx.memoryTable}" ${where} ORDER BY last_update_date DESC LIMIT ${limit ?? 50}`;
-
     try {
+      const sql = `SELECT path, description, project, last_update_date FROM "${sqlIdent(ctx.memoryTable)}" ${where} ORDER BY last_update_date DESC LIMIT ${limit ?? 50}`;
       const rows = await ctx.api.query(sql);
       if (rows.length === 0) return errorResult("No summaries found.");
       const lines = rows.map(r => {

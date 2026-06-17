@@ -1,5 +1,5 @@
 import type { DeeplakeApi } from "../deeplake-api.js";
-import { sqlLike, sqlStr } from "../utils/sql.js";
+import { sqlIdent, sqlLike, sqlStr } from "../utils/sql.js";
 import { normalizeContent } from "../shell/grep-core.js";
 
 type Row = Record<string, unknown>;
@@ -156,11 +156,17 @@ export async function readVirtualPathContents(
   const result = new Map<string, string | null>(uniquePaths.map(path => [path, null]));
   if (uniquePaths.length === 0) return result;
 
+  // Config-driven identifiers (HIVEMIND_TABLE / HIVEMIND_SESSIONS_TABLE) are
+  // interpolated raw into the Deeplake SQL API, which has no parameterized
+  // queries — validate them as identifiers, same guard as DeeplakeApi.
+  const mt = sqlIdent(memoryTable);
+  const st = sqlIdent(sessionsTable);
+
   const inList = buildInList(uniquePaths);
   const rows = await queryUnionRows(
     api,
-    `SELECT path, summary::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path IN (${inList})`,
-    `SELECT path, message::text AS content, NULL::bigint AS size_bytes, COALESCE(creation_date::text, '') AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path IN (${inList})`,
+    `SELECT path, summary::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${mt}" WHERE path IN (${inList})`,
+    `SELECT path, message::text AS content, NULL::bigint AS size_bytes, COALESCE(creation_date::text, '') AS creation_date, 1 AS source_order FROM "${st}" WHERE path IN (${inList})`,
   );
 
   const memoryHits = new Map<string, string>();
@@ -201,12 +207,12 @@ export async function readVirtualPathContents(
     const fetchLimit = INDEX_LIMIT_PER_SECTION + 1;
     const [summaryRows, sessionRows] = await Promise.all([
       api.query(
-        `SELECT path, project, description, creation_date, last_update_date FROM "${memoryTable}" ` +
+        `SELECT path, project, description, creation_date, last_update_date FROM "${mt}" ` +
         `WHERE path LIKE '/summaries/%' ORDER BY last_update_date DESC LIMIT ${fetchLimit}`
       ).catch(() => [] as Row[]),
       api.query(
         `SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date ` +
-        `FROM "${sessionsTable}" WHERE path LIKE '/sessions/%' ` +
+        `FROM "${st}" WHERE path LIKE '/sessions/%' ` +
         `GROUP BY path ORDER BY MAX(last_update_date) DESC LIMIT ${fetchLimit}`
       ).catch(() => [] as Row[]),
     ]);
@@ -233,10 +239,12 @@ export async function listVirtualPathRowsForDirs(
 ): Promise<Map<string, Row[]>> {
   const uniqueDirs = [...new Set(dirs.map(dir => dir.replace(/\/+$/, "") || "/"))];
   const filter = buildDirFilter(uniqueDirs);
+  const mt = sqlIdent(memoryTable);
+  const st = sqlIdent(sessionsTable);
   const rows = await queryUnionRows(
     api,
-    `SELECT path, NULL::text AS content, size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}"${filter}`,
-    `SELECT path, NULL::text AS content, size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}"${filter}`,
+    `SELECT path, NULL::text AS content, size_bytes, '' AS creation_date, 0 AS source_order FROM "${mt}"${filter}`,
+    `SELECT path, NULL::text AS content, size_bytes, '' AS creation_date, 1 AS source_order FROM "${st}"${filter}`,
   );
 
   const deduped = dedupeRowsByPath(rows.map((row) => ({
@@ -286,10 +294,12 @@ export async function findVirtualPaths(
 ): Promise<string[]> {
   const normalizedDir = dir.replace(/\/+$/, "") || "/";
   const likePath = `${sqlLike(normalizedDir === "/" ? "" : normalizedDir)}/%`;
+  const mt = sqlIdent(memoryTable);
+  const st = sqlIdent(sessionsTable);
   const rows = await queryUnionRows(
     api,
-    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
-    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
+    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${mt}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
+    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${st}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
   );
 
   return [...new Set(

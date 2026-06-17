@@ -114,8 +114,8 @@ export async function fetchBackendNotifications(
     }
     log(`fetched ${out.length} backend notification(s) from ${apiUrl}`);
     return out;
-  } catch (e: any) {
-    log(`fetch ${url} failed: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    log(`fetch ${url} failed: ${e instanceof Error ? e.message : String(e)}`);
     return [];
   } finally {
     clearTimeout(timeoutHandle);

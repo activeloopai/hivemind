@@ -14,7 +14,11 @@ interface QueryCacheDeps {
 
 export function getSessionQueryCacheDir(sessionId: string, deps: QueryCacheDeps = {}): string {
   const { cacheRoot = DEFAULT_CACHE_ROOT } = deps;
-  return join(cacheRoot, sessionId);
+  // Sanitize the harness-supplied session id before using it as a path
+  // segment: an id containing `..` or `/` would otherwise let `join` resolve
+  // the cache dir outside cacheRoot. Mirrors writeReadCacheFile's guard.
+  const safeSessionId = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
+  return join(cacheRoot, safeSessionId);
 }
 
 export function clearSessionQueryCache(sessionId: string, deps: QueryCacheDeps = {}): void {

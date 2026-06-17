@@ -16,11 +16,13 @@ import { join } from "node:path";
  *   - summary-state (finalizeSummary + releaseLock)
  *   - upload-summary (uploadSummary)
  *
- * fs stays real: the worker writes the reconstructed JSONL and the
- * summary markdown to the tmp dir, and main() reads the summary back
- * after claude -p has "written" it. The execFileSync mock simulates
- * claude by writing the summary file directly, which is how the real
- * binary behaves from the worker's perspective.
+ * fs stays real for the summary tmp file: the worker captures the agent's
+ * STDOUT (the execFileSync return value), sanitizes it, and writes it to the
+ * tmp summary itself, then reads it back to upload. The execFileSync mock
+ * therefore simulates claude by RETURNING the summary text as stdout (a
+ * Buffer), which is how the real binary behaves under the stdout pivot. The
+ * session transcript is inlined into the prompt (delivered over stdin), so
+ * the prompt is asserted via the call's options.input, not its argv.
  */
 
 const finalizeSummaryMock = vi.fn();
@@ -70,7 +72,7 @@ const defaultConfig = () => ({
   claudeBin: "/fake/claude",
   wikiLog: join(hooksDir, "wiki.log"),
   hooksDir,
-  promptTemplate: "JSONL=__JSONL__ SUMMARY=__SUMMARY__ SID=__SESSION_ID__ PROJ=__PROJECT__ OFFSET=__PREV_OFFSET__ LINES=__JSONL_LINES__ SRC=__JSONL_SERVER_PATH__",
+  promptTemplate: "SID=__SESSION_ID__ PROJ=__PROJECT__ OFFSET=__PREV_OFFSET__ LINES=__JSONL_LINES__ SRC=__JSONL_SERVER_PATH__ EXISTING=[__EXISTING_SUMMARY__] CONTENT=[__JSONL_CONTENT__]",
 });
 
 function writeConfig(overrides: Partial<ReturnType<typeof defaultConfig>> = {}): void {
@@ -198,8 +200,8 @@ describe("wiki-worker — no events", () => {
       // path lookup + existing-summary lookup → empty is fine
       return jsonResp({ columns: [], rows: [] });
     });
-    // claude -p "writes" the summary file the worker reads back.
-    execFileSyncMock.mockImplementation(() => { writeFileSync(join(tmpDir, "summary.md"), "real summary body"); });
+    // claude -p emits the summary on stdout; the worker persists it.
+    execFileSyncMock.mockImplementation(() => Buffer.from("real summary body"));
 
     await runWorker();
     // Allow the backoff-0 setTimeout retries to flush.
@@ -248,45 +250,36 @@ describe("wiki-worker — happy path", () => {
 
   it("fetches events, writes JSONL, runs claude -p, uploads, finalizes, releases", async () => {
     mkFetch();
-    let capturedJsonl: string | null = null;
-    // Simulate claude -p producing a summary file. We also snapshot the
-    // reconstructed JSONL here because cleanup() will rmSync tmpDir
-    // before the test can read it back from disk.
-    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      const promptIdx = args.indexOf("-p") + 1;
-      const prompt = args[promptIdx];
-      const jsonlPath = prompt.match(/JSONL=(\S+)/)![1];
-      capturedJsonl = readFileSync(jsonlPath, "utf-8");
-      const summaryPath = prompt.match(/SUMMARY=(\S+)/)![1];
-      writeFileSync(summaryPath, "# Session sid-worker\n\n## What Happened\nStuff happened.\n");
-      return Buffer.from("");
-    });
+    // Simulate claude -p emitting the summary on stdout.
+    execFileSyncMock.mockImplementation(() =>
+      Buffer.from("# Session sid-worker\n\n## What Happened\nStuff happened.\n"));
     await runWorker();
 
-    // JSONL was written with the two events joined (captured before cleanup)
-    expect(capturedJsonl).not.toBeNull();
-    expect(capturedJsonl!.split("\n")).toHaveLength(2);
-
-    // claude -p was called with the prompt template expanded
+    // claude -p was called once, prompt delivered over stdin (not argv)
     expect(execFileSyncMock).toHaveBeenCalledTimes(1);
     const calledArgs = execFileSyncMock.mock.calls[0][1] as string[];
     expect(calledArgs[0]).toBe("-p");
     expect(calledArgs).toContain("--no-session-persistence");
     expect(calledArgs).toContain("--model");
     expect(calledArgs).toContain("haiku");
-    expect(calledArgs).toContain("--permission-mode");
-    expect(calledArgs).toContain("bypassPermissions");
+    // Blast-radius collapse: no bypassPermissions, no tools.
+    expect(calledArgs).not.toContain("bypassPermissions");
+    expect(calledArgs).not.toContain("--permission-mode");
+    expect(calledArgs).not.toContain("--allowedTools");
 
-    // Prompt template was expanded with real values
-    const prompt = calledArgs[1];
+    // Prompt (over stdin) was expanded with real values + the inlined transcript
+    const execOpts = execFileSyncMock.mock.calls[0][2];
+    const prompt = execOpts.input as string;
     expect(prompt).toContain("SID=sid-worker");
     expect(prompt).toContain("PROJ=proj");
     expect(prompt).toContain("LINES=2");
     expect(prompt).toContain("OFFSET=0");
     expect(prompt).toContain("SRC=/sessions/alice/alice_org_default_sid-worker.jsonl");
+    // The two session events are inlined into the prompt (the agent reads no file)
+    expect(prompt).toContain('"type":"user_message"');
+    expect(prompt).toContain('"type":"assistant_message"');
 
     // env flags on execFileSync to prevent runaway recursion
-    const execOpts = execFileSyncMock.mock.calls[0][2];
     expect(execOpts.env.HIVEMIND_WIKI_WORKER).toBe("1");
     expect(execOpts.env.HIVEMIND_CAPTURE).toBe("false");
 
@@ -304,29 +297,23 @@ describe("wiki-worker — happy path", () => {
 
   it("parses JSONL offset from an existing summary on a resumed session", async () => {
     mkFetch(undefined, 1, true);
-    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      const summaryPath = args[1].match(/SUMMARY=(\S+)/)![1];
-      writeFileSync(summaryPath, "# Session sid-worker\n\n## What Happened\ndone.\n");
-      return Buffer.from("");
-    });
+    execFileSyncMock.mockImplementation(() =>
+      Buffer.from("# Session sid-worker\n\n## What Happened\ndone.\n"));
     await runWorker();
-    const prompt = execFileSyncMock.mock.calls[0][1][1] as string;
+    const prompt = execFileSyncMock.mock.calls[0][2].input as string;
     expect(prompt).toContain("OFFSET=12");
-    // tmpSummary was pre-seeded with the existing summary so claude -p
-    // can merge on top. Verify the worker did write it.
+    // The existing summary is inlined into the prompt so claude can merge on top.
+    expect(prompt).toContain("EXISTING=[# Session X");
     const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
     expect(log).toContain("existing summary found, offset=12");
   });
 
   it("defaults to /sessions/unknown/ when the path SELECT returns no rows", async () => {
     mkFetch(undefined, 0);
-    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      const summaryPath = args[1].match(/SUMMARY=(\S+)/)![1];
-      writeFileSync(summaryPath, "# Session\n\n## What Happened\nfallback.\n");
-      return Buffer.from("");
-    });
+    execFileSyncMock.mockImplementation(() =>
+      Buffer.from("# Session\n\n## What Happened\nfallback.\n"));
     await runWorker();
-    const prompt = execFileSyncMock.mock.calls[0][1][1] as string;
+    const prompt = execFileSyncMock.mock.calls[0][2].input as string;
     expect(prompt).toContain("SRC=/sessions/unknown/sid-worker.jsonl");
   });
 
@@ -347,17 +334,12 @@ describe("wiki-worker — happy path", () => {
       }
       return jsonResp({ columns: ["summary"], rows: [] });
     });
-    let capturedJsonl: string | null = null;
-    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      const jsonlPath = args[1].match(/JSONL=(\S+)/)![1];
-      capturedJsonl = readFileSync(jsonlPath, "utf-8");
-      const summaryPath = args[1].match(/SUMMARY=(\S+)/)![1];
-      writeFileSync(summaryPath, "x");
-      return Buffer.from("");
-    });
+    execFileSyncMock.mockImplementation(() => Buffer.from("x"));
     await runWorker();
-    expect(capturedJsonl).toContain('"type":"user_message"');
-    expect(capturedJsonl).toContain('"type":"tool_call"');
+    // The JSONB rows are serialized and inlined into the prompt (over stdin).
+    const prompt = execFileSyncMock.mock.calls[0][2].input as string;
+    expect(prompt).toContain('"type":"user_message"');
+    expect(prompt).toContain('"type":"tool_call"');
   });
 });
 
@@ -459,11 +441,7 @@ describe("wiki-worker — finalize + release edge cases", () => {
       if (sql.startsWith("SELECT DISTINCT path")) return jsonResp({ columns: ["path"], rows: [["/x.jsonl"]] });
       return jsonResp({ columns: ["summary"], rows: [] });
     });
-    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      const summaryPath = args[1].match(/SUMMARY=(\S+)/)![1];
-      writeFileSync(summaryPath, "# s\n## What Happened\nX\n");
-      return Buffer.from("");
-    });
+    execFileSyncMock.mockImplementation(() => Buffer.from("# s\n## What Happened\nX\n"));
   });
 
   it("logs sidecar update failure but still releases the lock", async () => {
@@ -482,12 +460,8 @@ describe("wiki-worker — finalize + release edge cases", () => {
     expect(log).toContain("done");
   });
 
-  it("does not upload when the summary file is present but empty", async () => {
-    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      const summaryPath = args[1].match(/SUMMARY=(\S+)/)![1];
-      writeFileSync(summaryPath, "   \n");
-      return Buffer.from("");
-    });
+  it("does not upload when claude emits only whitespace on stdout", async () => {
+    execFileSyncMock.mockImplementation(() => Buffer.from("   \n"));
     await runWorker();
     expect(uploadSummaryMock).not.toHaveBeenCalled();
     expect(finalizeSummaryMock).not.toHaveBeenCalled();

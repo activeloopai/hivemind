@@ -164,4 +164,33 @@ describe("hermes wiki-worker — behavior", () => {
     expect(uploadSummaryMock).not.toHaveBeenCalled();
     expect(releaseLockMock).toHaveBeenCalledWith("sid-hermes");
   });
+
+  it("does not re-upload a stale existing summary after a failed regeneration (resumed session)", async () => {
+    // C3 guard: on a resumed session the worker pre-seeds tmpSummary with the
+    // existing summary (step 2). If hermes fails without rewriting it,
+    // re-uploading the unchanged summary + calling finalizeSummary advances the
+    // JSONL offset, marking unsummarized events as done. The guard must skip the
+    // upload AND the finalize. Mirrors tests/codex/codex-wiki-worker.test.ts.
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT message, creation_date")) {
+        return jsonResp({ columns: ["message", "creation_date"], rows: [[JSON.stringify({ type: "user_message", content: "hi hermes" }), "2026-04-20T00:00:00Z"]] });
+      }
+      if (sql.startsWith("SELECT DISTINCT path")) {
+        return jsonResp({ columns: ["path"], rows: [["/sessions/alice/alice_org_default_sid-hermes.jsonl"]] });
+      }
+      // Resumed session: an existing summary is returned and gets written to
+      // tmpSummary before the (failing) agent run.
+      if (sql.startsWith("SELECT summary FROM")) {
+        return jsonResp({ columns: ["summary"], rows: [["# Session X\n- **JSONL offset**: 7\n\n## What Happened\nprior"]] });
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    execFileSyncMock.mockImplementation(() => { throw new Error("hermes timed out"); });
+    await runWorker();
+    expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+    expect(uploadSummaryMock).not.toHaveBeenCalled();
+    expect(finalizeSummaryMock).not.toHaveBeenCalled();
+    expect(releaseLockMock).toHaveBeenCalledWith("sid-hermes");
+  });
 });

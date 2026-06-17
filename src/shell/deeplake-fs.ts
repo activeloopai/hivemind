@@ -42,7 +42,7 @@ function parentOf(p: string): string {
   return i <= 0 ? "/" : p.slice(0, i);
 }
 
-import { sqlStr as esc } from "../utils/sql.js";
+import { sqlStr as esc, sqlIdent } from "../utils/sql.js";
 
 export function guessMime(filename: string): string {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
@@ -450,7 +450,7 @@ export class DeeplakeFs implements IFileSystem {
       if (r.project !== undefined) setClauses += `, project = '${esc(r.project)}'`;
       if (r.description !== undefined) setClauses += `, description = '${esc(r.description)}'`;
       await this.client.query(
-        `UPDATE "${this.table}" SET ${setClauses} WHERE path = '${p}'`
+        `UPDATE "${sqlIdent(this.table)}" SET ${setClauses} WHERE path = '${p}'`
       );
     } else {
       const id = randomUUID();
@@ -461,7 +461,7 @@ export class DeeplakeFs implements IFileSystem {
         (r.project !== undefined ? `, '${esc(r.project)}'` : "") +
         (r.description !== undefined ? `, '${esc(r.description)}'` : "");
       await this.client.query(
-        `INSERT INTO "${this.table}" (${cols}) VALUES (${vals})`
+        `INSERT INTO "${sqlIdent(this.table)}" (${cols}) VALUES (${vals})`
       );
       this.flushed.add(r.path);
     }
@@ -579,7 +579,7 @@ export class DeeplakeFs implements IFileSystem {
     // most-recent of many" notice.
     const fetchLimit = INDEX_LIMIT_PER_SECTION + 1;
     const summaryRows = await this.client.query(
-      `SELECT path, project, description, creation_date, last_update_date FROM "${this.table}" ` +
+      `SELECT path, project, description, creation_date, last_update_date FROM "${sqlIdent(this.table)}" ` +
       `WHERE path LIKE '${esc("/summaries/")}%' ORDER BY last_update_date DESC LIMIT ${fetchLimit}`
     );
 
@@ -592,7 +592,7 @@ export class DeeplakeFs implements IFileSystem {
       try {
         sessionRows = await this.client.query(
           `SELECT path, MAX(description) AS description, MIN(creation_date) AS creation_date, MAX(last_update_date) AS last_update_date ` +
-          `FROM "${this.sessionsTable}" WHERE path LIKE '${esc("/sessions/")}%' ` +
+          `FROM "${sqlIdent(this.sessionsTable)}" WHERE path LIKE '${esc("/sessions/")}%' ` +
           `GROUP BY path ORDER BY MAX(last_update_date) DESC LIMIT ${fetchLimit}`
         );
       } catch {
@@ -819,6 +819,14 @@ export class DeeplakeFs implements IFileSystem {
 
     // Session files are read-only (multi-row in sessions table, not memory table)
     if (this.sessionPaths.has(p)) throw fsErr("EPERM", "session files are read-only", p);
+
+    // A buffered (unflushed) prior write must land in the DB before the
+    // SQL-level concat below. The UPDATE appends onto the persisted row, so
+    // if the prior write is still pending the row does not exist yet, the
+    // UPDATE matches zero rows, and the appended content is silently dropped
+    // (the common `echo a > f && echo b >> f` idiom would lose "b"). Flushing
+    // the pending write first guarantees the concat lands on a real row.
+    if (this.pending.has(p)) await this.flush();
 
     // Fast path: SQL-level concat — no read-back, O(1) per append
     if (this.files.has(p) || await this.exists(p).catch(() => false)) {

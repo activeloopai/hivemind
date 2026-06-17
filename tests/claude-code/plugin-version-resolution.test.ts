@@ -75,9 +75,10 @@ describe("plugin_version is wired into every agent's capture INSERT", () => {
   it.each(CAPTURE_BUNDLES)("%s INSERT lists plugin_version column", (_label, path) => {
     const src = readFileSync(path, "utf-8");
     // The INSERT into the sessions table must include plugin_version in
-    // its column list. Regex matches the actual concatenated INSERT line
-    // so a typo or column-list drift fails here, not silently in prod.
-    const sessionsInsert = /INSERT INTO\s+"\$\{sessionsTable\}"[^`]*?plugin_version[^`]*?VALUES/;
+    // its column list. Pattern accepts both the legacy "${sessionsTable}"
+    // template literal form and the sqlIdent(sessionsTable) form introduced
+    // by the C3 security sweep (sqlIdent wrapping for table identifiers).
+    const sessionsInsert = /INSERT INTO\s+(?:"\$\{sessionsTable\}"|"\$\{sqlIdent\(sessionsTable\)\}"|\$\{sqlIdent\(sessionsTable\)\})[^`]*?plugin_version[^`]*?VALUES/;
     expect(src).toMatch(sessionsInsert);
   });
 });
@@ -92,7 +93,9 @@ describe("plugin_version is wired into every agent's session-start placeholder I
 
   it.each(PLACEHOLDER_BUNDLES)("%s placeholder INSERT lists plugin_version column", (_label, path) => {
     const src = readFileSync(path, "utf-8");
-    const placeholderInsert = /INSERT INTO\s+"\$\{table\}"[^`]*?plugin_version[^`]*?VALUES/;
+    // Accepts the various table-identifier forms across harnesses:
+    // "${table}", "${tbl}", "${sqlIdent(table)}", "${sqlIdent(tbl)}" etc.
+    const placeholderInsert = /INSERT INTO\s+"\$\{(?:sqlIdent\()?t(?:able|bl)(?:\))?\}"[^`]*?plugin_version[^`]*?VALUES/;
     expect(src).toMatch(placeholderInsert);
   });
 });

@@ -89,8 +89,8 @@ export function parseTranscript(
   let raw: string;
   try {
     raw = readFileSync(transcriptPath, "utf-8");
-  } catch (e: any) {
-    log(`read failed: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    log(`read failed: ${e instanceof Error ? e.message : String(e)}`);
     return empty;
   }
 

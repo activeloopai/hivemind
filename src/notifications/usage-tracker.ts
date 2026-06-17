@@ -52,8 +52,8 @@ export function appendUsageRecord(record: UsageRecord): void {
     ensureStatsDir();
     appendFileSync(statsFilePath(), JSON.stringify(record) + "\n", "utf-8");
     log(`appended record session=${record.sessionId} memBytes=${record.memorySearchBytes} memCount=${record.memorySearchCount}`);
-  } catch (e: any) {
-    log(`appendUsageRecord failed: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    log(`appendUsageRecord failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -96,8 +96,8 @@ export function readUsageRecords(): UsageRecord[] {
       }
     }
     return out;
-  } catch (e: any) {
-    log(`readUsageRecords failed: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    log(`readUsageRecords failed: ${e instanceof Error ? e.message : String(e)}`);
     return [];
   }
 }
@@ -162,8 +162,8 @@ export function countUserGeneratedSkills(userName: string | undefined): number {
       if (idx > 0 && idx + suffix.length === name.length) count += 1;
     }
     return count;
-  } catch (e: any) {
-    log(`countUserGeneratedSkills readdir failed: ${e?.message ?? String(e)}`);
+  } catch (e: unknown) {
+    log(`countUserGeneratedSkills readdir failed: ${e instanceof Error ? e.message : String(e)}`);
     return 0;
   }
 }
