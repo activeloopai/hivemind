@@ -42,7 +42,12 @@ export interface UploadParams {
 }
 
 export interface UploadResult {
-  path: "update" | "insert";
+  /**
+   * Which write path ran. `"skip"` means the finalize-wins guard refused to
+   * overwrite an already-finalized row with a placeholder/stub — no SQL was
+   * sent.
+   */
+  path: "update" | "insert" | "skip";
   sql: string;
   descLength: number;
   summaryLength: number;
@@ -56,10 +61,60 @@ export function esc(s: string): string {
     .replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
+const WHAT_HAPPENED_RE = /## What Happened\n([\s\S]*?)(?=\n##|$)/;
+
 /** Derive the short description from the "## What Happened" section of a wiki summary. */
 export function extractDescription(text: string): string {
-  const match = text.match(/## What Happened\n([\s\S]*?)(?=\n##|$)/);
+  const match = text.match(WHAT_HAPPENED_RE);
   return match ? match[1].trim().slice(0, 300) : "completed";
+}
+
+/**
+ * The SessionStart placeholder sentinel. A row with this description (and no
+ * real summary/embedding) is an unfinalized stub created at SessionStart that
+ * the wiki worker is expected to replace with a real summary.
+ */
+export const PLACEHOLDER_DESCRIPTION = "in progress";
+
+/**
+ * Is `desc` a finalized (real) description? A finalized row has a description
+ * that is non-empty and is NOT the SessionStart placeholder sentinel.
+ *
+ * Proactive recall only surfaces rows where `description <> 'in progress'`
+ * AND `summary <> ''`, so "finalized" here matches exactly what recall needs.
+ */
+export function isFinalizedDescription(desc: unknown): boolean {
+  if (typeof desc !== "string") return false;
+  const d = desc.trim();
+  return d !== "" && d !== PLACEHOLDER_DESCRIPTION;
+}
+
+/**
+ * Is the EXISTING row (`summary`, `description`) a FINALIZED summary — i.e.
+ * one that proactive recall can surface? Requires a non-empty summary body AND
+ * a real (non-placeholder) description. Used as the finalize-wins guard: a
+ * finalized row must never be clobbered back to a placeholder/stub.
+ */
+export function isFinalizedRow(summary: unknown, description: unknown): boolean {
+  const hasSummary = typeof summary === "string" && summary.trim() !== "";
+  return hasSummary && isFinalizedDescription(description);
+}
+
+/**
+ * Does `text` look like a REAL (finalized) wiki summary, as opposed to the
+ * SessionStart placeholder or an empty/content-free stub?
+ *
+ * The wiki worker's prompt always emits a populated "## What Happened" section;
+ * the SessionStart placeholder never does. So the presence of a non-empty
+ * "## What Happened" body is the reliable signal that this write carries a real
+ * summary. `extractDescription`'s "completed" fallback alone is NOT a reliable
+ * signal, because a content-free stub also lands "completed" and would
+ * otherwise masquerade as finalized and clobber a real row.
+ */
+export function isFinalizedSummaryText(text: unknown): boolean {
+  if (typeof text !== "string" || text.trim() === "") return false;
+  const match = text.match(WHAT_HAPPENED_RE);
+  return match ? match[1].trim() !== "" : false;
 }
 
 /**
@@ -78,10 +133,26 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
   const pluginVersion = params.pluginVersion;
 
   const existing = await query(
-    `SELECT path FROM "${tableName}" WHERE path = '${esc(vpath)}' LIMIT 1`
+    `SELECT path, summary, description FROM "${tableName}" WHERE path = '${esc(vpath)}' LIMIT 1`
   );
 
   if (existing.length > 0) {
+    // FINALIZE-WINS: a finalized row (real summary + non-placeholder
+    // description) must never be clobbered back to a placeholder/stub.
+    //
+    // Production failure mode this prevents (org activeloop, ~56% of summaries
+    // stuck at 'in progress'): a stale/duplicate writer — a resumed session,
+    // or a late wiki worker that produced empty / content-free text —
+    // overwrites a real summary with a stub, making the row invisible to
+    // proactive recall again. The incoming write is "finalized" iff it carries
+    // a real summary body (a populated "## What Happened"); a non-finalized
+    // (stub) write is rejected when the existing row is already finalized.
+    const incomingFinalized = isFinalizedSummaryText(text);
+    const existingFinalized = isFinalizedRow(existing[0]["summary"], existing[0]["description"]);
+    if (!incomingFinalized && existingFinalized) {
+      return { path: "skip", sql: "", descLength: desc.length, summaryLength: text.length };
+    }
+
     // Only include plugin_version in the SET clause when the caller
     // explicitly provided a value (including ''). A legacy spawner that
     // omits pluginVersion would otherwise erase a previously-stored
