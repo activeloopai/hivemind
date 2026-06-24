@@ -34,8 +34,19 @@ export function proactiveRecallDisabled(env: NodeJS.ProcessEnv = process.env): b
   return false;
 }
 
-/** Cosine score (0..1, higher = closer) a hit must clear to be injected. */
-export const RECALL_THRESHOLD = 0.55;
+/**
+ * Cosine score (0..1, higher = closer) a hit must clear to be injected.
+ *
+ * Lowered 0.55 → 0.50: a realistic full-sentence question embedded as a `query`
+ * vector vs the `document` embedding of a long, multi-section wiki summary
+ * routinely lands in the 0.50–0.55 band even when the summary clearly answers
+ * it — so 0.55 produced RECALL_NOT_FIRED misses. The injection is explicitly
+ * framed as untrusted "possibly relevant" context (not an instruction) and is
+ * still gated by the prompt-level shouldRecall(), so a modestly lower precision
+ * bar trades a little noise for materially better recall. Override via
+ * HIVEMIND_RECALL_THRESHOLD (see below) to restore stricter behavior.
+ */
+const DEFAULT_RECALL_THRESHOLD = 0.5;
 
 /** Minimum substantive prompt length (chars) before we consider searching. */
 const MIN_PROMPT_CHARS = 24;
@@ -115,6 +126,16 @@ export function parsePositive(raw: string | undefined, fallback: number): number
 }
 
 export const MIN_LEXICAL_OVERLAP = parsePositive(process.env.HIVEMIND_RECALL_MIN_OVERLAP, 2);
+
+/**
+ * Operator-tunable cosine injection threshold. Honors HIVEMIND_RECALL_THRESHOLD
+ * but only when it is a sane probability (0 < t <= 1); anything else falls back
+ * to the default so a typo can't silently disable or over-restrict recall.
+ */
+export const RECALL_THRESHOLD: number = (() => {
+  const n = Number(process.env.HIVEMIND_RECALL_THRESHOLD);
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : DEFAULT_RECALL_THRESHOLD;
+})();
 
 // Common words carry no recall signal — matching them would surface noise.
 const STOPWORDS = new Set([

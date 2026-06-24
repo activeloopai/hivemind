@@ -13,7 +13,11 @@ import { serializeFloat4Array } from "../../shell/grep-core.js";
 import { sqlStr, sqlLike } from "../../utils/sql.js";
 import type { RecallHit } from "./recall-format.js";
 
-const SELECT_COLS = "path, author, project, description, last_update_date";
+// `summary` is selected alongside `description` so recall can inject a
+// high-signal EXCERPT (the ## Key Facts / ## Entities sections carry the
+// verbatim identifiers and values that the gist-only `description` drops).
+// See recall-format.ts:pickExcerpt for how the excerpt is chosen.
+const SELECT_COLS = "path, author, project, summary, description, last_update_date";
 
 // Deterministic tie-break. Scores tie often on the lexical path (overlap is a
 // small integer) and we inject only the top row, so without a stable secondary
@@ -104,6 +108,7 @@ function mapTopRow(rows: Array<Record<string, unknown>>, mode: "semantic" | "lex
     path: String(r["path"] ?? ""),
     author: String(r["author"] ?? ""),
     project: String(r["project"] ?? ""),
+    summary: String(r["summary"] ?? ""),
     description: String(r["description"] ?? ""),
     lastUpdate: String(r["last_update_date"] ?? ""),
     score: Number.isFinite(score) ? score : 0,

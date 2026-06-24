@@ -17,28 +17,80 @@
 
 import { LINE_TERMINATOR_RE } from "./context-renderer.js";
 
-/** Max chars of recalled summary text to inject (bounds the injection surface). */
-const SNIPPET_MAX = 240;
+/**
+ * Max chars of recalled excerpt to inject (bounds the injection surface).
+ * Larger than the old description-only cap (240) because the excerpt now
+ * carries verbatim facts (## Key Facts / ## Entities / ## Decisions) — the
+ * whole point of recall is to surface the EXACT identifier / value / decision,
+ * which a 240-char gist routinely truncated away. Still bounded so one row
+ * can't flood the model context.
+ */
+const SNIPPET_MAX = 600;
 
 /** Render an untrusted summary excerpt inert for injection into model context. */
-function sanitizeSnippet(text: string): string {
+function sanitizeSnippet(text: string, max: number = SNIPPET_MAX): string {
   return (text || "")
     .replace(LINE_TERMINATOR_RE, " ") // no fake sections / instruction breaks
     .replace(/[`"]/g, "'")             // don't let it break the quoted frame / fences
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, SNIPPET_MAX);
+    .slice(0, max);
 }
 
 export interface RecallHit {
   path: string; // e.g. /summaries/<author>/<session>.md
   author: string;
   project: string;
+  /**
+   * Full wiki summary body (markdown). Source of the high-signal excerpt: the
+   * ## Key Facts / ## Decisions / ## Entities sections hold the verbatim
+   * identifiers, values and decisions the gist `description` drops. Optional
+   * for back-compat with legacy callers / rows that only carry `description`.
+   */
+  summary?: string;
   description: string;
   lastUpdate: string; // ISO-ish date string from last_update_date
   /** semantic: cosine 0..1; lexical: count of distinct keywords matched. */
   score: number;
   mode: "semantic" | "lexical";
+}
+
+/**
+ * Sections of the wiki summary that carry VERBATIM, non-derivable facts —
+ * exact identifiers, values, decisions. These are what recall must surface;
+ * the gist `## What Happened` (→ `description`) deliberately omits them.
+ * Ordered by signal density; we take the first non-empty ones up to the cap.
+ */
+const FACT_SECTIONS = ["Key Facts", "Decisions & Reasoning", "Entities"];
+
+/** Pull the body of a `## <heading>` markdown section, or "" if absent/empty. */
+export function extractSection(summary: string, heading: string): string {
+  // Match "## <heading>" up to the next "## " or end-of-string. `heading` is a
+  // fixed literal from FACT_SECTIONS (no user input), but escape regex metachars
+  // anyway so "Decisions & Reasoning" stays a safe literal pattern.
+  const safe = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = summary.match(new RegExp(`##\\s*${safe}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, "i"));
+  return m ? m[1].trim() : "";
+}
+
+/**
+ * Choose the excerpt to inject. Prefers the high-signal fact sections of the
+ * full `summary` (verbatim identifiers / values / decisions) and falls back to
+ * the gist `description` when the summary is unavailable or has no fact
+ * sections (legacy rows). Returns RAW text — the caller sanitizes + caps it.
+ */
+export function pickExcerpt(hit: Pick<RecallHit, "summary" | "description">): string {
+  const summary = (hit.summary ?? "").trim();
+  if (summary) {
+    const parts: string[] = [];
+    for (const section of FACT_SECTIONS) {
+      const body = extractSection(summary, section);
+      // Skip empty sections and the "none" placeholder the wiki prompt emits.
+      if (body && body.toLowerCase() !== "none") parts.push(`${section}: ${body}`);
+    }
+    if (parts.length) return parts.join(" — ");
+  }
+  return hit.description ?? "";
 }
 
 /** Extract the author + session id encoded in a summary path. */
@@ -93,7 +145,10 @@ export function formatRecallContext(input: FormatRecallInput): string {
   const who = author === currentUser ? "you" : author;
   const when = relativeDay(hit.lastUpdate, now);
   const meta = [who, when, hit.project].filter(Boolean).join(" · ");
-  const desc = sanitizeSnippet(hit.description);
+  // Prefer the verbatim fact sections of the full summary over the gist
+  // description so exact identifiers / values / decisions actually reach the
+  // model (the whole point of recall); fall back to description for legacy rows.
+  const desc = sanitizeSnippet(pickExcerpt(hit));
 
   // Print a path pointer (not a shell command) only when the path parses to the
   // canonical /summaries/<author>/<session> shape AND both segments are safe —
