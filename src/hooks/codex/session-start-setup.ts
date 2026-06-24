@@ -12,9 +12,8 @@ import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
-import { sqlStr } from "../../utils/sql.js";
-import { projectNameFromCwd } from "../../utils/project-name.js";
 import { readStdin } from "../../utils/stdin.js";
+import { createPlaceholderSummary } from "../shared/placeholder-summary.js";
 import { log as _log } from "../../utils/debug.js";
 import { makeWikiLogger } from "../../utils/wiki-log.js";
 import { autoUpdate } from "../shared/autoupdate.js";
@@ -26,38 +25,13 @@ const { log: wikiLog } = makeWikiLogger(join(homedir(), ".codex", "hooks"));
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_VERSION = getInstalledVersion(__bundleDir, ".codex-plugin") ?? "";
 
-/** Create a placeholder summary via direct SQL INSERT. */
+/** Create a placeholder summary via the shared race-safe writer (see placeholder-summary.ts). */
 async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
-  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
-
-  const existing = await api.query(
-    `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
+  await createPlaceholderSummary(
+    (sql) => api.query(sql),
+    { table, sessionId, cwd, userName, orgName, workspaceId, agent: "codex", pluginVersion: PLUGIN_VERSION },
+    wikiLog,
   );
-  if (existing.length > 0) {
-    wikiLog(`SessionSetup: summary exists for ${sessionId} (resumed)`);
-    return;
-  }
-
-  const now = new Date().toISOString();
-  const projectName = projectNameFromCwd(cwd);
-  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
-  const content = [
-    `# Session ${sessionId}`,
-    `- **Source**: ${sessionSource}`,
-    `- **Started**: ${now}`,
-    `- **Project**: ${projectName}`,
-    `- **Status**: in-progress`,
-    "",
-  ].join("\n");
-  const filename = `${sessionId}.md`;
-
-  await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'codex', '${sqlStr(PLUGIN_VERSION)}', '${now}', '${now}')`
-  );
-
-  wikiLog(`SessionSetup: created placeholder for ${sessionId} (${cwd})`);
 }
 
 interface CodexSessionStartInput {

@@ -24,8 +24,7 @@ import { loadCredentials, healDriftedOrgToken } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { renderContextBlock } from "../shared/context-renderer.js";
-import { sqlStr } from "../../utils/sql.js";
-import { projectNameFromCwd } from "../../utils/project-name.js";
+import { createPlaceholderSummary } from "../shared/placeholder-summary.js";
 import { renderSkillifyCommands } from "../../cli/skillify-spec.js";
 import { countLocalManifestEntries } from "../../skillify/local-manifest.js";
 import { maybeAutoMineLocal } from "../../skillify/spawn-mine-local-worker.js";
@@ -96,6 +95,7 @@ function resolveCwd(input: CursorSessionStartInput): string {
   return process.cwd();
 }
 
+/** Create a placeholder summary via the shared race-safe writer (see placeholder-summary.ts). */
 async function createPlaceholder(
   api: DeeplakeApi,
   table: string,
@@ -106,29 +106,9 @@ async function createPlaceholder(
   workspaceId: string,
   pluginVersion: string,
 ): Promise<void> {
-  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
-  const existing = await api.query(
-    `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`,
-  );
-  if (existing.length > 0) return;
-
-  const now = new Date().toISOString();
-  const projectName = projectNameFromCwd(cwd);
-  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
-  const content = [
-    `# Session ${sessionId}`,
-    `- **Source**: ${sessionSource}`,
-    `- **Started**: ${now}`,
-    `- **Project**: ${projectName}`,
-    `- **Status**: in-progress`,
-    "",
-  ].join("\n");
-  const filename = `${sessionId}.md`;
-
-  await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'cursor', '${sqlStr(pluginVersion)}', '${now}', '${now}')`,
+  await createPlaceholderSummary(
+    (sql) => api.query(sql),
+    { table, sessionId, cwd, userName, orgName, workspaceId, agent: "cursor", pluginVersion },
   );
 }
 

@@ -12,8 +12,6 @@ import { homedir } from "node:os";
 import { loadCredentials, saveCredentials, healDriftedOrgToken } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
-import { projectNameFromCwd } from "../utils/project-name.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
 import { getInstalledVersion } from "../utils/version-check.js";
@@ -29,6 +27,7 @@ import { graphContextLine } from "../graph/session-context.js";
 import { spawnGraphPullWorker } from "../graph/spawn-pull-worker.js";
 import { entrypointPassesOnlyCliGate } from "./shared/capture-gate.js";
 import { clearSessionEnded, recordSessionOwner, touchSessionActivity } from "./summary-state.js";
+import { createPlaceholderSummary } from "./shared/placeholder-summary.js";
 const log = (msg: string) => _log("session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -94,38 +93,18 @@ Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-de
 const HOME = homedir();
 const { log: wikiLog } = makeWikiLogger(join(HOME, ".claude", "hooks"));
 
-/** Create a placeholder summary via direct SQL INSERT (no DeeplakeFs bootstrap needed). */
+/**
+ * Create a placeholder summary via the shared race-safe writer. The atomic
+ * `INSERT ... WHERE NOT EXISTS` inside createPlaceholderSummary guarantees a
+ * finalized+embedded row is never reverted to an 'in progress' stub by a
+ * resumed/concurrent SessionStart (the production clobber).
+ */
 async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string, pluginVersion: string): Promise<void> {
-  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
-
-  const existing = await api.query(
-    `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
+  await createPlaceholderSummary(
+    (sql) => api.query(sql),
+    { table, sessionId, cwd, userName, orgName, workspaceId, agent: "claude_code", pluginVersion },
+    wikiLog,
   );
-  if (existing.length > 0) {
-    wikiLog(`SessionStart: summary exists for ${sessionId} (resumed)`);
-    return;
-  }
-
-  const now = new Date().toISOString();
-  const projectName = projectNameFromCwd(cwd);
-  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
-  const content = [
-    `# Session ${sessionId}`,
-    `- **Source**: ${sessionSource}`,
-    `- **Started**: ${now}`,
-    `- **Project**: ${projectName}`,
-    `- **Status**: in-progress`,
-    "",
-  ].join("\n");
-  const filename = `${sessionId}.md`;
-
-  await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${sqlStr(pluginVersion)}', '${now}', '${now}')`
-  );
-
-  wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
 }
 
 interface SessionStartInput {
