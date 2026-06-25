@@ -37,16 +37,15 @@ export function proactiveRecallDisabled(env: NodeJS.ProcessEnv = process.env): b
 /**
  * Cosine score (0..1, higher = closer) a hit must clear to be injected.
  *
- * Lowered 0.55 → 0.50: a realistic full-sentence question embedded as a `query`
- * vector vs the `document` embedding of a long, multi-section wiki summary
- * routinely lands in the 0.50–0.55 band even when the summary clearly answers
- * it — so 0.55 produced RECALL_NOT_FIRED misses. The injection is explicitly
- * framed as untrusted "possibly relevant" context (not an instruction) and is
- * still gated by the prompt-level shouldRecall(), so a modestly lower precision
- * bar trades a little noise for materially better recall. Override via
- * HIVEMIND_RECALL_THRESHOLD (see below) to restore stricter behavior.
+ * Default kept at 0.55 (current behavior). Lowering to ~0.50 may help: a
+ * realistic full-sentence `query` vs the `document` embedding of a long wiki
+ * summary can land in the 0.50–0.55 band even when relevant. But that tuning is
+ * SEMANTIC-only and not yet validated on real data, so it's left as an operator
+ * override rather than a default change — set HIVEMIND_RECALL_THRESHOLD=0.5 to
+ * try the looser bar. (This PR makes the threshold tunable; it does not change
+ * the default.)
  */
-const DEFAULT_RECALL_THRESHOLD = 0.5;
+const DEFAULT_RECALL_THRESHOLD = 0.55;
 
 /** Minimum substantive prompt length (chars) before we consider searching. */
 const MIN_PROMPT_CHARS = 24;

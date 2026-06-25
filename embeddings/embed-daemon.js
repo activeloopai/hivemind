@@ -67,10 +67,14 @@ var NomicEmbedder = class {
   repo;
   dtype;
   dims;
+  docPrefix;
+  queryPrefix;
   constructor(opts = {}) {
     this.repo = opts.repo ?? DEFAULT_MODEL_REPO;
     this.dtype = opts.dtype ?? DEFAULT_DTYPE;
     this.dims = opts.dims ?? DEFAULT_DIMS;
+    this.docPrefix = opts.docPrefix ?? DOC_PREFIX;
+    this.queryPrefix = opts.queryPrefix ?? QUERY_PREFIX;
   }
   async load() {
     if (this.pipeline)
@@ -90,7 +94,7 @@ var NomicEmbedder = class {
     }
   }
   addPrefix(text, kind) {
-    return (kind === "query" ? QUERY_PREFIX : DOC_PREFIX) + text;
+    return (kind === "query" ? this.queryPrefix : this.docPrefix) + text;
   }
   async embed(text, kind = "document") {
     await this.load();
@@ -172,7 +176,13 @@ var EmbedDaemon = class {
     this.socketPath = socketPathFor(uid, dir);
     this.pidPath = pidPathFor(uid, dir);
     this.idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
-    this.embedder = new NomicEmbedder({ repo: opts.repo, dtype: opts.dtype, dims: opts.dims });
+    this.embedder = new NomicEmbedder({
+      repo: opts.repo,
+      dtype: opts.dtype,
+      dims: opts.dims,
+      docPrefix: opts.docPrefix,
+      queryPrefix: opts.queryPrefix
+    });
     this.daemonPath = opts.daemonPath ?? process.argv[1] ?? "";
   }
   async start() {
@@ -290,7 +300,11 @@ var invokedDirectly = import.meta.url === `file://${process.argv[1]}` || process
 if (invokedDirectly) {
   const dims = process.env.HIVEMIND_EMBED_DIMS ? Number(process.env.HIVEMIND_EMBED_DIMS) : void 0;
   const idleTimeoutMs = process.env.HIVEMIND_EMBED_IDLE_MS ? Number(process.env.HIVEMIND_EMBED_IDLE_MS) : void 0;
-  const d = new EmbedDaemon({ dims, idleTimeoutMs });
+  const repo = process.env.HIVEMIND_EMBED_REPO || void 0;
+  const dtype = process.env.HIVEMIND_EMBED_DTYPE || void 0;
+  const docPrefix = process.env.HIVEMIND_EMBED_DOC_PREFIX ?? void 0;
+  const queryPrefix = process.env.HIVEMIND_EMBED_QUERY_PREFIX ?? void 0;
+  const d = new EmbedDaemon({ dims, idleTimeoutMs, repo, dtype, docPrefix, queryPrefix });
   d.start().catch((e) => {
     log2(`fatal: ${e.message}`);
     process.exit(1);

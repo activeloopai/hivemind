@@ -367,16 +367,16 @@ describe("formatRecallContext — injects verbatim facts from the summary (RECAL
   });
 });
 
-describe("RECALL_THRESHOLD — lowered default + bounded env override (RECALL_NOT_FIRED fix)", () => {
-  it("defaults to 0.5 (down from 0.55) when no override is set", () => {
+describe("RECALL_THRESHOLD — default 0.55 + operator-tunable via env", () => {
+  it("defaults to 0.55 when no override is set (looser 0.5 deferred pending validation)", () => {
     // Read from the module's current value (set at import; no env override in CI).
-    expect(RECALL_THRESHOLD).toBe(0.5);
+    expect(RECALL_THRESHOLD).toBe(0.55);
   });
 
-  it("passesThreshold gates at the lowered default", () => {
-    expect(passesThreshold(0.5)).toBe(true);
-    expect(passesThreshold(0.52)).toBe(true); // would have MISSED at the old 0.55 bar
-    expect(passesThreshold(0.49)).toBe(false);
+  it("passesThreshold gates at the default", () => {
+    expect(passesThreshold(0.55)).toBe(true);
+    expect(passesThreshold(0.6)).toBe(true);
+    expect(passesThreshold(0.54)).toBe(false);
   });
 });
 
