@@ -26,6 +26,7 @@
  * See proactiveRecallDisabled() in shared/recall-gate.ts.
  */
 
+import { openSync, readSync, closeSync, statSync } from "node:fs";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
@@ -103,6 +104,61 @@ function emit(additionalContext: string): void {
 }
 
 /**
+ * Read plain text from the last few user+assistant turns of the current
+ * session transcript. Used to enrich the lexical keyword query with context
+ * from recent conversation — so a short prompt like "implement refund()" picks
+ * up "payments ledger charge" from earlier turns and matches the right summary.
+ *
+ * Semantic path stays prompt-only (a focused short query embeds better than a
+ * noisy context dump). Lexical benefits because it is keyword-overlap based.
+ *
+ * Reads only the last 32 KB of the file to avoid loading huge transcripts.
+ * Pure sync I/O (no await) — best-effort, never throws.
+ */
+function readRecentTurnsText(sessionId: string | undefined, cwd: string | undefined, maxTurns = 3): string {
+  if (!sessionId || !cwd) return "";
+  try {
+    const home = process.env.HOME ?? "/root";
+    const slug = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+    const filePath = `${home}/.claude/projects/${slug}/${sessionId}.jsonl`;
+
+    const stat = statSync(filePath);
+    const tailBytes = Math.min(stat.size, 32_768);
+    const buf = Buffer.alloc(tailBytes);
+    const fd = openSync(filePath, "r");
+    readSync(fd, buf, 0, tailBytes, stat.size - tailBytes);
+    closeSync(fd);
+
+    const lines = buf.toString("utf-8").split("\n").filter(Boolean);
+    const texts: string[] = [];
+    let turns = 0;
+    for (let i = lines.length - 1; i >= 0 && turns < maxTurns; i--) {
+      try {
+        const obj = JSON.parse(lines[i]) as Record<string, unknown>;
+        if (obj["type"] !== "user" && obj["type"] !== "assistant") continue;
+        const msg = obj["message"] as Record<string, unknown> | undefined;
+        const content = msg?.["content"];
+        if (!content) continue;
+        if (typeof content === "string" && content.trim()) {
+          texts.push(content.trim());
+          turns++;
+        } else if (Array.isArray(content)) {
+          const text = (content as Array<Record<string, unknown>>)
+            .filter(b => b["type"] === "text")
+            .map(b => (b["text"] as string | undefined) ?? "")
+            .filter(Boolean)
+            .join(" ");
+          if (text) { texts.push(text); turns++; }
+        }
+      } catch { /* skip malformed lines */ }
+    }
+    return texts.reverse().join(" ").slice(0, 2000);
+  } catch {
+    return "";
+  }
+}
+
+/**
  * Find the top hit: semantic when embeddings yield a vector, else lexical.
  * Also falls back to lexical when semantic finds nothing (e.g. summaries not
  * embedded yet). Bounded by withDeadline in main.
@@ -164,7 +220,11 @@ async function findHit(
       }
     }
 
-    const keywords = extractKeywords(prompt);
+    // Augment the lexical query with keywords from recent turns so a short
+    // prompt like "implement refund()" inherits context ("payments", "ledger",
+    // "charge") from the session history. Semantic path stays prompt-only.
+    const recentContext = readRecentTurnsText(input.session_id, input.cwd);
+    const keywords = extractKeywords(prompt + (recentContext ? " " + recentContext : ""));
     if (keywords.length >= 2) {
       const lex = await recallTopHitLexical(q, config.tableName, keywords, opts);
       if (lex && lex.score >= MIN_LEXICAL_OVERLAP) return { kind: "hit", hit: lex };

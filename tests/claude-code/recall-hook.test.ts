@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Orchestration tests for src/hooks/recall.ts — the UserPromptSubmit proactive-
@@ -320,5 +323,73 @@ describe("recall hook — latency budget + failure isolation", () => {
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("fatal: stdin boom"));
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+});
+
+describe("recall hook — recent-turns context augmentation (lexical path)", () => {
+  // Verify that keywords from the last few session turns are folded into the
+  // lexical query, so a short prompt like "implement the refund flow" inherits
+  // "payments ledger charge" from earlier conversation turns and matches the
+  // right summary even though those words aren't in the prompt itself.
+  let tmpHome: string;
+  const SESSION_ID = "test-session-ctx";
+  const CWD = "/fake-repo";
+  const SLUG = "-fake-repo"; // cwd.replace(/[^a-zA-Z0-9]/g, "-")
+
+  beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), "recall-ctx-"));
+    // Write a fake session transcript with recent turns containing topic words.
+    const projectDir = join(tmpHome, ".claude", "projects", SLUG);
+    mkdirSync(projectDir, { recursive: true });
+    const userTurn = JSON.stringify({
+      type: "user",
+      message: { role: "user", content: "I need to add a payment charge to the ledger service" },
+    });
+    const assistantTurn = JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "I'll implement the charge method using the ledger payment API" }] },
+    });
+    writeFileSync(join(projectDir, `${SESSION_ID}.jsonl`), `${userTurn}\n${assistantTurn}\n`);
+  });
+
+  afterEach(() => {
+    rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it("folds recent-turn keywords into the lexical ILIKE query", async () => {
+    const origHome = process.env.HOME;
+    process.env.HOME = tmpHome;
+    stdinMock.mockResolvedValue({
+      prompt: "implement the refund flow",  // 4 words — passes gate, but no "payments"/"ledger" here
+      session_id: SESSION_ID,
+      cwd: CWD,
+    });
+    queryMock.mockResolvedValue([row({ score: 3 })]);
+    try {
+      await runHook();
+    } finally {
+      process.env.HOME = origHome;
+    }
+    // The lexical ILIKE call should include keywords from recent turns
+    const lexicalCall = queryMock.mock.calls.find((c: unknown[]) => String(c[0]).includes("ILIKE"));
+    expect(lexicalCall).toBeDefined();
+    const sql = String(lexicalCall![0]);
+    // "ledger" or "charge" or "payment" must appear — from the recent turns,
+    // not from the prompt itself which only says "implement the refund flow".
+    const hasContextKeyword = sql.includes("ledger") || sql.includes("charge") || sql.includes("payment");
+    expect(hasContextKeyword, `lexical SQL missing context keywords: ${sql}`).toBe(true);
+  });
+
+  it("still works when the transcript file does not exist (best-effort, no throw)", async () => {
+    stdinMock.mockResolvedValue({
+      prompt: "implement the refund flow",
+      session_id: "nonexistent-session",
+      cwd: CWD,
+    });
+    queryMock.mockResolvedValue([row({ score: 3 })]);
+    // Should not throw — gracefully falls back to prompt-only keywords.
+    await expect(runHook()).resolves.not.toThrow();
+    const lexicalCall = queryMock.mock.calls.find((c: unknown[]) => String(c[0]).includes("ILIKE"));
+    expect(lexicalCall).toBeDefined(); // still searched, just without context keywords
   });
 });
