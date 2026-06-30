@@ -392,4 +392,48 @@ describe("recall hook — recent-turns context augmentation (lexical path)", () 
     const lexicalCall = queryMock.mock.calls.find((c: unknown[]) => String(c[0]).includes("ILIKE"));
     expect(lexicalCall).toBeDefined(); // still searched, just without context keywords
   });
+
+  it("handles edge-case transcript lines and exits loop when maxTurns is reached", async () => {
+    // Transcript arranged so that in reverse-scan order we hit all branch edges
+    // BEFORE accumulating three valid turns (which triggers the turns>=maxTurns exit):
+    //   1. 3 valid turns at the START (visited LAST in reverse, triggering loop exit)
+    //   2. Then edge-case lines AFTER them (visited FIRST in reverse):
+    //      - array content with no text-type blocks  → if(text) FALSE branch
+    //      - string content that is blank             → content.trim() falsy branch
+    //      - null content                             → !content continue branch
+    //      - non-user/assistant type                  → type-filter continue branch
+    //      - malformed JSON                           → inner catch branch
+    const origHome = process.env.HOME;
+    const SESSION_ID2 = "test-edge-session";
+    process.env.HOME = tmpHome;
+    const projectDir = join(tmpHome, ".claude", "projects", SLUG);
+
+    const lines = [
+      // valid turns (visited last in reverse; fills maxTurns=3 and exits the loop)
+      JSON.stringify({ type: "user",      message: { content: "alpha search token one" } }),
+      JSON.stringify({ type: "assistant", message: { content: "beta result two" } }),
+      JSON.stringify({ type: "user",      message: { content: "gamma conclusion three" } }),
+      // edge cases (visited first in reverse, before the valid turns fill the bucket):
+      JSON.stringify({ type: "user",      message: { content: [{ type: "image_url", url: "x" }] } }), // array, no text → if(text) FALSE
+      JSON.stringify({ type: "user",      message: { content: "   " } }),                              // string but trim()→"" → falsy
+      JSON.stringify({ type: "user",      message: { content: null } }),                               // !content continue
+      JSON.stringify({ type: "tool_result", message: { content: "ignored" } }),                        // type skip continue
+      "NOT_VALID_JSON{{{",                                                                             // inner catch
+    ];
+    writeFileSync(join(projectDir, `${SESSION_ID2}.jsonl`), lines.join("\n") + "\n");
+
+    stdinMock.mockResolvedValue({ prompt: "implement the refund flow", session_id: SESSION_ID2, cwd: CWD });
+    queryMock.mockResolvedValue([row({ score: 3 })]);
+    try {
+      await runHook();
+    } finally {
+      process.env.HOME = origHome;
+    }
+    // Valid turns should have been extracted; lexical query includes their keywords.
+    const lexicalCall = queryMock.mock.calls.find((c: unknown[]) => String(c[0]).includes("ILIKE"));
+    expect(lexicalCall).toBeDefined();
+    const sql = String(lexicalCall![0]);
+    const hasValidKeyword = sql.includes("alpha") || sql.includes("beta") || sql.includes("gamma");
+    expect(hasValidKeyword, `lexical SQL missing valid-turn keywords: ${sql}`).toBe(true);
+  });
 });
