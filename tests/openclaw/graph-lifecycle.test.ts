@@ -71,4 +71,19 @@ describe("openclaw graph-lifecycle", () => {
     });
     expect(spawn).not.toHaveBeenCalled();
   });
+
+  it("spawnOpenclawGraphPullWorker clears graphPullSpawned on child error so a later call can retry", () => {
+    const onHandlers: Array<() => void> = [];
+    const spawn = vi.fn().mockReturnValue({
+      on: (_event: string, fn: () => void) => { onHandlers.push(fn); },
+      unref: vi.fn(),
+    });
+    spawnOpenclawGraphPullWorker("/dist/graph-pull-worker.js", "/my/repo", { spawn, exists: () => true });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    spawnOpenclawGraphPullWorker("/dist/graph-pull-worker.js", "/my/repo", { spawn, exists: () => true });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    onHandlers[0]!();
+    spawnOpenclawGraphPullWorker("/dist/graph-pull-worker.js", "/my/repo", { spawn, exists: () => true });
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
 });

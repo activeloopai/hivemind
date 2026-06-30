@@ -139,6 +139,17 @@ describe("/hivemind_setup", () => {
     expect(result.text).toContain("already enabled");
   });
 
+  it("does NOT treat a niche graph tool alone as full hivemind coverage", async () => {
+    const configPath = writeConfig({
+      tools: { profile: "coding", alsoAllow: ["hivemind_graph_search"] },
+    });
+    const setup = await loadSetupCommand();
+    const result = await setup.handler({}) as { text: string };
+    expect(result.text).toContain("Added");
+    const updated = JSON.parse(readFileSync(configPath, "utf-8"));
+    expect(updated.tools.alsoAllow).toEqual(["hivemind_graph_search", "hivemind"]);
+  });
+
   it("does NOT create alsoAllow when it's missing entirely (default-allow semantics)", async () => {
     // CodeRabbit on #124 caught this: my original code coerced an absent
     // tools.alsoAllow to [] then patched it to ["hivemind"], flipping the

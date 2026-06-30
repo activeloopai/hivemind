@@ -217,4 +217,23 @@ describe("installOpenclaw()", () => {
       expect(out).toMatch(/next turn|no backfill/i);
     });
   });
+
+  it("warns when embed-deps node_modules is missing instead of silently skipping", async () => {
+    writeConfig({ tools: { alsoAllow: ["hivemind"] } });
+    const logs: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      logs.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8"));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const { installOpenclaw } = await loadInstaller();
+      installOpenclaw();
+    } finally {
+      process.stderr.write = origWrite;
+    }
+    const err = logs.join("");
+    expect(err).toMatch(/embed-deps\/node_modules/);
+    expect(err).toMatch(/hivemind embeddings install/i);
+  });
 });

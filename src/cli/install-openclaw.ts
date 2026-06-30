@@ -45,6 +45,11 @@ export function installOpenclaw(): void {
   if (existsSync(embedDepsNm)) {
     try { const st = lstatSync(pluginNm); if (st.isDirectory() && !st.isSymbolicLink()) rmSync(pluginNm, { recursive: true }); } catch { /* ok */ }
     symlinkForce(embedDepsNm, pluginNm);
+  } else {
+    warn(
+      `  OpenClaw       graph workers need tree-sitter native deps at ${embedDepsNm} — ` +
+      "run `hivemind embeddings install`, then `hivemind claw install` again",
+    );
   }
 
   writeVersionStamp(PLUGIN_DIR, getVersion());

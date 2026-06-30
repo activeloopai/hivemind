@@ -75,15 +75,15 @@ export function spawnOpenclawGraphPullWorker(
   if (graphPullSpawned || graphPullDisabled()) return;
   const existsFn = deps.exists ?? existsSync;
   if (!existsFn(workerPath)) return;
-  graphPullSpawned = true;
   try {
     const sp = deps.spawn ?? realSpawn;
     const child = sp("nohup", ["node", workerPath, "--cwd", cwd], {
       detached: true,
       stdio: "ignore",
     });
-    child.on("error", () => { /* best-effort */ });
+    child.on("error", () => { graphPullSpawned = false; });
     child.unref();
+    graphPullSpawned = true;
   } catch {
     graphPullSpawned = false;
   }

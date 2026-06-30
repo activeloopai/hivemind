@@ -1457,6 +1457,18 @@ export default definePluginEntry({
       }
     });
 
+    // Code graph auto-build on every successful turn — independent of capture,
+    // login, and Deeplake availability (parity with codex/cursor/hermes hooks).
+    hook("agent_end", async (event) => {
+      const ev = event as { success?: boolean };
+      if (!ev.success) return;
+      try {
+        spawnOpenclawGraphOnStop(OPENCLAW_GRAPH_ON_STOP_PATH, resolveGraphCwd());
+      } catch (e: unknown) {
+        logger.error(`Graph-on-stop spawn threw: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+
     // Auto-capture: store new messages in sessions table (same format as CC capture.ts)
     if (config.autoCapture !== false) {
       hook("agent_end", async (event) => {
@@ -1533,13 +1545,6 @@ export default definePluginEntry({
           }
 
           logger.info?.(`Auto-captured ${newMessages.length} messages`);
-
-          // Code graph auto-build (parity with codex/cursor/hermes graph-on-stop).
-          try {
-            spawnOpenclawGraphOnStop(OPENCLAW_GRAPH_ON_STOP_PATH, resolveGraphCwd());
-          } catch (e: unknown) {
-            logger.error(`Graph-on-stop spawn threw: ${e instanceof Error ? e.message : String(e)}`);
-          }
 
           // Skillify: fire the worker after capture so the just-stored messages
           // become candidates for skill mining. Lock-protected, fire-and-forget,
