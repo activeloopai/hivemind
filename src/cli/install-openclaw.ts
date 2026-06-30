@@ -1,6 +1,6 @@
-import { existsSync, copyFileSync, rmSync } from "node:fs";
+import { existsSync, copyFileSync, rmSync, lstatSync } from "node:fs";
 import { join } from "node:path";
-import { HOME, pkgRoot, ensureDir, copyDir, writeVersionStamp, log, warn } from "./util.js";
+import { HOME, pkgRoot, ensureDir, copyDir, writeVersionStamp, log, warn, symlinkForce } from "./util.js";
 import { getVersion } from "./version.js";
 import { ensureHivemindAllowlisted } from "../../harnesses/openclaw/src/setup-config.js";
 
@@ -37,6 +37,15 @@ export function installOpenclaw(): void {
   if (existsSync(srcManifest)) copyFileSync(srcManifest, join(PLUGIN_DIR, "openclaw.plugin.json"));
   if (existsSync(srcPkg)) copyFileSync(srcPkg, join(PLUGIN_DIR, "package.json"));
   if (existsSync(srcSkills)) copyDir(srcSkills, join(PLUGIN_DIR, "skills"));
+
+  // Graph workers (graph-on-stop / graph-pull-worker) externalize tree-sitter
+  // native addons — link embed-deps so builds can resolve them at runtime.
+  const pluginNm = join(PLUGIN_DIR, "node_modules");
+  const embedDepsNm = join(HOME, ".hivemind", "embed-deps", "node_modules");
+  if (existsSync(embedDepsNm)) {
+    try { const st = lstatSync(pluginNm); if (st.isDirectory() && !st.isSymbolicLink()) rmSync(pluginNm, { recursive: true }); } catch { /* ok */ }
+    symlinkForce(embedDepsNm, pluginNm);
+  }
 
   writeVersionStamp(PLUGIN_DIR, getVersion());
   log(`  OpenClaw       installed -> ${PLUGIN_DIR}`);

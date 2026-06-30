@@ -22,6 +22,11 @@ const ensureGoalsTableMock = vi.fn();
 const ensureKpisTableMock = vi.fn();
 const loadConfigMock = vi.fn();
 const loadCredsMock = vi.fn();
+const handleGraphVfsMock = vi.fn();
+
+vi.mock("../../src/graph/vfs-handler.js", () => ({
+  handleGraphVfs: (...args: unknown[]) => handleGraphVfsMock(...args),
+}));
 
 vi.mock("../../src/config.js", () => ({ loadConfig: () => loadConfigMock() }));
 vi.mock("../../src/commands/auth.js", () => ({
@@ -85,6 +90,7 @@ async function loadPluginWithTools() {
 
 beforeEach(() => {
   queryMock.mockReset();
+  handleGraphVfsMock.mockReset().mockReturnValue({ kind: "ok", body: "graph hit" });
   listTablesMock.mockReset().mockResolvedValue(["memory", "sessions"]);
   ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
   ensureTableMock.mockReset().mockResolvedValue(undefined);
@@ -110,10 +116,12 @@ beforeEach(() => {
 });
 
 describe("openclaw hivemind tools — registration", () => {
-  it("registers read-side + write-side hivemind tools when host exposes registerTool", async () => {
+  it("registers read-side + write-side + graph hivemind tools when host exposes registerTool", async () => {
     const { tools } = await loadPluginWithTools();
     expect(tools.map(t => t.name).sort()).toEqual([
       "hivemind_goal_add",
+      "hivemind_graph_neighborhood",
+      "hivemind_graph_search",
       "hivemind_index",
       "hivemind_kpi_add",
       "hivemind_read",
@@ -158,6 +166,7 @@ describe("openclaw hivemind tools — registration", () => {
     // ext/openclaw/src/agents/system-prompt.ts buildSkillsSection and
     // skills/skill-contract.ts formatSkillsForPrompt.
     (globalThis as any).__HIVEMIND_SKILL__ = "TEST_SKILL_BODY_CONTENT";
+    (globalThis as any).__HIVEMIND_GRAPH_SKILL__ = "TEST_GRAPH_SKILL_BODY";
     try {
       vi.resetModules();
       const mod = await import("../../harnesses/openclaw/src/index.js");
@@ -175,8 +184,11 @@ describe("openclaw hivemind tools — registration", () => {
       const result = await registration![1]({});
       expect(result.prependSystemContext).toContain("TEST_SKILL_BODY_CONTENT");
       expect(result.prependSystemContext).toContain("<hivemind-skill>");
+      expect(result.prependSystemContext).toContain("TEST_GRAPH_SKILL_BODY");
+      expect(result.prependSystemContext).toContain("<hivemind-graph-skill>");
     } finally {
       delete (globalThis as any).__HIVEMIND_SKILL__;
+      delete (globalThis as any).__HIVEMIND_GRAPH_SKILL__;
     }
   });
 
@@ -460,5 +472,28 @@ describe("hivemind_kpi_add (Path C — write-side via registered tool)", () => {
     expect(result.content[0].text).toMatch(/Not logged in/);
     expect(queryMock).not.toHaveBeenCalled();
     expect(ensureKpisTableMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("hivemind_graph_search", () => {
+  it("queries graph/query/<pattern> via handleGraphVfs", async () => {
+    const { tools } = await loadPluginWithTools();
+    const graphSearch = tools.find(t => t.name === "hivemind_graph_search")!;
+    const result = await graphSearch.execute("call-g1", { pattern: "pushSnapshot" });
+    expect(handleGraphVfsMock).toHaveBeenCalledWith("query/pushSnapshot", expect.any(String));
+    expect(result.content[0].text).toBe("graph hit");
+  });
+});
+
+describe("hivemind_graph_neighborhood", () => {
+  it("queries graph/neighborhood/<file> via handleGraphVfs", async () => {
+    const { tools } = await loadPluginWithTools();
+    const graphNb = tools.find(t => t.name === "hivemind_graph_neighborhood")!;
+    const result = await graphNb.execute("call-g2", { file: "src/hooks/capture.ts" });
+    expect(handleGraphVfsMock).toHaveBeenCalledWith(
+      "neighborhood/src/hooks/capture.ts",
+      expect.any(String),
+    );
+    expect(result.content[0].text).toBe("graph hit");
   });
 });

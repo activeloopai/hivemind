@@ -8,7 +8,15 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const HIVEMIND_TOOL_NAMES = ["hivemind_search", "hivemind_read", "hivemind_index"];
+export const HIVEMIND_TOOL_NAMES = [
+  "hivemind_search",
+  "hivemind_read",
+  "hivemind_index",
+  "hivemind_goal_add",
+  "hivemind_kpi_add",
+  "hivemind_graph_search",
+  "hivemind_graph_neighborhood",
+];
 
 export function getOpenclawConfigPath(): string {
   return join(homedir(), ".openclaw", "openclaw.json");

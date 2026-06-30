@@ -5,6 +5,7 @@ const esmPackageJson = '{"type":"module"}\n';
 const hivemindVersion = JSON.parse(readFileSync("package.json", "utf-8")).version;
 const openclawVersion = JSON.parse(readFileSync("harnesses/openclaw/package.json", "utf-8")).version;
 const openclawSkillBody = readFileSync("harnesses/openclaw/skills/SKILL.md", "utf-8");
+const openclawGraphSkillBody = readFileSync("harnesses/openclaw/skills/hivemind-graph/SKILL.md", "utf-8");
 
 // Claude Code plugin
 const ccHooks = [
@@ -354,6 +355,7 @@ await build({
   define: {
     __HIVEMIND_VERSION__: JSON.stringify(openclawVersion),
     __HIVEMIND_SKILL__: JSON.stringify(openclawSkillBody),
+    __HIVEMIND_GRAPH_SKILL__: JSON.stringify(openclawGraphSkillBody),
     // ----- Credentials / identity: openclaw-managed via the auth flow -----
     // These are owned by the openclaw plugin's login + plugin-config paths,
     // not by user-tunable env vars. Inline to `undefined` so any rogue
@@ -401,6 +403,9 @@ await build({
     // file as a network send trips the critical rule even though the
     // value is just a directory path.
     "process.env.HIVEMIND_STATE_DIR": "globalThis.__hivemind_tuning__.HIVEMIND_STATE_DIR",
+    "process.env.HIVEMIND_GRAPH_CWD": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_CWD",
+    "process.env.HIVEMIND_GRAPH_ON_STOP": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_ON_STOP",
+    "process.env.HIVEMIND_GRAPH_PULL": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_PULL",
   },
   plugins: [{
     // Dead-code elimination for transitively bundled CC/Codex-only features.
@@ -502,6 +507,75 @@ await build({
   },
 });
 chmodSync("harnesses/openclaw/dist/skillify-worker.js", 0o755);
+
+// OpenClaw graph worker bundles — separate entries (same rationale as
+// skillify-worker): need real child_process + git without the main bundle's
+// stub-unused-child-process plugin. install-openclaw.ts copies all of dist/.
+const openclawGraphWorkerExternals = [
+  "node:*",
+  "node-liblzma",
+  "@mongodb-js/zstd",
+  "@huggingface/transformers",
+  "onnxruntime-node",
+  "onnxruntime-common",
+  "sharp",
+  "tree-sitter",
+  "tree-sitter-typescript",
+  "tree-sitter-javascript",
+  "tree-sitter-python",
+  "tree-sitter-go",
+  "tree-sitter-rust",
+  "tree-sitter-java",
+  "tree-sitter-ruby",
+  "tree-sitter-c",
+  "tree-sitter-cpp",
+];
+
+const openclawGraphWorkerDefine = {
+  banner: { js: "globalThis.__hivemind_tuning__ ??= {};" },
+  define: {
+    __HIVEMIND_VERSION__: JSON.stringify(hivemindVersion),
+    "process.env.HIVEMIND_DEBUG": "globalThis.__hivemind_tuning__.HIVEMIND_DEBUG",
+    "process.env.HIVEMIND_TRACE_SQL": "globalThis.__hivemind_tuning__.HIVEMIND_TRACE_SQL",
+    "process.env.HIVEMIND_QUERY_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_QUERY_TIMEOUT_MS",
+    "process.env.HIVEMIND_GRAPH_ON_STOP": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_ON_STOP",
+    "process.env.HIVEMIND_GRAPH_TICK_INTERVAL_MS": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_TICK_INTERVAL_MS",
+    "process.env.HIVEMIND_GRAPH_PULL": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_PULL",
+    "process.env.HIVEMIND_GRAPH_PULL_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_PULL_TIMEOUT_MS",
+    "process.env.HIVEMIND_TOKEN": "undefined",
+    "process.env.HIVEMIND_ORG_ID": "undefined",
+    "process.env.HIVEMIND_WORKSPACE_ID": "undefined",
+    "process.env.HIVEMIND_API_URL": "undefined",
+    "process.env.HIVEMIND_TABLE": "undefined",
+    "process.env.HIVEMIND_CODEBASE_TABLE": "undefined",
+    "process.env.HIVEMIND_SESSIONS_TABLE": "undefined",
+    "process.env.HIVEMIND_STATE_DIR": "globalThis.__hivemind_tuning__.HIVEMIND_STATE_DIR",
+  },
+};
+
+await build({
+  entryPoints: { "graph-on-stop": "dist/src/hooks/graph-on-stop.js" },
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "harnesses/openclaw/dist",
+  external: openclawGraphWorkerExternals,
+  banner: openclawGraphWorkerDefine.banner,
+  define: openclawGraphWorkerDefine.define,
+});
+chmodSync("harnesses/openclaw/dist/graph-on-stop.js", 0o755);
+
+await build({
+  entryPoints: { "graph-pull-worker": "dist/src/hooks/graph-pull-worker.js" },
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outdir: "harnesses/openclaw/dist",
+  external: openclawGraphWorkerExternals,
+  banner: openclawGraphWorkerDefine.banner,
+  define: openclawGraphWorkerDefine.define,
+});
+chmodSync("harnesses/openclaw/dist/graph-pull-worker.js", 0o755);
 
 // Hivemind MCP server (stdio). Reused by Cline / Roo / Kilo / any MCP-aware
 // agent. Lives at ~/.hivemind/mcp/server.js after install.

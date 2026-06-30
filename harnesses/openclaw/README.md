@@ -22,6 +22,7 @@ Click the auth link, sign in, send another message. That's it.
 
 - **Auto-recall** — before each agent turn, relevant memories surface automatically via keyword search.
 - **Auto-capture** — after each turn, the conversation is stored to your Deeplake workspace.
+- **Code graph** — AST-derived map of your repo (TS/JS/Python) auto-rebuilds after each turn; query via `hivemind_graph_search` and `hivemind_graph_neighborhood` tools.
 - **Cross-platform** — same memory accessible from Claude Code, Codex CLI, and OpenClaw plugins.
 - **Team-wide** — every user in your Deeplake org shares the same memory.
 

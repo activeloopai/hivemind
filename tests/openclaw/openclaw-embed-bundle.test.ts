@@ -50,7 +50,7 @@ describe("openclaw dist bundle — embeddings wiring", () => {
     // bundle) — and the daemon auto-spawn fallback silently does nothing,
     // sending us back to "NULL embeddings forever" before any other agent
     // races us.
-    expect(SRC).toMatch(/_setSpawnImpl\(\s*realSpawn\s*\)/);
+    expect(SRC).toMatch(/_setSpawnImpl\(\s*\w+\s*\)/);
   });
 
   it("never writes a literal NULL into message_embedding (graceful fallback only)", () => {

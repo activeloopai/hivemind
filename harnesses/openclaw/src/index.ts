@@ -8,6 +8,7 @@ function definePluginEntry<T>(entry: T): T { return entry; }
 // actually sees the "call hivemind_search first" directives.
 declare const __HIVEMIND_VERSION__: string;
 declare const __HIVEMIND_SKILL__: string;
+declare const __HIVEMIND_GRAPH_SKILL__: string;
 // Shared core imports
 // setup-config is imported dynamically at the call sites so esbuild emits it
 // as a separate chunk. That way the chunk holds the openclaw.json read/write
@@ -85,6 +86,13 @@ import { createHash } from "node:crypto";
 // for our worker spawn — esbuild does not statically intercept require() calls
 // returned by createRequire.
 import { createRequire } from "node:module";
+import {
+  graphContextInject,
+  resolveGraphCwd,
+  runGraphVfs,
+  spawnOpenclawGraphOnStop,
+  spawnOpenclawGraphPullWorker,
+} from "./graph-lifecycle.js";
 const requireFromOpenclaw = createRequire(import.meta.url);
 const { spawn: realSpawn, execFileSync: realExecFileSync } = requireFromOpenclaw("node:child_process") as typeof import("node:child_process");
 
@@ -428,6 +436,8 @@ const skillifySpawnedFor = new Set<string>();
 const __openclaw_filename = fileURLToPath(import.meta.url);
 const __openclaw_dirname = dirnamePath(__openclaw_filename);
 const OPENCLAW_SKILLIFY_WORKER_PATH = joinPath(__openclaw_dirname, "skillify-worker.js");
+const OPENCLAW_GRAPH_ON_STOP_PATH = joinPath(__openclaw_dirname, "graph-on-stop.js");
+const OPENCLAW_GRAPH_PULL_WORKER_PATH = joinPath(__openclaw_dirname, "graph-pull-worker.js");
 const OPENCLAW_SKILLIFY_STATE_DIR = joinPath(homedir(), ".deeplake", "state", "skillify");
 const OPENCLAW_SKILLIFY_LEGACY_STATE_DIR = joinPath(homedir(), ".deeplake", "state", "skilify");
 
@@ -872,14 +882,15 @@ export default definePluginEntry({
           // can pull teammates' skills. The CLI itself runs from the user's
           // terminal, not from the agent.
           const skillifyHint = `\n\nSkill mining (skillify) runs in the background after each turn — your conversations get crystallised into reusable skills automatically. From your terminal:\n  hivemind skillify status   — see what's been mined\n  hivemind skillify pull     — fetch teammates' skills`;
+          const graphHint = `\n\nCode graph: hivemind_graph_search + hivemind_graph_neighborhood tools query the local AST map (auto-rebuilds after each turn). Set plugins.entries.hivemind.config.tuning.HIVEMIND_GRAPH_CWD to your git repo root if the gateway cwd isn't the project.`;
           if (result.status === "already-set") {
-            return { text: `✅ Hivemind tools are already enabled in your allowlist.\n\nNo changes needed — memory tools are available to the agent.${skillifyHint}` };
+            return { text: `✅ Hivemind tools are already enabled in your allowlist.\n\nNo changes needed — memory tools are available to the agent.${skillifyHint}${graphHint}` };
           }
           if (result.status === "added") {
             const touched: string[] = [];
             if (result.delta.pluginsAllow) touched.push(`"hivemind" → plugins.allow`);
             if (result.delta.toolsAlsoAllow) touched.push(`"hivemind" → tools.alsoAllow`);
-            return { text: `✅ Added:\n  • ${touched.join("\n  • ")}\n\nOpenclaw will detect the config change and restart. On the next turn, the agent will have access to hivemind_search, hivemind_read, and hivemind_index. **Capture starts on the next turn — earlier turns are NOT backfilled.**\n\nBackup of previous config: ${result.backupPath}${skillifyHint}` };
+            return { text: `✅ Added:\n  • ${touched.join("\n  • ")}\n\nOpenclaw will detect the config change and restart. On the next turn, the agent will have access to hivemind_search, hivemind_read, hivemind_index, hivemind_graph_search, and hivemind_graph_neighborhood. **Capture starts on the next turn — earlier turns are NOT backfilled.**\n\nBackup of previous config: ${result.backupPath}${skillifyHint}${graphHint}` };
           }
           return { text: `⚠️ Could not update allowlist: ${result.error}\n\nManual fix: open ${result.configPath}. If \`plugins.allow\` exists as a non-empty array, add "hivemind" to it. If \`tools.alsoAllow\` exists as a non-empty array, add "hivemind" to it. If either is absent or empty, leave it as-is (openclaw treats that as default-allow).` };
         },
@@ -1110,6 +1121,68 @@ export default definePluginEntry({
         },
       });
 
+      pluginApi.registerTool({
+        name: "hivemind_graph_search",
+        label: "Hivemind Graph Search",
+        description:
+          "Search the local AST-derived code graph for symbols by name or substring. Returns matches with 1-hop neighbors (callers, callees, imports). Use for structural questions: what calls X, where is Y defined, what imports Z. Multi-token AND: pattern 'auth+handler'.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            pattern: {
+              type: "string",
+              minLength: 1,
+              description: "Symbol name or substring to search. Use + for AND, e.g. 'push+snapshot'.",
+            },
+          },
+          required: ["pattern"],
+        },
+        execute: async (_toolCallId, rawParams) => {
+          const params = rawParams as { pattern: string };
+          try {
+            const cwd = resolveGraphCwd();
+            const text = await runGraphVfs(`query/${params.pattern}`, cwd);
+            return { content: [{ type: "text", text }] };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            pluginApi.logger.error(`hivemind_graph_search failed: ${msg}`);
+            return { content: [{ type: "text", text: `Graph search failed: ${msg}` }] };
+          }
+        },
+      });
+
+      pluginApi.registerTool({
+        name: "hivemind_graph_neighborhood",
+        label: "Hivemind Graph Neighborhood",
+        description:
+          "Show every symbol in a source file plus its cross-file relationships (callers, callees, imports). Use when you know the file path and want its structural context.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            file: {
+              type: "string",
+              minLength: 1,
+              description: "Repo-relative file path, e.g. src/hooks/capture.ts",
+            },
+          },
+          required: ["file"],
+        },
+        execute: async (_toolCallId, rawParams) => {
+          const params = rawParams as { file: string };
+          try {
+            const cwd = resolveGraphCwd();
+            const text = await runGraphVfs(`neighborhood/${params.file}`, cwd);
+            return { content: [{ type: "text", text }] };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            pluginApi.logger.error(`hivemind_graph_neighborhood failed: ${msg}`);
+            return { content: [{ type: "text", text: `Graph neighborhood failed: ${msg}` }] };
+          }
+        },
+      });
+
       // Write-side: create a goal in the team-shared hivemind_goals table.
       // Mirrors the `hivemind goal add` CLI subcommand (src/commands/goal.ts)
       // — see [[per-agent-tool-intercept-scope]] memory for why openclaw
@@ -1303,9 +1376,10 @@ export default definePluginEntry({
         const allowlistNudge = detectAllowlistMissing()
           ? "\n\n<hivemind-setup-needed>\n" +
             "The user hasn't run /hivemind_setup yet, so hivemind_search, " +
-            "hivemind_read, and hivemind_index are NOT available to you. If " +
-            "they ask about memory and you can't help, tell them to run " +
-            "/hivemind_setup to enable Hivemind memory tools.\n" +
+            "hivemind_read, hivemind_index, hivemind_graph_search, and " +
+            "hivemind_graph_neighborhood are NOT available to you. If they ask " +
+            "about memory or the code graph and you can't help, tell them to run " +
+            "/hivemind_setup to enable Hivemind tools.\n" +
             "</hivemind-setup-needed>\n"
           : "";
         const updateNudge = pendingUpdate
@@ -1315,11 +1389,24 @@ export default definePluginEntry({
             "The gateway reloads the plugin after install.\n" +
             "</hivemind-update-available>\n"
           : "";
+        const graphCwd = resolveGraphCwd();
+        spawnOpenclawGraphPullWorker(OPENCLAW_GRAPH_PULL_WORKER_PATH, graphCwd);
+        let graphBlock = "";
+        try {
+          const graphLine = await graphContextInject(graphCwd);
+          if (graphLine) graphBlock = `\n\n<hivemind-graph-context>\n${graphLine}\n</hivemind-graph-context>\n`;
+        } catch { /* graph hint is best-effort */ }
+        const graphSkillBlock =
+          typeof __HIVEMIND_GRAPH_SKILL__ === "string" && __HIVEMIND_GRAPH_SKILL__.length > 0
+            ? `\n\n<hivemind-graph-skill>\n${__HIVEMIND_GRAPH_SKILL__}\n</hivemind-graph-skill>\n`
+            : "";
         return {
           prependSystemContext:
             allowlistNudge +
             updateNudge +
-            "\n\n<hivemind-skill>\n" + __HIVEMIND_SKILL__ + "\n</hivemind-skill>\n",
+            "\n\n<hivemind-skill>\n" + __HIVEMIND_SKILL__ + "\n</hivemind-skill>\n" +
+            graphSkillBlock +
+            graphBlock,
         };
       });
     }
@@ -1446,6 +1533,13 @@ export default definePluginEntry({
           }
 
           logger.info?.(`Auto-captured ${newMessages.length} messages`);
+
+          // Code graph auto-build (parity with codex/cursor/hermes graph-on-stop).
+          try {
+            spawnOpenclawGraphOnStop(OPENCLAW_GRAPH_ON_STOP_PATH, resolveGraphCwd());
+          } catch (e: unknown) {
+            logger.error(`Graph-on-stop spawn threw: ${e instanceof Error ? e.message : String(e)}`);
+          }
 
           // Skillify: fire the worker after capture so the just-stored messages
           // become candidates for skill mining. Lock-protected, fire-and-forget,

@@ -11,7 +11,9 @@
       "hivemind_read",
       "hivemind_index",
       "hivemind_goal_add",
-      "hivemind_kpi_add"
+      "hivemind_kpi_add",
+      "hivemind_graph_search",
+      "hivemind_graph_neighborhood"
     ],
     "commands": [
       "hivemind_login",
@@ -54,5 +56,5 @@
       }
     }
   },
-  "version": "0.7.115"
+  "version": "0.7.116"
 }
