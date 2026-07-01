@@ -244,6 +244,15 @@ function applyOpenclawTuning(pluginConfig: Record<string, unknown> | undefined):
   setStr("HIVEMIND_SEMANTIC_EMBED_TIMEOUT_MS", tuning.semanticEmbedTimeoutMs);
   setFalseOrOmit("HIVEMIND_SEMANTIC_SEARCH", tuning.semanticSearch);
   setFalseOrOmit("HIVEMIND_SEMANTIC_EMIT_ALL", tuning.semanticEmitAll);
+  // Code graph — knobs read in the gateway process (resolveGraphCwd,
+  // graphOnStopDisabled, graphPullDisabled). Accept the documented uppercase
+  // keys (see the hivemind-graph skill + /hivemind_setup hint) with a
+  // camelCase fallback for consistency with the flags above. Without this the
+  // schema accepts `config.tuning.HIVEMIND_GRAPH_CWD` but it never reaches the
+  // graph code, so the tool silently falls back to the gateway cwd.
+  setStr("HIVEMIND_GRAPH_CWD", tuning.HIVEMIND_GRAPH_CWD ?? tuning.graphCwd);
+  setStr("HIVEMIND_GRAPH_ON_STOP", tuning.HIVEMIND_GRAPH_ON_STOP ?? tuning.graphOnStop);
+  setStr("HIVEMIND_GRAPH_PULL", tuning.HIVEMIND_GRAPH_PULL ?? tuning.graphPull);
 
   (globalThis as Record<string, unknown>).__hivemind_tuning__ = dispatch;
 }
