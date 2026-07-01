@@ -698,6 +698,14 @@ writeFileSync("mcp/bundle/package.json", esmPackageJson);
 await build({
   entryPoints: { cli: "dist/src/cli/index.js" },
   bundle: true,
+  // Code-splitting so the dynamic `import("../commands/graph.js")` in
+  // src/cli/index.ts is emitted as a separate chunk. That keeps the
+  // external `import "tree-sitter"` (an optionalDependency that fails to
+  // build on some platforms, e.g. Node 24 / arm64) OUT of the top of
+  // bundle/cli.js. Without splitting, esbuild hoists that external import
+  // to the entry file and every `hivemind` command — including `install` —
+  // crashes with ERR_MODULE_NOT_FOUND when the addon is absent.
+  splitting: true,
   platform: "node",
   format: "esm",
   outdir: "bundle",
@@ -718,8 +726,18 @@ await build({
     "tree-sitter-c",
     "tree-sitter-cpp",
   ],
-  banner: { js: "#!/usr/bin/env node" },
+  // No `banner` here: with `splitting` enabled esbuild stamps the banner onto
+  // every output file (the entry AND the split chunks). A shebang inside an
+  // imported chunk breaks it (Node strips only the first line, leaving the
+  // rest as a syntax error). Prepend the shebang to the entry file only.
 });
+{
+  const cliPath = "bundle/cli.js";
+  const cliSrc = readFileSync(cliPath, "utf-8");
+  if (!cliSrc.startsWith("#!")) {
+    writeFileSync(cliPath, `#!/usr/bin/env node\n${cliSrc}`);
+  }
+}
 chmodSync("bundle/cli.js", 0o755);
 
 // Standalone embed daemon bundle. `hivemind embeddings install` deposits

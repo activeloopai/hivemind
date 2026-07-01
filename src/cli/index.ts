@@ -14,7 +14,14 @@ import {
 } from "./embeddings.js";
 import { ensureLoggedIn, isLoggedIn, loginWithProvidedToken, maybeShowOrgChoice } from "./auth.js";
 import { runAuthCommand } from "../commands/auth-login.js";
-import { runGraphCommand } from "../commands/graph.js";
+// NOTE: ../commands/graph.js is intentionally NOT imported statically. It pulls
+// in the tree-sitter native addon (an optionalDependency), which fails to build
+// on some platforms (e.g. Node 24 / arm64, where tree-sitter@0.21 needs C++20).
+// A static import would hoist `import "tree-sitter"` to the top of the bundle
+// and crash EVERY `hivemind` command — including `install` — with
+// ERR_MODULE_NOT_FOUND when the addon is absent. It is loaded lazily below
+// (with `splitting` enabled in esbuild, the tree-sitter chunk is split out and
+// only loaded when `hivemind graph` actually runs).
 import { runDashboardCommand } from "../commands/dashboard.js";
 import { runSkillifyCommand } from "../commands/skillify.js";
 import { runRulesCommand } from "../commands/rules.js";
@@ -496,6 +503,22 @@ async function main(): Promise<void> {
   }
 
   if (cmd === "graph") {
+    let runGraphCommand: (a: string[]) => Promise<void> | void;
+    try {
+      ({ runGraphCommand } = await import("../commands/graph.js"));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("tree-sitter") || (err as { code?: string })?.code === "ERR_MODULE_NOT_FOUND") {
+        console.error(
+          "hivemind graph requires the optional 'tree-sitter' native module, which is not installed.\n" +
+            "It can fail to build on some platforms (e.g. Node 24 / arm64). Everything else in Hivemind\n" +
+            "works without it. To enable the codebase graph, reinstall with a toolchain that can build\n" +
+            "native addons, or install tree-sitter manually in the package directory.",
+        );
+        process.exit(1);
+      }
+      throw err;
+    }
     await runGraphCommand(args.slice(1));
     return;
   }
