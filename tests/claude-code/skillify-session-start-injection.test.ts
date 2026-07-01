@@ -310,8 +310,11 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     expect(text).toMatch(/var\s*\{\s*spawn:\s*realSpawn[\s\S]{0,200}\}\s*=\s*requireFromOpenclaw/);
     // spawnOpenclawSkillifyWorker function present in bundle
     expect(text).toMatch(/spawnOpenclawSkillifyWorker/);
-    // realSpawn(process.execPath, [path, configPath], ...) — the actual spawn site
-    expect(text).toMatch(/realSpawn\(process\.execPath/);
+    // realSpawn(process.execPath, [path, configPath], ...) — the actual spawn site.
+    // esbuild appends a numeric suffix (realSpawn2) when another bundled module
+    // (the graph lifecycle) also destructures `spawn` from a dynamic require, so
+    // allow the optional dedup suffix.
+    expect(text).toMatch(/realSpawn\d*\(process\.execPath/);
   });
 
   it("openclaw spawn helper detects a delegate gate CLI and threads gateAgent into the worker config", () => {
