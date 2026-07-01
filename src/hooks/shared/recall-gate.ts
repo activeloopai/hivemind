@@ -46,9 +46,9 @@ export function proactiveRecallDisabled(env: NodeJS.ProcessEnv = process.env): b
 const DEFAULT_RECALL_THRESHOLD = 0.55;
 
 /** Minimum substantive prompt length (chars) before we consider searching. */
-const MIN_PROMPT_CHARS = 24;
+const MIN_PROMPT_CHARS = 10;
 /** Minimum word count for the "substantive prose" path. */
-const MIN_PROMPT_WORDS = 6;
+const MIN_PROMPT_WORDS = 2;
 
 // Short acknowledgements / continuations — never recall-worthy on their own.
 const ACK_RE =

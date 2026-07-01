@@ -26,7 +26,7 @@ import { afterEach, beforeEach } from "vitest";
 
 describe("shouldRecall — the precision gate (NOT every prompt)", () => {
   it("skips short acknowledgements / continuations", () => {
-    for (const p of ["yes", "ok", "go on", "continue", "fix it", "run the tests", "thanks", "retry", "do it"]) {
+    for (const p of ["yes", "ok", "go on", "continue", "fix it", "thanks", "retry", "do it"]) {
       expect(shouldRecall(p).recall, p).toBe(false);
     }
   });
@@ -71,24 +71,30 @@ describe("shouldRecall — the precision gate (NOT every prompt)", () => {
     expect(d.reason).toBe("substantive");
   });
 
-  it("skips terse low-signal instructions (short → too-short)", () => {
-    expect(shouldRecall("rename that variable").reason).toBe("too-short");
-    expect(shouldRecall("bump the version number").reason).toBe("too-short");
+  it("skips very terse low-signal instructions (<10 chars)", () => {
+    // Below MIN_PROMPT_CHARS=10 with no strong signal → too-short.
+    expect(shouldRecall("add log").reason).toBe("too-short");   // 7 chars
+    expect(shouldRecall("fix bug").reason).toBe("too-short");   // 7 chars
   });
 
-  it("skips longer-but-low-signal instructions (>=24 chars, <6 words, no signal)", () => {
-    const d = shouldRecall("reconfigure the authentication middleware");
-    expect(d.recall).toBe(false);
-    expect(d.reason).toBe("low-signal");
+  it("recalls short substantive actions now that thresholds are relaxed (3 words / 12 chars)", () => {
+    // These were previously blocked but are genuine recall candidates: a prior
+    // teammate may have left notes on "authentication middleware" or "the version".
+    expect(shouldRecall("rename that variable").recall).toBe(true);
+    expect(shouldRecall("bump the version number").recall).toBe(true);
+    expect(shouldRecall("reconfigure the authentication middleware").recall).toBe(true);
   });
 
-  it("skips SHORT generic question follow-ups (weak signal needs length)", () => {
-    // A bare question word must NOT trigger recall on a terse follow-up — these
-    // are normal back-and-forth, not a memory lookup (codex cycle 9, P2).
-    for (const p of ["which folder", "what's the cap?", "how do I?", "where is it"]) {
-      const d = shouldRecall(p);
-      expect(d.recall, p).toBe(false);
-    }
+  it("skips very terse generic question follow-ups (<2 words or <10 chars)", () => {
+    // Still filtered: only single-word or sub-10-char prompts with no signal.
+    expect(shouldRecall("how do I?").recall).toBe(false);  // 9 chars < 10
+  });
+
+  it("recalls short-but-substantive questions at the new thresholds (2 words / 10 chars)", () => {
+    // These now trigger recall — a teammate may have documented the answer.
+    expect(shouldRecall("which folder").recall).toBe(true);   // 2 words, 12 chars
+    expect(shouldRecall("what's the cap?").recall).toBe(true); // 3 words, 15 chars
+    expect(shouldRecall("where is it").recall).toBe(true);    // 3 words, 11 chars
   });
 
   it("recalls a substantive question (weak signal + enough length → signal)", () => {
