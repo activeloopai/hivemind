@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, mkdirSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -235,5 +235,41 @@ describe("installOpenclaw()", () => {
     const err = logs.join("");
     expect(err).toMatch(/embed-deps\/node_modules/);
     expect(err).toMatch(/hivemind embeddings install/i);
+  });
+
+  it("symlinks embed-deps node_modules into the plugin dir when present", async () => {
+    writeConfig({ tools: { alsoAllow: ["hivemind"] } });
+    // Populate the machine-global embed-deps node_modules with a marker so we
+    // can prove the plugin's node_modules resolves through the symlink.
+    const embedNm = join(TEMP_HOME, ".hivemind", "embed-deps", "node_modules");
+    mkdirSync(embedNm, { recursive: true });
+    writeFileSync(join(embedNm, "marker.txt"), "tree-sitter");
+
+    const { installOpenclaw } = await loadInstaller();
+    installOpenclaw();
+
+    const pluginNm = join(TEMP_HOME, ".openclaw", "extensions", "hivemind", "node_modules");
+    expect(lstatSync(pluginNm).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(pluginNm, "marker.txt"), "utf-8")).toBe("tree-sitter");
+  });
+
+  it("replaces a real node_modules dir with the embed-deps symlink", async () => {
+    writeConfig({ tools: { alsoAllow: ["hivemind"] } });
+    const embedNm = join(TEMP_HOME, ".hivemind", "embed-deps", "node_modules");
+    mkdirSync(embedNm, { recursive: true });
+    writeFileSync(join(embedNm, "marker.txt"), "tree-sitter");
+    // Pre-create a REAL (non-symlink) node_modules dir at the plugin location;
+    // the installer must remove it before symlinking (else symlinkForce nests
+    // the link inside the stale dir).
+    const pluginNm = join(TEMP_HOME, ".openclaw", "extensions", "hivemind", "node_modules");
+    mkdirSync(pluginNm, { recursive: true });
+    writeFileSync(join(pluginNm, "stale.txt"), "old");
+
+    const { installOpenclaw } = await loadInstaller();
+    installOpenclaw();
+
+    expect(lstatSync(pluginNm).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(pluginNm, "stale.txt"))).toBe(false);
+    expect(readFileSync(join(pluginNm, "marker.txt"), "utf-8")).toBe("tree-sitter");
   });
 });
