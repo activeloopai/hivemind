@@ -53,6 +53,9 @@
       },
       "autoUpdate": {
         "type": "boolean"
+      },
+      "tuning": {
+        "type": "object"
       }
     }
   },
