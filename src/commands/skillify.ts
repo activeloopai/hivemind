@@ -30,6 +30,7 @@ import { runPull, type PullSummary } from "../skillify/pull.js";
 import { runPush } from "../skillify/push.js";
 import { runUnpull } from "../skillify/unpull.js";
 import { loadConfig } from "../config.js";
+import { resolveDirConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { runMineLocal } from "./mine-local.js";
 import { renderSubcommandUsageBlock } from "../cli/skillify-spec.js";
@@ -221,11 +222,14 @@ async function pullSkills(args: string[]): Promise<void> {
   else if (userOne) users = [userOne];
   else if (usersMany) users = usersMany.split(",").map(s => s.trim()).filter(Boolean);
 
-  const config = loadConfig();
-  if (!config) {
+  const base = loadConfig();
+  if (!base) {
     console.error("Not logged in. Run: hivemind login");
     process.exit(1);
   }
+  // Pull from the directory's routed workspace, symmetric with push and with
+  // where this tree's traces are captured (see src/dir-config.ts).
+  const config = resolveDirConfig(base, process.cwd()).config;
   const api = new DeeplakeApi(
     config.token, config.apiUrl, config.orgId, config.workspaceId, config.skillsTableName,
   );
@@ -285,10 +289,16 @@ async function pushSkills(args: string[]): Promise<void> {
     throw new Error("Usage: hivemind skillify push <skill-name> [--from project|global] [--dry-run]");
   }
 
-  const config = loadConfig();
-  if (!config) {
+  const base = loadConfig();
+  if (!base) {
     throw new Error("Not logged in. Run: hivemind login");
   }
+  // Honor the nearest `.hivemind` so a push lands in the directory's routed
+  // workspace, not the global one — matching where this tree's session traces
+  // are captured. Without this, `skillify push` always wrote to the global
+  // workspace regardless of `.hivemind` (the org/workspace fields are identity;
+  // they apply to writes and reads alike — see src/dir-config.ts).
+  const config = resolveDirConfig(base, process.cwd()).config;
   const api = new DeeplakeApi(
     config.token, config.apiUrl, config.orgId, config.workspaceId, config.skillsTableName,
   );
