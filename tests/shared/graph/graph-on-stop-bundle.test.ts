@@ -31,10 +31,12 @@ describe("graph-on-stop shipped bundle (tree-sitter isolation)", () => {
     chunkDir: join(REPO_ROOT, "harnesses", h, "bundle", "graph-chunks"),
   })).filter((b) => existsSync(b.entry));
 
-  it("has at least one built harness bundle to check", () => {
-    // Guards against the glob silently matching nothing (e.g. path drift) and
-    // the suite reporting green without asserting anything.
-    expect(built.length).toBeGreaterThan(0);
+  it("has every harness bundle built (none silently missing)", () => {
+    // Require ALL four harnesses, not just one: a filtered subset would let a
+    // per-harness packaging regression (or a build that skipped a harness)
+    // pass unnoticed. Asserting the exact set also guards against the glob
+    // matching nothing after a path drift.
+    expect(built.map((b) => b.harness)).toEqual(HARNESSES);
   });
 
   for (const b of built) {

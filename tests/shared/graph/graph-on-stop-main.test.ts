@@ -134,10 +134,14 @@ describe("graph-on-stop main()", () => {
       }),
     ).resolves.toBeUndefined();
     expect(release).toHaveBeenCalledTimes(1);
+    // Logging is part of this regression's contract (the operator's only trace
+    // that the build was skipped), so assert it unconditionally with the
+    // specific message rather than guarding on the file's existence.
     const log = join(baseDir, ".graph-on-stop.log");
-    if (existsSync(log)) {
-      expect(readFileSync(log, "utf8")).toContain("build threw");
-    }
+    expect(existsSync(log)).toBe(true);
+    expect(readFileSync(log, "utf8")).toContain(
+      "build threw: Cannot find package 'tree-sitter'",
+    );
   });
 
   it("decideGate throws → early return, no lock attempt, error logged", async () => {
