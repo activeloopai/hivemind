@@ -50,6 +50,16 @@ function freshHome(): void {
   mkdirSync(join(HOME_DIR, ".deeplake"), { recursive: true });
 }
 
+/** The embed-deps install: bare `npm install` (flags only, no package specs —
+ *  deps come from the shared package.json) run in SHARED_DIR. Distinguishes it
+ *  from the graph-parser install, which passes tree-sitter specs in argv. */
+function isEmbedDepsInstall(c: unknown[]): boolean {
+  return c[0] === "npm"
+    && Array.isArray(c[1]) && c[1][0] === "install"
+    && c[1].slice(1).every((a) => String(a).startsWith("--"))
+    && (c[2] as { cwd?: string } | undefined)?.cwd === mod.SHARED_DIR;
+}
+
 describe("installEmbeddings (sandboxed HOME, mocked npm)", () => {
   beforeEach(() => { freshHome(); });
   afterEach(() => { cfg._resetUserConfigForTesting(); });
@@ -59,7 +69,10 @@ describe("installEmbeddings (sandboxed HOME, mocked npm)", () => {
     vi.mocked(cp.execFileSync).mockClear();
     mod.installEmbeddings();
     // ensureSharedDeps ran its npm install (mocked) into the sandbox shared dir.
-    expect(vi.mocked(cp.execFileSync).mock.calls.some((c) => c[0] === "npm")).toBe(true);
+    // The graph-parser install also runs npm in SHARED_DIR but passes package
+    // specs in argv; the embed-deps install is a bare `npm install` (flags only,
+    // deps come from the shared package.json) — assert on that shape.
+    expect(vi.mocked(cp.execFileSync).mock.calls.some(isEmbedDepsInstall)).toBe(true);
     // A shared package.json was laid down under the tmp HOME.
     expect(existsSync(join(HOME_DIR, ".hivemind", "embed-deps", "package.json"))).toBe(true);
     // Config flag flipped on regardless of whether any agent was detected.
@@ -73,12 +86,10 @@ describe("installEmbeddings (sandboxed HOME, mocked npm)", () => {
     const cp = await import("node:child_process");
     vi.mocked(cp.execFileSync).mockClear();
     mod.installEmbeddings();
-    // No transformers `npm install` — the only npm call (if any) is the graph
-    // parsers, never the transformers one.
-    const transformersInstall = vi.mocked(cp.execFileSync).mock.calls.some(
-      (c) => c[0] === "npm" && Array.isArray(c[1]) && c[1].includes(mod.TRANSFORMERS_PKG),
-    );
-    expect(transformersInstall).toBe(false);
+    // No embed-deps `npm install` — transformers is declared via the shared
+    // package.json (never in npm argv), so a spec-carrying graph-parser npm call
+    // may still run; only the bare flags-only install in SHARED_DIR must not.
+    expect(vi.mocked(cp.execFileSync).mock.calls.some(isEmbedDepsInstall)).toBe(false);
     expect(cfg.getEmbeddingsEnabled()).toBe(true);
   });
 
