@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, lstatSync, readlinkSync, rmSync, existsSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   disableEmbeddings,
   enableEmbeddings,
   findHivemindInstalls,
-  installEmbeddings,
   isSharedDepsInstalled,
   killEmbedDaemon,
   linkStateFor,
@@ -14,6 +14,7 @@ import {
   SHARED_NODE_MODULES,
   TRANSFORMERS_PKG,
   uninstallEmbeddings,
+  _isDaemonAliveOnSocket,
   _linkAgentForTesting,
   _installWithFallback,
 } from "../../src/cli/embeddings.js";
@@ -414,4 +415,94 @@ describe("_installWithFallback — npm install + fallback logic", () => {
     // only 2 calls: first npm (fail) + retry npm --ignore-scripts
     expect(exec).toHaveBeenCalledTimes(2);
   });
+
+  it("non-Error throwables are stringified in every warn/throw message (String(err) arms)", () => {
+    // First npm throws a bare string (not an Error) → String(err) arm at the
+    // primary-failure warn. Retry ALSO throws a bare string → String(err) arm
+    // in the hard-fail throw. And when the onnx script throws a bare string the
+    // String(err) arm in its warn runs too. Drive all three with string throws.
+    const onnxDir = join(tmpHome, "node_modules", "onnxruntime-node", "script");
+    mkdirSync(onnxDir, { recursive: true });
+    writeFileSync(join(onnxDir, "install.js"), "// stub");
+
+    // (a) primary fail + retry fail (both strings) → throws with stringified retry err
+    const bothFail = vi.fn(() => { throw "kaboom-string"; }) as any;
+    expect(() => _installWithFallback("/fake/shared", "/fake/nm", bothFail))
+      .toThrow("kaboom-string");
+
+    // (b) primary fail (string) → retry ok → onnx fail (string) → warn, no throw
+    let call = 0;
+    const onnxFail = vi.fn(() => {
+      if (call === 0) { call++; throw "primary-string"; }   // npm install fails
+      if (call === 2) { call++; throw "onnx-string"; }       // onnx script fails
+      call++;                                                 // retry succeeds
+    }) as any;
+    expect(() => _installWithFallback(tmpHome, join(tmpHome, "node_modules"), onnxFail)).not.toThrow();
+    expect(onnxFail).toHaveBeenCalledTimes(3);
+  });
 });
+
+// ── killEmbedDaemon: pidfile + socket permutations via socketDir override ──
+
+describe("killEmbedDaemon — pidfile/socket permutations", () => {
+  function uidStr(): string {
+    return String(typeof process.getuid === "function" ? process.getuid() : 0);
+  }
+
+  it("stale pidfile with a dead socket → logs skip, deletes pidfile, never SIGTERMs", () => {
+    const sockDir = mkdtempSync(join(tmpdir(), "emb-sock-"));
+    const pidPath = join(sockDir, `hivemind-embed-${uidStr()}.pid`);
+    // A PID that certainly isn't a running process on this box.
+    writeFileSync(pidPath, "999999");
+    // No .sock file → _isDaemonAliveOnSocket returns false → skip-SIGTERM arm.
+    const lines: string[] = [];
+    const outSpy = vi.spyOn(process.stdout, "write").mockImplementation((c: unknown) => { lines.push(String(c)); return true; });
+    expect(() => killEmbedDaemon(sockDir)).not.toThrow();
+    outSpy.mockRestore();
+    expect(lines.join("\n")).toContain("skipping SIGTERM on possibly-stale pid 999999");
+    // Pidfile cleaned up.
+    expect(existsSync(pidPath)).toBe(false);
+    rmSync(sockDir, { recursive: true, force: true });
+  });
+
+  it("live socket + our own pid → probe succeeds, takes the SIGTERM arm", async () => {
+    const sockDir = mkdtempSync(join(tmpdir(), "emb-sock-live-"));
+    const sockPath = join(sockDir, `hivemind-embed-${uidStr()}.sock`);
+    const pidPath = join(sockDir, `hivemind-embed-${uidStr()}.pid`);
+    // Stand up a real UDS listener so _isDaemonAliveOnSocket connects.
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(sockPath, resolve));
+    // Point the pidfile at THIS test process's pid: process.kill(pid,'SIGTERM')
+    // on our own pid would kill the test runner, so we mock process.kill.
+    writeFileSync(pidPath, String(process.pid));
+    const killSpy = vi.spyOn(process, "kill").mockReturnValue(true);
+    try {
+      expect(() => killEmbedDaemon(sockDir)).not.toThrow();
+      expect(killSpy).toHaveBeenCalledWith(process.pid, "SIGTERM");
+    } finally {
+      killSpy.mockRestore();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(sockDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── _isDaemonAliveOnSocket: live vs absent ────────────────────────────────
+
+describe("_isDaemonAliveOnSocket", () => {
+  it("false when the socket path does not exist", () => {
+    expect(_isDaemonAliveOnSocket(join(tmpHome, "nope.sock"))).toBe(false);
+  });
+
+  it("true when a real listener is accepting connections on the socket", async () => {
+    const sockPath = join(tmpHome, "live.sock");
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(sockPath, resolve));
+    try {
+      expect(_isDaemonAliveOnSocket(sockPath, 500)).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+

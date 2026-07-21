@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
-import { mkdtempSync, mkdirSync, existsSync, rmSync, lstatSync, readlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, rmSync, lstatSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
@@ -153,5 +153,105 @@ describe("statusEmbeddings (sandboxed HOME)", () => {
     // Shared deps present + codex symlinked → the "installed" + linked arms.
     expect(out).toContain("Installed:     yes");
     expect(out).toMatch(/codex\s+✓ linked → shared/);
+  });
+
+  function capture(fn: () => void): string {
+    const lines: string[] = [];
+    const outSpy = vi.spyOn(process.stdout, "write").mockImplementation((c: unknown) => { lines.push(String(c)); return true; });
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation((c: unknown) => { lines.push(String(c)); return true; });
+    try { fn(); } finally { outSpy.mockRestore(); errSpy.mockRestore(); }
+    return lines.join("\n");
+  }
+
+  it("disabled config → prints the DISABLED help block", () => {
+    cfg.setEmbeddingsEnabled(false);
+    const out = capture(() => mod.statusEmbeddings());
+    expect(out).toContain("Embeddings are DISABLED in user config");
+  });
+
+  it("enabled but shared deps missing → warns deps are missing", () => {
+    cfg.setEmbeddingsEnabled(true);
+    // No <shared>/node_modules/@huggingface/transformers laid down.
+    const out = capture(() => mod.statusEmbeddings());
+    expect(out).toContain("enabled in config but shared deps are missing");
+  });
+
+  it("no agent installs detected → prints '(none detected)' and returns early", () => {
+    // freshHome() already removed every agent dir → findHivemindInstalls == [].
+    const out = capture(() => mod.statusEmbeddings());
+    expect(out).toContain("(none detected)");
+  });
+
+  it("agent owns its own node_modules → prints the has-its-own label", () => {
+    mkdirSync(join(HOME_DIR, ".codex", "hivemind", "bundle"), { recursive: true });
+    mkdirSync(join(HOME_DIR, ".codex", "hivemind", "node_modules"), { recursive: true });
+    const out = capture(() => mod.statusEmbeddings());
+    expect(out).toMatch(/codex\s+△ has its own node_modules/);
+  });
+
+  it("agent linked elsewhere → prints the linked-→-other label", () => {
+    mkdirSync(join(HOME_DIR, ".codex", "hivemind", "bundle"), { recursive: true });
+    const elsewhere = join(HOME_DIR, "some-other-nm");
+    mkdirSync(elsewhere, { recursive: true });
+    symlinkSync(elsewhere, join(HOME_DIR, ".codex", "hivemind", "node_modules"));
+    const out = capture(() => mod.statusEmbeddings());
+    expect(out).toContain(`△ linked → ${elsewhere}`);
+  });
+
+  it("daemon bundle present → prints its path instead of '(not present)'", () => {
+    // Lay the daemon file down at SHARED_DAEMON_PATH so the existsSync arm at
+    // the "Daemon:" line takes the present branch.
+    mkdirSync(mod.SHARED_DIR, { recursive: true });
+    writeFileSync(mod.SHARED_DAEMON_PATH, "// daemon");
+    const out = capture(() => mod.statusEmbeddings());
+    expect(out).toContain(`Daemon:        ${mod.SHARED_DAEMON_PATH}`);
+    expect(out).not.toContain("Daemon:        (not present)");
+  });
+});
+
+describe("enableEmbeddings (sandboxed HOME)", () => {
+  beforeEach(() => { freshHome(); });
+  afterEach(() => { cfg._resetUserConfigForTesting(); vi.restoreAllMocks(); });
+
+  function capture(fn: () => void): string {
+    const lines: string[] = [];
+    const outSpy = vi.spyOn(process.stdout, "write").mockImplementation((c: unknown) => { lines.push(String(c)); return true; });
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation((c: unknown) => { lines.push(String(c)); return true; });
+    try { fn(); } finally { outSpy.mockRestore(); errSpy.mockRestore(); }
+    return lines.join("\n");
+  }
+
+  it("shared deps absent → flips flag on and warns to run install", () => {
+    const out = capture(() => mod.enableEmbeddings());
+    expect(cfg.getEmbeddingsEnabled()).toBe(true);
+    expect(out).toContain("shared deps not installed yet");
+  });
+
+  it("shared deps present → flips flag on and reports deps present", () => {
+    mkdirSync(join(mod.SHARED_NODE_MODULES, mod.TRANSFORMERS_PKG), { recursive: true });
+    const out = capture(() => mod.enableEmbeddings());
+    expect(cfg.getEmbeddingsEnabled()).toBe(true);
+    expect(out).toContain("shared deps present");
+  });
+});
+
+describe("uninstallEmbeddings — unlinks a symlink into the shared deps (sandboxed HOME)", () => {
+  beforeEach(() => { freshHome(); });
+  afterEach(() => { cfg._resetUserConfigForTesting(); });
+
+  it("removes an agent node_modules symlink pointing at SHARED_NODE_MODULES", () => {
+    const pluginDir = join(HOME_DIR, ".codex", "hivemind");
+    mkdirSync(join(pluginDir, "bundle"), { recursive: true });
+    // isSymlinkToSharedDeps() calls existsSync(link) first, which FOLLOWS the
+    // symlink — so the shared target must actually exist for the true arm to
+    // fire and the unlinkSync to run.
+    mkdirSync(mod.SHARED_NODE_MODULES, { recursive: true });
+    const link = join(pluginDir, "node_modules");
+    symlinkSync(mod.SHARED_NODE_MODULES, link);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    mod.uninstallEmbeddings();
+    // The shared symlink was removed by uninstall.
+    expect(lstatSync(link, { throwIfNoEntry: false })).toBeUndefined();
+    expect(cfg.getEmbeddingsEnabled()).toBe(false);
   });
 });
