@@ -19,6 +19,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const queryMock = vi.fn();
+// Default: resolve `null` ("untrusted table list") so the pre-flight guard
+// falls back to the SELECT-then-catch path — keeps every pre-existing test
+// (which only stubs `query`) exercising the query as before.
+const knownTablesMock = vi.fn(async (): Promise<string[] | null> => null);
 
 vi.mock("../../src/deeplake-api.js", () => ({
   DeeplakeApi: class {
@@ -30,6 +34,7 @@ vi.mock("../../src/deeplake-api.js", () => ({
       _tableName: string,
     ) { /* nothing */ }
     query(sql: string) { return queryMock(sql); }
+    knownTablesOrNull() { return knownTablesMock(); }
   },
 }));
 
@@ -45,6 +50,9 @@ const BASE_CREDS = {
 
 beforeEach(() => {
   queryMock.mockReset();
+  knownTablesMock.mockReset();
+  // Restore the default "untrusted list -> fall back to query" behavior.
+  knownTablesMock.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -108,6 +116,35 @@ describe("fetchOpenGoals — SQL shape", () => {
     const result = await fetchOpenGoals(BASE_CREDS as any, 'evil"; DROP TABLE x; --');
     expect(result).toBeNull();
     expect(queryMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── pre-flight table-existence guard (42P01 prevention) ──────────────────────
+
+describe("fetchOpenGoals — table-existence pre-flight", () => {
+  it("skips the SELECT entirely when the goals table is absent from the trusted list (no server-side 42P01)", async () => {
+    // Fresh org that never created hivemind_goals: the table list is trusted
+    // and does not include it. The banner must NOT issue the SELECT — sending
+    // it would log a 42P01 server-side on every SessionStart even though the
+    // catch hides it from the user.
+    knownTablesMock.mockResolvedValue(["sessions", "memory", "hivemind_rules"]);
+    const result = await fetchOpenGoals(BASE_CREDS as any, "hivemind_goals");
+    expect(result).toBeNull();
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
+  it("issues the SELECT when the goals table IS present in the trusted list", async () => {
+    knownTablesMock.mockResolvedValue(["sessions", "hivemind_goals"]);
+    queryMock.mockResolvedValue([]);
+    await fetchOpenGoals(BASE_CREDS as any, "hivemind_goals");
+    expect(queryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the SELECT when the table list is untrusted (null) — a transient lookup blip must not hide a real table", async () => {
+    knownTablesMock.mockResolvedValue(null);
+    queryMock.mockResolvedValue([]);
+    await fetchOpenGoals(BASE_CREDS as any, "hivemind_goals");
+    expect(queryMock).toHaveBeenCalledTimes(1);
   });
 });
 

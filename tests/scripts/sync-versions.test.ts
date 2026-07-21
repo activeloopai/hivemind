@@ -61,7 +61,7 @@ describe("syncVersions", () => {
   it("partial-sync state: writes only the targets that drifted", () => {
     seedFixture("1.2.3", {
       ".claude-plugin/plugin.json": "1.2.3", // already synced
-      "codex/package.json": "0.5.0", // drifted
+      "harnesses/codex/package.json": "0.5.0", // drifted
     });
     const result = syncVersions({ root, log: () => {} });
     expect(result.writes).toBeGreaterThan(0);
@@ -84,7 +84,7 @@ describe("syncVersions", () => {
 
   it("throws when a target file is missing", () => {
     seedFixture("1.2.3");
-    rmSync(resolve(root, "codex/package.json"));
+    rmSync(resolve(root, "harnesses/codex/package.json"));
     expect(() => syncVersions({ root, log: () => {} })).toThrow(/codex\/package\.json/);
   });
 

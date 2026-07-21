@@ -91,34 +91,64 @@ export interface SessionFile {
 }
 
 /** List all session JSONL files across installed agents, with cwd tagging. */
+function pushJsonlFile(
+  out: SessionFile[],
+  agent: LocalAgent,
+  dir: string,
+  fileName: string,
+  inCwd: boolean,
+): void {
+  if (!fileName.endsWith(".jsonl")) return;
+  const fullPath = join(dir, fileName);
+  let stats;
+  try { stats = statSync(fullPath); } catch { return; }
+  if (!stats.isFile()) return;
+  out.push({
+    agent,
+    path: fullPath,
+    mtime: stats.mtimeMs,
+    inCwd,
+    sessionId: fileName.replace(/\.jsonl$/, ""),
+  });
+}
+
+/**
+ * Collect every *.jsonl under `dir` at any depth. `inCwd` is decided by the
+ * caller from the TOP-LEVEL segment and propagated unchanged — Claude's
+ * encoded-cwd dir sits at depth 1, while nested agents (codex:
+ * YYYY/MM/DD/rollout-*.jsonl) never match an encoded cwd and stay
+ * inCwd=false.
+ */
+function collectJsonlRecursive(
+  out: SessionFile[],
+  agent: LocalAgent,
+  dir: string,
+  inCwd: boolean,
+): void {
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (e.isDirectory()) collectJsonlRecursive(out, agent, join(dir, e.name), inCwd);
+    else if (e.isFile()) pushJsonlFile(out, agent, dir, e.name, inCwd);
+  }
+}
+
 export function listLocalSessions(installs: AgentInstall[], cwd: string): SessionFile[] {
   const out: SessionFile[] = [];
   for (const install of installs) {
     const cwdEncoded = install.encodeCwd(cwd);
-    let subdirs: string[] = [];
-    try { subdirs = readdirSync(install.sessionRoot); } catch { continue; }
-    for (const sub of subdirs) {
-      const subdirPath = join(install.sessionRoot, sub);
-      try {
-        if (!statSync(subdirPath).isDirectory()) continue;
-      } catch { continue; }
-      const inCwd = sub === cwdEncoded;
-      let files: string[] = [];
-      try { files = readdirSync(subdirPath); } catch { continue; }
-      for (const f of files) {
-        if (!f.endsWith(".jsonl")) continue;
-        const fullPath = join(subdirPath, f);
-        let stats;
-        try { stats = statSync(fullPath); } catch { continue; }
-        if (!stats.isFile()) continue;
-        const sessionId = f.replace(/\.jsonl$/, "");
-        out.push({
-          agent: install.agent,
-          path: fullPath,
-          mtime: stats.mtimeMs,
-          inCwd,
-          sessionId,
-        });
+    let top;
+    try { top = readdirSync(install.sessionRoot, { withFileTypes: true }); } catch { continue; }
+    for (const entry of top) {
+      // inCwd is anchored on the top-level segment (Claude's encoded-cwd
+      // dir). Agents with deeper layouts never match, so they fall through
+      // as inCwd=false — identical to the prior single-level behavior for
+      // Claude, but now actually reaching nested codex/cursor/hermes files.
+      const inCwd = entry.name === cwdEncoded;
+      if (entry.isDirectory()) {
+        collectJsonlRecursive(out, install.agent, join(install.sessionRoot, entry.name), inCwd);
+      } else if (entry.isFile()) {
+        pushJsonlFile(out, install.agent, install.sessionRoot, entry.name, inCwd);
       }
     }
   }

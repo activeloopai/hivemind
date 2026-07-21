@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const stdinMock = vi.fn();
 const loadConfigMock = vi.fn();
@@ -177,6 +180,7 @@ describe("hermes session-start hook — context payload", () => {
 
   it("falls back to orgId in the org line when orgName is missing", async () => {
     loadCredentialsMock.mockReturnValue({ token: "t", orgId: "o-99" });
+    loadConfigMock.mockReturnValue({ ...validConfig, orgId: "o-99", orgName: undefined });
     await runHook();
     const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
     expect(payload.context).toContain("org: o-99");
@@ -217,7 +221,11 @@ describe("hermes session-start hook — local mined skills note", () => {
     loadCredentialsMock.mockReturnValue(null);
     await runHook();
     const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
-    expect(payload.context).not.toContain("local skill");
+    // Match the mined-skills note's own signature, not the bare substring
+    // "local skill" — the always-present skillify command reference now
+    // documents `push <skill-name>` ("upload a local skill ..."), which would
+    // otherwise false-positive here.
+    expect(payload.context).not.toContain("from past 'hivemind skillify mine-local'");
     expect(payload.context).not.toContain("live in");
   });
 
@@ -255,5 +263,45 @@ describe("hermes session-start hook — local mined skills note", () => {
     const insertSql = queryMock.mock.calls[1]?.[0] as string;
     // Either "unknown" or empty-string-as-project — the branch is exercised either way.
     expect(insertSql).toBeTruthy();
+  });
+});
+
+describe("hermes session-start hook — per-directory .hivemind", () => {
+  let hmDir: string;
+  afterEach(() => { if (hmDir) rmSync(hmDir, { recursive: true, force: true }); });
+
+  function withHivemind(body: Record<string, unknown>): void {
+    hmDir = mkdtempSync(join(tmpdir(), "hermes-hivemind-"));
+    writeFileSync(join(hmDir, ".hivemind"), JSON.stringify(body));
+    stdinMock.mockResolvedValue({ session_id: "ses-1", cwd: hmDir });
+  }
+
+  function banner(): string {
+    return JSON.parse(consoleLogMock.mock.calls[0][0] as string).context;
+  }
+
+  it("a routing .hivemind discloses the routed org/workspace in the banner", async () => {
+    withHivemind({ orgId: "routed-org", workspaceId: "routed-ws" });
+    await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
+    expect(banner()).toContain("org: routed-org (workspace: routed-ws)");
+    expect(banner()).toContain("routed by");
+    expect(ensureTableMock).toHaveBeenCalled();
+  });
+
+  it("collect:false skips table setup and says capture is disabled", async () => {
+    withHivemind({ collect: false });
+    await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
+    expect(banner()).toContain("capture is disabled for this directory");
+    expect(ensureTableMock).not.toHaveBeenCalled();
+    expect(ensureSessionsTableMock).not.toHaveBeenCalled();
+  });
+
+  it("env HIVEMIND_ORG_ID overrides a routing .hivemind (env > file)", async () => {
+    withHivemind({ orgId: "routed-org", workspaceId: "routed-ws" });
+    loadConfigMock.mockReturnValue({ ...validConfig, orgId: "env-org", orgName: "env-org" });
+    await runHook({ HIVEMIND_ORG_ID: "env-org", HIVEMIND_WORKSPACE_ID: undefined });
+    expect(banner()).toContain("org: env-org");
+    expect(banner()).not.toContain("routed-org");
+    expect(banner()).toContain("workspace: routed-ws");
   });
 });

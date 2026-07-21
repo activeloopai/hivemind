@@ -11,6 +11,7 @@ import {
   RULES_COLUMNS,
   GOALS_COLUMNS,
   KPIS_COLUMNS,
+  DOCS_COLUMNS,
   buildCreateTableSql,
   healMissingColumns,
 } from "./deeplake-schema.js";
@@ -141,8 +142,14 @@ function getQueryTimeoutMs(): number {
   return Number(process.env.HIVEMIND_QUERY_TIMEOUT_MS ?? 10_000);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new Error("aborted"));
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    // An abort during the backoff short-circuits the wait (and clears the
+    // timer) so a caller's deadline isn't kept alive by the retry sleep.
+    signal?.addEventListener("abort", () => { clearTimeout(t); reject(new Error("aborted")); }, { once: true });
+  });
 }
 
 function isTimeoutError(error: unknown): boolean {
@@ -218,13 +225,13 @@ export class DeeplakeApi {
   ) {}
 
   /** Execute SQL with retry on transient errors and bounded concurrency. */
-  async query(sql: string): Promise<Record<string, unknown>[]> {
+  async query(sql: string, signal?: AbortSignal): Promise<Record<string, unknown>[]> {
     const startedAt = Date.now();
     const summary = summarizeSql(sql);
     traceSql(`query start: ${summary}`);
     await this._sem.acquire();
     try {
-      const rows = await this._queryWithRetry(sql);
+      const rows = await this._queryWithRetry(sql, signal);
       traceSql(`query ok (${Date.now() - startedAt}ms, rows=${rows.length}): ${summary}`);
       return rows;
     } catch (e: unknown) {
@@ -236,13 +243,21 @@ export class DeeplakeApi {
     }
   }
 
-  private async _queryWithRetry(sql: string): Promise<Record<string, unknown>[]> {
+  private async _queryWithRetry(sql: string, externalSignal?: AbortSignal): Promise<Record<string, unknown>[]> {
     let lastError: Error | undefined;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      // A caller-supplied signal (e.g. recall's latency budget) aborts the
+      // whole operation — including between retries — so in-flight work is
+      // actually cancelled, not just abandoned.
+      if (externalSignal?.aborted) throw new Error("Query aborted");
       let resp: Response;
       const timeoutMs = getQueryTimeoutMs();
       try {
-        const signal = AbortSignal.timeout(timeoutMs);
+        // Cancel on whichever fires first: the caller's signal or our own
+        // per-attempt fetch timeout.
+        const signal = externalSignal
+          ? AbortSignal.any([externalSignal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs);
         resp = await fetch(`${this.apiUrl}/workspaces/${this.workspaceId}/tables/query`, {
           method: "POST",
           headers: {
@@ -264,7 +279,7 @@ export class DeeplakeApi {
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
           log(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
-          await sleep(delay);
+          await sleep(delay, externalSignal);
           continue;
         }
         throw lastError;
@@ -288,7 +303,7 @@ export class DeeplakeApi {
       if (!alreadyExists && attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
-        await sleep(delay);
+        await sleep(delay, externalSignal);
         continue;
       }
       // Surface a session-start banner for the "out of credits" case before
@@ -675,6 +690,28 @@ export class DeeplakeApi {
     }
     await this.healSchema(safe, KPIS_COLUMNS);
     await this.ensureLookupIndex(safe, "goal_id_kpi_id", `("goal_id", "kpi_id")`);
+  }
+
+  /**
+   * Create the docs table — per-file documentation kept fresh on code deltas.
+   *
+   * INSERT-only version-bumped (same write pattern as rules/skills): every
+   * edit appends a fresh row with version+1, reads pick the latest per
+   * doc_id via `ORDER BY version DESC LIMIT 1` (see src/docs/read.ts).
+   * Sidesteps the Deeplake UPDATE-coalescing quirk by never UPDATEing.
+   * The (doc_id, version) index is what the latest-row read scans.
+   */
+  async ensureDocsTable(name: string): Promise<void> {
+    const safe = sqlIdent(name);
+    const tables = await this.listTables();
+    if (!tables.includes(safe)) {
+      log(`table "${safe}" not found, creating`);
+      await this.createTableWithRetry(buildCreateTableSql(safe, DOCS_COLUMNS), safe);
+      log(`table "${safe}" created`);
+      if (!tables.includes(safe)) this._tablesCache = [...tables, safe];
+    }
+    await this.healSchema(safe, DOCS_COLUMNS);
+    await this.ensureLookupIndex(safe, "doc_id_version", `("doc_id", "version")`);
   }
 }
 

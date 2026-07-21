@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const loadCredentialsMock = vi.fn();
+const loadConfigMock = vi.fn();
 const loginMock = vi.fn();
 const saveCredentialsMock = vi.fn();
 const deleteCredentialsMock = vi.fn();
@@ -40,6 +41,13 @@ vi.mock("../../src/commands/auth.js", () => ({
 vi.mock("../../src/commands/session-prune.js", () => ({
   sessionPrune: (...a: unknown[]) => sessionPruneMock(...a),
 }));
+// `whoami` reports the EFFECTIVE identity, so it resolves through loadConfig()
+// (which folds in HIVEMIND_* env vars) rather than reading creds directly.
+// Mock it at the boundary too — unmocked it would read the developer's real
+// ~/.deeplake/credentials.json and make these assertions machine-dependent.
+vi.mock("../../src/config.js", () => ({
+  loadConfig: (...a: unknown[]) => loadConfigMock(...a),
+}));
 
 const validCreds = {
   token: "tok",
@@ -51,8 +59,20 @@ const validCreds = {
   savedAt: "2024-01-01",
 };
 
+/** What loadConfig() builds from validCreds when no env var overrides apply. */
+const validConfig = {
+  token: "tok",
+  orgId: "org-1",
+  orgName: "acme",
+  userName: "u",
+  workspaceId: "default",
+  apiUrl: "https://api.example",
+  tableName: "memory",
+};
+
 beforeEach(() => {
   loadCredentialsMock.mockReset().mockReturnValue(validCreds);
+  loadConfigMock.mockReset().mockReturnValue(validConfig);
   loginMock.mockReset().mockResolvedValue(undefined);
   saveCredentialsMock.mockReset();
   deleteCredentialsMock.mockReset().mockReturnValue(true);
@@ -114,7 +134,10 @@ describe("runAuthCommand — whoami", () => {
   });
 
   it("falls back to orgId when orgName is missing", async () => {
+    // loadConfig() owns this fallback (orgName: creds?.orgName ?? orgId), so a
+    // creds row without orgName reaches whoami as a config carrying orgId.
     loadCredentialsMock.mockReturnValue({ ...validCreds, orgName: undefined });
+    loadConfigMock.mockReturnValue({ ...validConfig, orgName: "org-1" });
     await run(["whoami"]);
     expect(consoleText()).toContain("User org: org-1");
   });

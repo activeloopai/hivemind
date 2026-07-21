@@ -11,7 +11,7 @@
  *   Reference: openclaw repo, src/security/skill-scanner.ts:147-206
  *
  * Usage:
- *   node scripts/audit-openclaw-bundle.mjs           # scan openclaw/dist
+ *   node scripts/audit-openclaw-bundle.mjs           # scan harnesses/openclaw/dist
  *   node scripts/audit-openclaw-bundle.mjs <path>    # scan a specific dir
  *
  * Exits non-zero if any "critical" or "warn" finding is reported.
@@ -32,7 +32,7 @@ import { join, extname } from "node:path";
 // surface every drift before it ships.
 const rawArgs = process.argv.slice(2);
 const STRICT_MODE = !rawArgs.includes("--criticals-only");
-const SCAN_DIR = rawArgs.find(a => !a.startsWith("--")) ?? "openclaw/dist";
+const SCAN_DIR = rawArgs.find(a => !a.startsWith("--")) ?? "harnesses/openclaw/dist";
 const SCANNABLE_EXT = new Set([".js", ".mjs", ".cjs"]);
 const MAX_FILE_BYTES = 1024 * 1024; // 1MB; matches upstream default
 

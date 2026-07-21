@@ -11,7 +11,7 @@ import { SKILLOPT_ENV } from "../../skillify/skillopt-env.js";
 /**
  * Recover an org-skill ref from a tool call that LOADS a skill's SKILL.md — how agents without
  * a first-class `Skill` tool use skills: pi `read`s `.../skills/<dir>/SKILL.md` (structured
- * `path`), codex/hermes SHELL a read of it (path inside `command`). The `<dir>` segment is the
+ * `path`), harnesses/codex/hermes SHELL a read of it (path inside `command`). The `<dir>` segment is the
  * ref. Returns null when it isn't a SKILL.md load. markSkillPending still gates the ref
  * (org-shape + manifest), so a bare/non-org dir is rejected there.
  */

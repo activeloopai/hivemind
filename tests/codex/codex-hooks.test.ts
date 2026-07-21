@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const codexRoot = join(process.cwd(), "codex");
+const codexRoot = join(process.cwd(), "harnesses", "codex");
 
 describe("codex hooks.json", () => {
   const hooks = JSON.parse(readFileSync(join(codexRoot, "hooks", "hooks.json"), "utf-8"));
@@ -57,6 +57,17 @@ describe("codex hooks.json", () => {
     }
   });
 
+  it("hook commands reference $PLUGIN_ROOT, never the unset $CODEX_PLUGIN_ROOT", () => {
+    // Codex injects PLUGIN_ROOT / CLAUDE_PLUGIN_ROOT into hook commands, NOT
+    // CODEX_PLUGIN_ROOT. A directory (Codex-managed) install runs this file
+    // verbatim, so referencing the unset var would expand to `/bundle/...`
+    // and every hook would ENOENT silently. Our npm installer bakes absolute
+    // paths and is unaffected — this guard protects the directory channel.
+    const raw = readFileSync(join(codexRoot, "hooks", "hooks.json"), "utf-8");
+    expect(raw).not.toContain("CODEX_PLUGIN_ROOT");
+    expect(raw).toContain("$PLUGIN_ROOT/bundle/");
+  });
+
   it("Stop hook uses a separate stop.js (not capture.js)", () => {
     const stop = hooks.hooks.Stop;
     expect(stop[0].hooks[0].command).toContain("stop.js");
@@ -80,10 +91,18 @@ describe("codex plugin.json", () => {
     expect(plugin.interface.category).toBeTruthy();
   });
 
-  it("has arrays for skills, mcpServers, apps", () => {
-    expect(Array.isArray(plugin.skills)).toBe(true);
-    expect(Array.isArray(plugin.mcpServers)).toBe(true);
-    expect(Array.isArray(plugin.apps)).toBe(true);
+  it("points skills at the bundled skills dir (official schema is a path, not an array)", () => {
+    // The official Codex plugin schema expects `skills` to be a string path
+    // to the skills directory (e.g. "./skills/"), NOT an array. An empty
+    // array — the previous value — exported zero skills to the directory.
+    expect(plugin.skills).toBe("./skills/");
+  });
+
+  it("omits mcpServers/apps (skills-only plugin — no empty-array pointers)", () => {
+    // Component pointers are only declared for components we ship. This is a
+    // skills-only plugin, so mcpServers/apps must be absent, not `[]`.
+    expect(plugin.mcpServers).toBeUndefined();
+    expect(plugin.apps).toBeUndefined();
   });
 });
 

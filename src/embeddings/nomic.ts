@@ -18,7 +18,24 @@ import {
 
 type Embedder = (input: string | string[], opts: Record<string, unknown>) => Promise<{ data: Float32Array | number[] }>;
 
-type TransformersModule = typeof import("@huggingface/transformers");
+// Minimal shape of @huggingface/transformers that this wrapper actually uses.
+// Declared locally instead of `typeof import("@huggingface/transformers")` so
+// the typecheck does NOT resolve the package at compile time: it's an
+// optional, on-demand dependency (installed by `hivemind embeddings install`)
+// and is absent on some platforms (e.g. Windows CI), where a `typeof import`
+// query would make `tsc` fail with TS2307.
+interface TransformersModule {
+  env: {
+    allowLocalModels: boolean;
+    useFSCache: boolean;
+    [key: string]: unknown;
+  };
+  pipeline: (
+    task: string,
+    model: string,
+    options?: Record<string, unknown>,
+  ) => Promise<unknown>;
+}
 type TransformersImporter = () => Promise<TransformersModule>;
 
 export interface NomicOptions {
@@ -51,7 +68,11 @@ export async function _importFromCanonicalSharedDeps(
 }
 
 export async function _importFromBareSpecifier(): Promise<TransformersModule> {
-  const mod = await import("@huggingface/transformers");
+  // Non-literal specifier (typed as `string`) so `tsc` treats this as a
+  // dynamic import of `any` and does not resolve the optional package at
+  // compile time — see the TransformersModule comment above.
+  const spec: string = "@huggingface/transformers";
+  const mod = await import(spec);
   return _normalizeTransformersModule(mod);
 }
 

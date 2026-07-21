@@ -1,4 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+// Hermetic: no embed daemon round-trips from the /docs/find query embedder.
+vi.mock("../../src/docs/embed.js", () => ({
+  makeDocEmbedder: () => async () => null,
+  makeQueryEmbedder: () => async () => null,
+}));
 import { DeeplakeFs, guessMime } from "../../src/shell/deeplake-fs.js";
 
 // ── Mock ManagedClient ────────────────────────────────────────────────────────
@@ -785,6 +790,73 @@ describe("prefetch", () => {
   });
 });
 
+// ── Session reads: bodyless rows must not read as silent empty files ─────────
+describe("readFile: session bodies", () => {
+  function makeSessionsFs(messages: unknown[]) {
+    const path = "/sessions/alice/a.json";
+    const client = {
+      ensureTable: vi.fn().mockResolvedValue(undefined),
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("SELECT path, size_bytes, mime_type")) return [];
+        if (sql.includes("SELECT path, MAX(size_bytes) as total_size")) {
+          // size_bytes is populated even when the body is empty — this is the
+          // exact "ls shows a size, cat shows nothing" split being tested.
+          return [{ path, total_size: 30295 }];
+        }
+        if (sql.includes("SELECT message FROM")) {
+          return messages.map((message) => ({ message }));
+        }
+        return [];
+      }),
+    };
+    return { path, client };
+  }
+
+  it("returns an empty-body notice (not 0 bytes) when all message rows are NULL", async () => {
+    const { path, client } = makeSessionsFs([null, null]);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const text = await fs.readFile(path);
+
+    expect(text).not.toBe("");
+    expect(text).toContain("2 stored rows");
+    expect(text).toContain("message body is empty");
+  });
+
+  it("does not leak the literal string 'null' or 'undefined' into content", async () => {
+    const { path, client } = makeSessionsFs([null, undefined]);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const text = await fs.readFile(path);
+
+    expect(text).not.toContain("null");
+    expect(text).not.toContain("undefined");
+  });
+
+  it("readFileBuffer also emits the notice for empty-string bodies", async () => {
+    const { path, client } = makeSessionsFs(["", ""]);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const buf = await fs.readFileBuffer(path);
+
+    expect(Buffer.from(buf).toString("utf-8")).toContain("message body is empty");
+  });
+
+  it("keeps only real turns when a session mixes empty and populated bodies", async () => {
+    const { path, client } = makeSessionsFs([
+      "",
+      "{\"type\":\"user_message\",\"content\":\"hello\"}",
+      null,
+      "{\"type\":\"assistant_message\",\"content\":\"hi\"}",
+    ]);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions");
+
+    const text = await fs.readFile(path);
+
+    expect(text).toBe("[user] hello\n[assistant] hi");
+  });
+});
+
 // ── Upsert: id stability & dates ─────────────────────────────────────────────
 describe("flush upsert", () => {
   it("INSERT for new file sets id, creation_date and last_update_date", async () => {
@@ -1138,5 +1210,61 @@ describe("cp recursive", () => {
     expect(await fs.readFile("/memory/dst/b.txt")).toBe("bbb");
     // Source still exists
     expect(await fs.readFile("/memory/src/a.txt")).toBe("aaa");
+  });
+});
+
+// ── docs VFS bridge (the shell path used by codex/cursor/hermes/interactive) ──
+
+describe("docs VFS routing in the shell", () => {
+  function makeDocsClient(onQuery: (sql: string) => unknown[]) {
+    return {
+      query: vi.fn(async (sql: string) => onQuery(sql)),
+      ensureTable: async () => {},
+      ensureGoalsTable: async () => {}, ensureKpisTable: async () => {},
+    };
+  }
+
+  it("routes cat /docs/find/<q> to the DOCS table (not the memory read)", async () => {
+    const calls: string[] = [];
+    const client = makeDocsClient((sql) => {
+      calls.push(sql);
+      if (/FROM "hivemind_docs"/.test(sql)) return [{ path: "src/utils/sql.ts", content: "# sql.ts\nescaping helpers" }];
+      return [];
+    });
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", { docsTable: "hivemind_docs" });
+    const out = await fs.readFile("/docs/find/injection");
+    expect(out).toContain("src/utils/sql.ts");            // rendered the doc hit
+    expect(calls.some((s) => /FROM "hivemind_docs"/.test(s))).toBe(true);  // queried docs table
+  });
+
+  it("readdir/readdirWithFileTypes synthesize /docs with correct dirent types", async () => {
+    const client = makeDocsClient(() => []);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", { docsTable: "hivemind_docs" });
+    expect(await fs.readdir("/docs")).toEqual(["index.md", "find"]);
+    expect(await fs.readdir("/docs/find")).toEqual([]);
+    const root = await fs.readdir("/");
+    expect(root).toContain("docs");
+    const dirents = await fs.readdirWithFileTypes("/docs");
+    expect(dirents.find((d) => d.name === "find")?.isDirectory).toBe(true);
+    expect(dirents.find((d) => d.name === "index.md")?.isFile).toBe(true);
+    // Feature off (no docsTable): /docs is not synthesized anywhere.
+    const off = await DeeplakeFs.create(client as never, "memory", "/");
+    expect(await off.readdir("/")).not.toContain("docs");
+    await expect(off.readdir("/docs")).rejects.toMatchObject({ code: "ENOTDIR" });
+  });
+
+  it("a bare /docs directory read throws EISDIR; a missing leaf throws ENOENT", async () => {
+    const client = makeDocsClient(() => []);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", { docsTable: "hivemind_docs" });
+    await expect(fs.readFile("/docs")).rejects.toMatchObject({ code: "EISDIR" });
+    // Leaf doc that does not exist → the handler's not-found maps to ENOENT.
+    await expect(fs.readFile("/docs/no/such/file.ts.md")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does NOT route /docs when docsTable is unset (feature off)", async () => {
+    const client = makeDocsClient(() => []);
+    const fs = await DeeplakeFs.create(client as never, "memory", "/");
+    // No docsTable → /docs/find falls through to the generic memory read → ENOENT.
+    await expect(fs.readFile("/docs/find/x")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

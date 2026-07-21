@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { join, basename } from "node:path";
 
 /**
  * Source-level tests for src/index-marker-store.ts — fs-backed lookup-index
@@ -71,7 +72,7 @@ describe("getIndexMarkerDir", () => {
 
   it("falls back to tmpdir()/hivemind-deeplake-indexes when env unset", async () => {
     const { getIndexMarkerDir } = await importMarkerStore();
-    expect(getIndexMarkerDir()).toBe("/tmp/test-tmp/hivemind-deeplake-indexes");
+    expect(getIndexMarkerDir()).toBe(join("/tmp/test-tmp", "hivemind-deeplake-indexes"));
     expect(tmpdirMock).toHaveBeenCalled();
   });
 });
@@ -80,7 +81,7 @@ describe("buildIndexMarkerPath", () => {
   it("joins workspace/org/table/suffix with __ separators", async () => {
     const { buildIndexMarkerPath } = await importMarkerStore();
     const p = buildIndexMarkerPath("ws1", "org1", "memory", "path_creation_date");
-    expect(p).toBe("/tmp/test-tmp/hivemind-deeplake-indexes/ws1__org1__memory__path_creation_date.json");
+    expect(p).toBe(join("/tmp/test-tmp", "hivemind-deeplake-indexes", "ws1__org1__memory__path_creation_date.json"));
   });
 
   it("escapes any character outside [a-zA-Z0-9_.-] in the marker key", async () => {
@@ -89,7 +90,7 @@ describe("buildIndexMarkerPath", () => {
     // The marker filename (last path segment) must have all disallowed chars
     // replaced with underscore. The directory prefix is allowed to contain
     // slashes — that's the path separator.
-    const filename = p.slice(p.lastIndexOf("/") + 1);
+    const filename = basename(p);
     expect(filename).toBe("ws_with_slash__org_with_space__tbl__sfx.json");
     expect(filename).not.toMatch(/[ /]/);
   });
@@ -173,8 +174,9 @@ describe("writeIndexMarker", () => {
     writeIndexMarker(markerPath);
 
     expect(mkdirSyncMock).toHaveBeenCalledTimes(1);
+    // join(...) so the expected separator matches the host (`\` on Windows).
     expect(mkdirSyncMock).toHaveBeenCalledWith(
-      "/tmp/test-tmp/hivemind-deeplake-indexes",
+      join("/tmp/test-tmp", "hivemind-deeplake-indexes"),
       { recursive: true },
     );
     expect(writeFileSyncMock).toHaveBeenCalledTimes(1);

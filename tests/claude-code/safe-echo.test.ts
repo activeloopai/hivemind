@@ -15,7 +15,10 @@ function runVia(shell: string, cmd: string): { stdout: string; stderr: string } 
   }
 }
 
-describe("safeEchoCommand — body emitted verbatim, no shell interpretation", () => {
+// POSIX-only: every case shells out to /bin/bash and /bin/sh to verify the
+// body is echoed verbatim (shell-injection-safety semantics). Windows has no
+// /bin/bash or /bin/sh and no equivalent quoting model, so the suite is skipped.
+describe.skipIf(process.platform === "win32")("safeEchoCommand — body emitted verbatim, no shell interpretation", () => {
   // The exact text that broke production: backtick-wrapped find/ inside index.md
   // caused `echo "...\`find/\`..."` to run `find/` as a command (stderr noise)
   // AND eat the content. safeEchoCommand must emit it literally with no stderr.

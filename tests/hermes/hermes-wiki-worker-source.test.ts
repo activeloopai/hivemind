@@ -45,10 +45,9 @@ describe("hermes wiki-worker source", () => {
 });
 
 describe("hermes spawn-wiki-worker source", () => {
-  it("findHermesBin probes `which hermes` and falls back to the literal name", () => {
-    expect(SPAWN_SRC).toMatch(/which hermes/);
-    expect(SPAWN_SRC).toContain('return "hermes"');
-    expect(SPAWN_SRC).not.toContain("which codex");
+  it("findHermesBin resolves `hermes` cross-platform and falls back to the literal name", () => {
+    expect(SPAWN_SRC).toMatch(/resolveCliBin\("hermes",\s*"hermes"\)/);
+    expect(SPAWN_SRC).not.toContain('resolveCliBin("codex"');
   });
 
   it("config builder reads HIVEMIND_HERMES_PROVIDER (default openrouter) and HIVEMIND_HERMES_MODEL (default haiku-4-5)", () => {

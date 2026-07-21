@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { chmodSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { tmpdir, homedir, platform } from "node:os";
 import {
   compareSemverDesc,
@@ -51,7 +51,7 @@ describe("resolveVersionedPluginDir", () => {
   it("rejects a local --plugin-dir layout", () => {
     const root = mkRoot();
     try {
-      const bundle = join(root, "claude-code", "bundle");
+      const bundle = join(root, "harnesses", "claude-code", "bundle");
       mkdirSync(bundle, { recursive: true });
       expect(resolveVersionedPluginDir(bundle)).toBeNull();
     } finally {
@@ -138,7 +138,14 @@ describe("snapshotPluginDir + restoreOrCleanup", () => {
     expect(restoreOrCleanup(null)).toBe("noop");
   });
 
-  it("returns 'restore-failed' and writes to stderr when rename throws", () => {
+  // Windows-skip: this test forces renameSync to fail by chmod-ing the parent
+  // dir to 0o500 (read+execute, no write). POSIX honours that and the rename
+  // throws EACCES; Windows ignores Unix mode bits on directories, so the
+  // rename succeeds and no error is injected. The product code path
+  // (restoreOrCleanup's catch → "restore-failed") is platform-agnostic and
+  // fully covered on Linux/macOS. node:fs named imports are non-configurable
+  // so a spy-based injection isn't possible here.
+  it.skipIf(process.platform === "win32")("returns 'restore-failed' and writes to stderr when rename throws", () => {
     const root = mkRoot();
     const stderrChunks: string[] = [];
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: any) => {
@@ -278,7 +285,7 @@ describe("planGc", () => {
   it("keeps an old version when isInUse claims it's still in use", () => {
     mk("0.6.37", "0.6.38", "0.6.39", "0.6.40");
     // 0.6.37 is well below the keep-2 cutoff but a live session claims it.
-    const isInUse = (versionDir: string) => versionDir.endsWith("/0.6.37");
+    const isInUse = (versionDir: string) => basename(versionDir) === "0.6.37";
     const plan = planGc(root, "0.6.40", 2, () => false, isInUse);
     expect(plan.keep).toContain("0.6.37");
     expect(plan.deleteVersions).not.toContain("0.6.37");
@@ -303,7 +310,7 @@ describe("planGc", () => {
     planGc(root, "0.6.40", 2, () => false, isInUse);
     // Only 0.6.37 and 0.6.38 are deletion candidates; 0.6.39 and 0.6.40
     // are auto-kept and must not be queried.
-    expect(calls.map(c => c.split("/").pop())).toEqual(["0.6.37", "0.6.38"]);
+    expect(calls.map(c => basename(c))).toEqual(["0.6.37", "0.6.38"]);
   });
 
   it("default isInUse (real disk) returns false when no .in_use dirs exist", () => {
@@ -450,7 +457,12 @@ describe("executeGc", () => {
     expect(result.deletedVersions).toEqual(["nonexistent-version"]);
   });
 
-  it("collects errors from both rmSync catch blocks without throwing", () => {
+  // Windows-skip: forces rmSync to fail via chmod(parent, 0o500). POSIX-only —
+  // Windows ignores Unix dir mode bits, so the rm succeeds and no EACCES is
+  // injected. executeGc's two catch blocks are platform-agnostic and covered
+  // on Linux/macOS. node:fs named imports are non-configurable, ruling out a
+  // spy-based throw here.
+  it.skipIf(process.platform === "win32")("collects errors from both rmSync catch blocks without throwing", () => {
     const versionDir = join(root, "0.6.38");
     mkdirSync(versionDir, { recursive: true });
     const snapshotDir = join(root, "0.6.38.keep-9999");

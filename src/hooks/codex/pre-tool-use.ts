@@ -3,25 +3,37 @@
 /**
  * Codex PreToolUse hook — intercepts Bash commands targeting ~/.deeplake/memory/.
  *
- * Strategy: "block + inject"
- * Codex does not parse JSON hook output here, so the CLI wrapper still maps:
- * - action=pass  -> exit 0, no output
- * - action=guide -> stdout guidance, exit 0
- * - action=block -> stderr content, exit 2
+ * Decision -> wire mapping. Codex >= 0.136 parses PreToolUse JSON on stdout
+ * (verified against codex-rs/hooks/src/events/pre_tool_use.rs, tag rust-v0.136.0):
+ * - action=pass  -> exit 0, no output                (Codex runs the original command)
+ * - action=block -> stderr content, exit 2           (Codex blocks; reason -> model)
+ * - action=allow -> exit 0, stdout JSON carrying
+ *     hookSpecificOutput.permissionDecision="allow" + updatedInput.command
+ *                                                    (Codex runs the REPLACEMENT command)
+ *
+ * `allow` exists for memory writes: the hook performs the VFS/SQL write itself,
+ * then rewrites the host command to a harmless echo so Codex does NOT re-run the
+ * original redirect. A plain exit-0 with no JSON makes Codex run the original
+ * `echo ... > ~/.deeplake/memory/...` against the on-disk mount — the double
+ * execution that errors "No such file or directory" when the subdir is absent (F3).
  *
  * The source logic is exported so tests can exercise it directly without
  * spawning the bundled script in a subprocess.
  */
 
 import { join, dirname } from "node:path";
+import { deriveProjectKey } from "../../utils/repo-identity.js";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
+import { resolveDirConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlLike } from "../../utils/sql.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 import { tryGraphRead } from "../../graph/graph-command.js";
+import { handleDocsVfs } from "../../docs/vfs-handler.js";
+import { makeQueryEmbedder } from "../../docs/embed.js";
 import { executeCompiledBashCommand } from "../bash-command-compiler.js";
 import {
   findVirtualPaths,
@@ -56,9 +68,17 @@ export interface CodexPreToolUseInput {
 }
 
 export interface CodexPreToolDecision {
-  action: "pass" | "guide" | "block";
+  action: "pass" | "block" | "allow";
   output?: string;
   rewrittenCommand?: string;
+  /**
+   * Host command Codex should run INSTEAD of the original, delivered via the
+   * PreToolUse `updatedInput.command` rewrite. Set only for action="allow"
+   * (memory writes the hook has already persisted to the VFS). Running a
+   * harmless echo here stops the original redirect from double-executing
+   * against the on-disk mount.
+   */
+  replacementCommand?: string;
 }
 
 export function buildUnsupportedGuidance(): string {
@@ -91,6 +111,8 @@ interface CodexPreToolDeps {
   handleGrepDirectFn?: typeof handleGrepDirect;
   readCachedIndexContentFn?: typeof readCachedIndexContent;
   writeCachedIndexContentFn?: typeof writeCachedIndexContent;
+  runVfsShellFn?: (command: string) => { status: number | null; stdout: string };
+  tryGraphReadFn?: typeof tryGraphRead;
   logFn?: (msg: string) => void;
 }
 
@@ -99,7 +121,7 @@ export async function processCodexPreToolUse(
   deps: CodexPreToolDeps = {},
 ): Promise<CodexPreToolDecision> {
   const {
-    config = loadConfig(),
+    config: baseConfig = loadConfig(),
     createApi = (table, activeConfig) => new DeeplakeApi(
       activeConfig.token,
       activeConfig.apiUrl,
@@ -115,8 +137,23 @@ export async function processCodexPreToolUse(
     handleGrepDirectFn = handleGrepDirect,
     readCachedIndexContentFn = readCachedIndexContent,
     writeCachedIndexContentFn = writeCachedIndexContent,
+    runVfsShellFn = (command: string) => {
+      const shellBundle = join(__bundleDir, "shell", "deeplake-shell.js");
+      const proc = spawnSync("node", [shellBundle, "-c", command], {
+        encoding: "utf-8",
+        timeout: 10_000,
+      });
+      return { status: proc.status, stdout: proc.stdout ?? "" };
+    },
+    tryGraphReadFn = tryGraphRead,
     logFn = log,
   } = deps;
+
+  // Route memory reads/writes through the nearest `.hivemind`, like capture —
+  // a directory pinned to another workspace must read/write THAT workspace, not
+  // the global one. Applied to the injected/default base alike (a no-op when no
+  // `.hivemind` applies). See src/dir-config.ts.
+  const config = baseConfig ? resolveDirConfig(baseConfig, input.cwd ?? process.cwd()).config : baseConfig;
 
   const cmd = input.tool_input?.command ?? "";
   logFn(`hook fired: cmd=${cmd}`);
@@ -128,14 +165,14 @@ export async function processCodexPreToolUse(
   // Graph VFS dispatch — a cat/head/tail/ls on the `/graph/*` subtree is
   // answered from the local snapshot, no SQL, no config needed. Runs before
   // the isSafe/grep/shell handling. Shared parser: src/graph/graph-command.ts.
-  const graphBody = tryGraphRead(rewritten, input.cwd ?? process.cwd());
+  const graphBody = tryGraphReadFn(rewritten, input.cwd ?? process.cwd());
   if (graphBody !== null) {
     logFn(`graph vfs intercept: ${rewritten}`);
     return { action: "block", output: graphBody, rewrittenCommand: rewritten };
   }
 
   if (!isSafe(rewritten)) {
-    // BLOCK (exit 2), not "guide" (exit 0). guide lets Codex run the original
+    // BLOCK (exit 2), never exit 0. Any exit-0 path lets Codex run the original
     // command on the host, so an unsafe memory command — `python … x.py`,
     // backticks, `$()`, `curl` — would still execute and could read/run real
     // files. Block stops it and injects the guidance instead.
@@ -183,6 +220,17 @@ export async function processCodexPreToolUse(
     };
 
     try {
+      // `ls /docs` belongs to the docs VFS — intercept BEFORE the compiled
+      // bash executor (which owns generic ls) so the root index renders the
+      // same view the cat branch and the Claude hook serve.
+      const lsDocs = rewritten.match(/^ls\s+(?:-[a-zA-Z]+\s+)*\/docs\/?\s*$/);
+      if (lsDocs) {
+        logFn("docs vfs intercept: ls /docs");
+        const r = await handleDocsVfs("", (sql) => api.query(sql), process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName, { project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+        const body = r.kind === "ok" ? r.body : "(docs unavailable)";
+        return { action: "block", output: body, rewrittenCommand: rewritten };
+      }
+
       const compiled = await executeCompiledBashCommandFn(api, table, sessionsTable, rewritten, {
         readVirtualPathContentsFn: async (_api, _memoryTable, _sessionsTable, cachePaths) => readVirtualPathContentsWithCache(cachePaths),
       });
@@ -237,6 +285,19 @@ export async function processCodexPreToolUse(
           virtualPath = wcMatch[1];
           lineLimit = -1;
         }
+      }
+
+      // Docs VFS dispatch — a cat of `/docs/*` (browse or find/) is answered by
+      // the docs table via handleDocsVfs, NOT the generic memory read below
+      // (docs live in their own table). Mirrors the graph dispatch above; async
+      // + config-backed. Same route Claude's pre-tool-use uses.
+      if (virtualPath && (virtualPath === "/docs" || virtualPath.startsWith("/docs/"))) {
+        logFn(`docs vfs intercept: ${virtualPath}`);
+        const docsTable = process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName;
+        const sub = virtualPath === "/docs" ? "" : virtualPath.slice("/docs/".length);
+        const r = await handleDocsVfs(sub, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+        const body = r.kind === "ok" ? r.body : `${virtualPath}: No such file or directory`;
+        return { action: "block", output: body, rewrittenCommand: rewritten };
       }
 
       if (virtualPath && !virtualPath.endsWith("/")) {
@@ -357,33 +418,38 @@ export async function processCodexPreToolUse(
 
   // Nothing matched by the inline fast-path. Route through the VFS shell bundle
   // — a sandboxed Node.js interpreter against the SQL backend, no host access.
-  // We run it synchronously here (spawnSync) so the output is available before
-  // returning the decision.
+  // We run it synchronously here so the output is available before returning the
+  // decision; the write has already landed in the cloud `memory` table by then.
   //
   // Action choice:
-  //   "guide" (exit 0) — Codex treats the command as successful and also runs
-  //     the original on the host. Safe ONLY for write-redirect patterns
-  //     (echo/printf/tee … > /file) where the side-effect on the real
-  //     ~/.deeplake/memory/ disk dir is harmless — VFS reads always query SQL.
-  //   "block" (exit 2) — Codex treats the command as rejected. Used for
-  //     everything else (pipes, finds, reads) to prevent host execution.
-  // Safe to return "guide" (Codex also runs original on host) ONLY for pure
-  // output commands: echo/printf/tee writing to a VFS path. A generic ">>"
-  // check would match mixed commands like `sort /etc/passwd > /vfs/out` which
-  // would then execute on the host and read real files.
-  const isWriteRedirect = /^\s*(echo|printf|tee)\b/.test(rewritten) && /\s>>?\s/.test(rewritten);
-  const shellBundle = join(__bundleDir, "shell", "deeplake-shell.js");
+  //   "allow" (exit 0 + updatedInput) — ONLY for write-redirect patterns
+  //     (echo/printf/tee … > /file). The VFS write already happened above, so we
+  //     rewrite the host command to a harmless echo: Codex reports success AND
+  //     never re-runs the original redirect against the on-disk mount (F3).
+  //   "block" (exit 2) — everything else (pipes, finds, reads) to prevent host
+  //     execution and inject the result/guidance via stderr.
+  // The write-redirect guard stays narrow: anchoring to echo/printf/tee keeps the
+  // rewrite to pure-output commands whose side effect is only the SQL write (a bare
+  // ">>" check would match mixed commands like `sort /etc/passwd > /vfs/out`).
+  // The redirect test is whitespace-agnostic — `echo foo>file` is as valid as
+  // `echo foo > file`; requiring spaces would misroute the no-space form to `block`
+  // and re-surface the F3 "write looks failed" symptom. `[^0-9&>]` before the `>`
+  // excludes fd redirects (`2>`, `&>`) so those still fall through to block.
+  const isWriteRedirect = /^\s*(echo|printf|tee)\b/.test(rewritten) && /(^|[^0-9&>])>>?/.test(rewritten);
   logFn(`unroutable memory command, falling back to VFS shell: ${rewritten}`);
   try {
-    const proc = spawnSync("node", [shellBundle, "-c", rewritten], {
-      encoding: "utf-8",
-      timeout: 10_000,
-    });
+    const proc = runVfsShellFn(rewritten);
     if (proc.status === 0 || (proc.stdout && proc.stdout.trim())) {
       const output = (proc.stdout?.trim() ?? "") || "(done)";
-      // Write redirects: use "guide" so Codex reports success (not "blocked").
-      // Other commands: keep "block" so the host shell never runs them.
-      return { action: isWriteRedirect ? "guide" : "block", output, rewrittenCommand: rewritten };
+      if (isWriteRedirect) {
+        // Rewrite the host command to echo the VFS result. POSIX single-quote
+        // escaping so arbitrary output can't break out of the quotes.
+        const replacementCommand = `printf '%s\\n' '${output.replace(/'/g, `'\\''`)}'`;
+        return { action: "allow", output, replacementCommand, rewrittenCommand: rewritten };
+      }
+      // Non-write command handled by the VFS shell: block so the host never runs
+      // it; the captured output is injected via stderr.
+      return { action: "block", output, rewrittenCommand: rewritten };
     }
     // Shell exited non-zero (bundle missing or command failed) — fall back to guidance.
     return { action: "block", output: buildUnsupportedGuidance(), rewrittenCommand: rewritten };
@@ -404,8 +470,17 @@ async function main(): Promise<void> {
   const decision = await processCodexPreToolUse(input);
 
   if (decision.action === "pass") return;
-  if (decision.action === "guide") {
-    if (decision.output) process.stdout.write(decision.output);
+  if (decision.action === "allow") {
+    // Codex >= 0.136 honors a PreToolUse `permissionDecision: "allow"` with
+    // `updatedInput.command` and runs the rewritten command instead of the
+    // original. The VFS write already happened in processCodexPreToolUse.
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "allow",
+        updatedInput: { command: decision.replacementCommand ?? "true" },
+      },
+    }));
     process.exit(0);
   }
   if (decision.output) process.stderr.write(decision.output);

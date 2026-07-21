@@ -10,12 +10,13 @@
  * hook consumes at next session). The file is the cross-process boundary.
  */
 
-import { readFileSync, writeFileSync, renameSync, mkdirSync, openSync, closeSync, unlinkSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, openSync, closeSync, unlinkSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Notification, NotificationsQueue } from "./types.js";
 import { log as _log } from "../utils/debug.js";
+import { isPathInsideHome, renameAtomic } from "../utils/atomic-write.js";
 
 const log = (msg: string) => _log("notifications-queue", msg);
 
@@ -70,9 +71,7 @@ export function readQueue(): NotificationsQueue {
  * `os.homedir`, and we don't want to mock the whole module).
  */
 export function _isQueuePathInsideHome(path: string, home: string): boolean {
-  const r = resolve(path);
-  const h = resolve(home);
-  return r.startsWith(h + "/") || r === h;
+  return isPathInsideHome(path, home);
 }
 
 export function writeQueue(q: NotificationsQueue): void {
@@ -84,7 +83,7 @@ export function writeQueue(q: NotificationsQueue): void {
   mkdirSync(join(home, ".deeplake"), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(q, null, 2), { mode: 0o600 });
-  renameSync(tmp, path);
+  renameAtomic(tmp, path);
 }
 
 /**

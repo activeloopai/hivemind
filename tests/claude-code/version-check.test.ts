@@ -32,27 +32,27 @@ describe("getInstalledVersion", () => {
   });
 
   it("prefers plugin manifest when present", () => {
-    const bundleDir = join(root, "claude-code", "bundle");
-    mkdirSync(join(root, "claude-code", ".claude-plugin"), { recursive: true });
+    const bundleDir = join(root, "harnesses", "claude-code", "bundle");
+    mkdirSync(join(root, "harnesses", "claude-code", ".claude-plugin"), { recursive: true });
     mkdirSync(bundleDir, { recursive: true });
-    writeFileSync(join(root, "claude-code", ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.6.37" }));
+    writeFileSync(join(root, "harnesses", "claude-code", ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.6.37" }));
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "hivemind", version: "0.1.0" }));
 
     expect(getInstalledVersion(bundleDir, ".claude-plugin")).toBe("0.6.37");
   });
 
   it("falls back to package.json when plugin manifest has no version", () => {
-    const bundleDir = join(root, "claude-code", "bundle");
-    mkdirSync(join(root, "claude-code", ".claude-plugin"), { recursive: true });
+    const bundleDir = join(root, "harnesses", "claude-code", "bundle");
+    mkdirSync(join(root, "harnesses", "claude-code", ".claude-plugin"), { recursive: true });
     mkdirSync(bundleDir, { recursive: true });
-    writeFileSync(join(root, "claude-code", ".claude-plugin", "plugin.json"), JSON.stringify({ name: "hivemind" }));
+    writeFileSync(join(root, "harnesses", "claude-code", ".claude-plugin", "plugin.json"), JSON.stringify({ name: "hivemind" }));
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "hivemind", version: "0.6.41" }));
 
     expect(getInstalledVersion(bundleDir, ".claude-plugin")).toBe("0.6.41");
   });
 
   it("walks up to package.json when plugin manifest is absent", () => {
-    const bundleDir = join(root, "codex", "bundle");
+    const bundleDir = join(root, "harnesses", "codex", "bundle");
     mkdirSync(bundleDir, { recursive: true });
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "hivemind-codex", version: "0.6.40" }));
 
@@ -68,10 +68,10 @@ describe("getInstalledVersion", () => {
   });
 
   it("returns null when the plugin manifest is invalid json and no package matches", () => {
-    const bundleDir = join(root, "claude-code", "bundle");
-    mkdirSync(join(root, "claude-code", ".claude-plugin"), { recursive: true });
+    const bundleDir = join(root, "harnesses", "claude-code", "bundle");
+    mkdirSync(join(root, "harnesses", "claude-code", ".claude-plugin"), { recursive: true });
     mkdirSync(bundleDir, { recursive: true });
-    writeFileSync(join(root, "claude-code", ".claude-plugin", "plugin.json"), "{bad-json");
+    writeFileSync(join(root, "harnesses", "claude-code", ".claude-plugin", "plugin.json"), "{bad-json");
 
     expect(getInstalledVersion(bundleDir, ".claude-plugin")).toBeNull();
   });

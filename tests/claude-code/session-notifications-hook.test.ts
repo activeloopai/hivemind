@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
  * Source-level coverage of src/hooks/session-notifications.ts. Bundle smoke
@@ -22,13 +23,13 @@ beforeEach(() => {
   TEMP_HOME = mkdtempSync(join(tmpdir(), "hivemind-notif-hook-"));
   ORIGINAL_HOME = process.env.HOME;
   ORIGINAL_WIKI = process.env.HIVEMIND_WIKI_WORKER;
-  process.env.HOME = TEMP_HOME;
+  setFakeHome(TEMP_HOME);
   delete process.env.HIVEMIND_WIKI_WORKER;
   vi.resetModules();
 });
 
 afterEach(() => {
-  process.env.HOME = ORIGINAL_HOME;
+  clearFakeHome();
   if (ORIGINAL_WIKI === undefined) delete process.env.HIVEMIND_WIKI_WORKER;
   else process.env.HIVEMIND_WIKI_WORKER = ORIGINAL_WIKI;
   rmSync(TEMP_HOME, { recursive: true, force: true });

@@ -18,6 +18,7 @@ const ensureTableMock = vi.fn();
 const ensureSessionsTableMock = vi.fn();
 const autoUpdateMock = vi.fn();
 const embedWarmupMock = vi.fn();
+const spawnDetachedMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/commands/auth.js", () => ({
@@ -37,6 +38,13 @@ vi.mock("../../src/deeplake-api.js", () => ({
 }));
 vi.mock("../../src/hooks/shared/autoupdate.js", () => ({
   autoUpdate: (...a: any[]) => autoUpdateMock(...a),
+}));
+// The hook no longer provisions graph-deps inline: a cold npm install +
+// native compile can exceed the ~120s hook timeout, so it spawns a DETACHED
+// worker via spawnDetachedNodeWorker. Mock that boundary and assert the hook
+// spawns graph-deps-worker.js (and BEFORE the credentials gate).
+vi.mock("../../src/utils/spawn-detached.js", () => ({
+  spawnDetachedNodeWorker: (...a: any[]) => spawnDetachedMock(...a),
 }));
 vi.mock("../../src/embeddings/client.js", () => ({
   EmbedClient: class {
@@ -108,6 +116,7 @@ beforeEach(() => {
   ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
   autoUpdateMock.mockReset().mockResolvedValue(undefined);
   embedWarmupMock.mockReset().mockResolvedValue(true);
+  spawnDetachedMock.mockReset();
   fetchMock.mockReset().mockResolvedValue({
     ok: true,
     json: async () => ({ version: "0.0.1" }),
@@ -144,6 +153,44 @@ describe("session-start-setup hook — guards", () => {
     loadCredsMock.mockReturnValue({ token: "", userName: "alice" });
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith("no credentials");
+  });
+});
+
+describe("session-start-setup hook — graph-deps provisioning (detached worker)", () => {
+  const spawnedGraphDeps = () =>
+    spawnDetachedMock.mock.calls.find(([p]) => typeof p === "string" && p.endsWith("graph-deps-worker.js"));
+
+  it("spawns the graph-deps worker detached once on the happy path (NOT inline)", async () => {
+    await runHook();
+    expect(spawnedGraphDeps()).toBeDefined();
+  });
+
+  it("spawns graph-deps even when there are NO credentials (local, login-independent)", async () => {
+    loadCredsMock.mockReturnValue(null);
+    await runHook();
+    // The worker spawn must fire BEFORE the credentials early-return.
+    expect(spawnedGraphDeps()).toBeDefined();
+    expect(debugLogMock).toHaveBeenCalledWith("no credentials");
+  });
+
+  it("spawns the graph-deps worker BEFORE loadCredentials (ordering)", async () => {
+    let graphAt = -1;
+    let credsAt = -1;
+    let counter = 0;
+    spawnDetachedMock.mockImplementation((p: string) => { if (p.endsWith("graph-deps-worker.js")) graphAt = counter++; });
+    loadCredsMock.mockImplementation(() => { credsAt = counter++; return { token: "tok", userName: "alice" }; });
+    await runHook();
+    expect(graphAt).toBeGreaterThanOrEqual(0);
+    expect(credsAt).toBeGreaterThanOrEqual(0);
+    expect(graphAt).toBeLessThan(credsAt);
+  });
+
+  it("the detached spawn does not block the rest of the hook (table setup still runs)", async () => {
+    // spawnDetachedNodeWorker is fire-and-forget: the hook proceeds to its
+    // credentialed table-setup work without awaiting the worker.
+    await runHook();
+    expect(spawnedGraphDeps()).toBeDefined();
+    expect(ensureTableMock).toHaveBeenCalled();
   });
 });
 

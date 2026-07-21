@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
-const bundleDir = join(process.cwd(), "codex", "bundle");
+const bundleDir = join(process.cwd(), "harnesses", "codex", "bundle");
 
 /** Pipe JSON into a bundle and return parsed stdout. */
 function runHook(bundle: string, input: Record<string, unknown>, extraEnv: Record<string, string> = {}): string {
@@ -68,7 +68,7 @@ function parseOutput(raw: string): Record<string, unknown> | null {
 // pushes to both the user-visible entries vec AND the model context vec).
 // Because of this we deliberately keep `additionalContext` MINIMAL — only a
 // 1-line status. The full memory tier doc + CLI command list moved into the
-// `hivemind-memory` skill (codex/skills/deeplake-memory/SKILL.md), which the
+// `hivemind-memory` skill (harnesses/codex/skills/deeplake-memory/SKILL.md), which the
 // model loads on demand without spamming the terminal every session start.
 
 describe("codex integration: session-start", () => {
@@ -334,12 +334,15 @@ describe("codex integration: session-start-setup", () => {
   });
 
   it("exits cleanly with no credentials (HIVEMIND_TOKEN='')", () => {
+    // HIVEMIND_GRAPH_ON_STOP=0 makes the detached graph-deps worker (spawned
+    // by this hook) early-return instead of running a real npm install against
+    // the dev machine's ~/.hivemind/embed-deps during the integration run.
     const raw = runHook("session-start-setup.js", {
       session_id: "test-session-setup-002",
       cwd: "/tmp/test-project",
       hook_event_name: "SessionStart",
       model: "gpt-5.2",
-    });
+    }, { HIVEMIND_GRAPH_ON_STOP: "0" });
     expect(raw).toBe("");
   });
 
@@ -349,7 +352,7 @@ describe("codex integration: session-start-setup", () => {
       cwd: "/tmp/test-project",
       hook_event_name: "SessionStart",
       model: "gpt-5.2",
-    });
+    }, { HIVEMIND_GRAPH_ON_STOP: "0" });
     expect(raw).toBe("");
   });
 });

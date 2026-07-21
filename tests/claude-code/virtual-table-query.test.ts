@@ -58,6 +58,37 @@ describe("virtual-table-query", () => {
     expect(api.query).not.toHaveBeenCalled();
   });
 
+  // ── Honest failure signaling (cat/Read path) ─────────────────────────────
+  // A backend that cannot be queried must NOT look like "file not found"
+  // (null). If it resolves to null, pre-tool-use renders "No such file or
+  // directory" and the agent concludes the memory is empty — the same silent
+  // failure as the grep path. When the union AND both per-table fallbacks all
+  // fail, surface the error (throw) so the caller can distinguish it.
+  it("throws (not null) when the backend query fails entirely", async () => {
+    const api = {
+      query: vi.fn().mockRejectedValue(new Error("deeplake 500: internal error")),
+    } as any;
+
+    await expect(
+      readVirtualPathContent(api, "memory", "sessions", "/summaries/a.md"),
+    ).rejects.toThrow(/500|internal error/);
+  });
+
+  it("still succeeds (partial) when only the UNION fails but a per-table fallback works", async () => {
+    // The dual-table UNION can 400 on SQL-compat grounds while the simpler
+    // single-table queries succeed — that is a legitimate fallback, not an
+    // error, and must keep returning rows.
+    const api = {
+      query: vi.fn()
+        .mockRejectedValueOnce(new Error("union not supported"))
+        .mockResolvedValueOnce([{ path: "/summaries/a.md", content: "summary body", source_order: 0 }])
+        .mockResolvedValueOnce([]),
+    } as any;
+
+    const content = await readVirtualPathContent(api, "memory", "sessions", "/summaries/a.md");
+    expect(content).toBe("summary body");
+  });
+
   it("normalizes session rows for exact path reads", async () => {
     const api = {
       query: vi.fn().mockResolvedValueOnce([
@@ -69,6 +100,50 @@ describe("virtual-table-query", () => {
     const content = await readVirtualPathContent(api, "memory", "sessions", "/sessions/a.jsonl");
 
     expect(content).toBe("[user] hello\n[assistant] hi");
+  });
+
+  it("surfaces an empty-body notice when session rows exist but every message is empty", async () => {
+    const api = {
+      query: vi.fn().mockResolvedValueOnce([
+        { path: "/sessions/a.jsonl", content: "", source_order: 1 },
+        { path: "/sessions/a.jsonl", content: "", source_order: 1 },
+      ]),
+    } as any;
+
+    const content = await readVirtualPathContent(api, "memory", "sessions", "/sessions/a.jsonl");
+
+    // Not a silent 0-byte read: the file exists (has rows) but no readable body.
+    expect(content).not.toBe("");
+    expect(content).toContain("2 stored rows");
+    expect(content).toContain("message body is empty");
+  });
+
+  it("surfaces an empty-body notice when session message columns are NULL (dropped by type guard)", async () => {
+    const api = {
+      query: vi.fn().mockResolvedValueOnce([
+        { path: "/sessions/a.jsonl", content: null, source_order: 1 },
+      ]),
+    } as any;
+
+    const content = await readVirtualPathContent(api, "memory", "sessions", "/sessions/a.jsonl");
+
+    // Previously this returned null → caller rendered "No such file" even though
+    // `ls` lists the path. Now it reports the row exists with no readable body.
+    expect(content).toContain("1 stored row");
+    expect(content).toContain("message body is empty");
+  });
+
+  it("keeps only non-empty turns when a session mixes empty and real messages", async () => {
+    const api = {
+      query: vi.fn().mockResolvedValueOnce([
+        { path: "/sessions/a.jsonl", content: "", source_order: 1 },
+        { path: "/sessions/a.jsonl", content: "{\"type\":\"user_message\",\"content\":\"hello\"}", source_order: 1 },
+      ]),
+    } as any;
+
+    const content = await readVirtualPathContent(api, "memory", "sessions", "/sessions/a.jsonl");
+
+    expect(content).toBe("[user] hello");
   });
 
   it("reads multiple exact paths in a single query and synthesizes /index.md when needed", async () => {
@@ -189,7 +264,11 @@ describe("virtual-table-query", () => {
     expect(api.query).toHaveBeenCalledTimes(3);
   });
 
-  it("returns null when union and fallback queries all fail", async () => {
+  it("throws (not null) when union and BOTH fallback queries fail", async () => {
+    // Previously this returned null — making a total backend outage look
+    // identical to "file not found". A null here renders as "No such file or
+    // directory", so the agent wrongly concludes the memory is empty. When
+    // every query fails, the error must surface.
     const api = {
       query: vi.fn()
         .mockRejectedValueOnce(new Error("bad union"))
@@ -197,9 +276,9 @@ describe("virtual-table-query", () => {
         .mockRejectedValueOnce(new Error("sessions down")),
     } as any;
 
-    const content = await readVirtualPathContent(api, "memory", "sessions", "/summaries/a.md");
-
-    expect(content).toBeNull();
+    await expect(
+      readVirtualPathContent(api, "memory", "sessions", "/summaries/a.md"),
+    ).rejects.toThrow(/bad union|down/);
     expect(api.query).toHaveBeenCalledTimes(3);
   });
 

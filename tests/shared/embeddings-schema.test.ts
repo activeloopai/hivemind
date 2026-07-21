@@ -8,8 +8,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const BUNDLE_DIRS = [
-  "claude-code/bundle",
-  "codex/bundle",
+  "harnesses/claude-code/bundle",
+  "harnesses/codex/bundle",
 ];
 
 function read(path: string): string {

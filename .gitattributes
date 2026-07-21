@@ -1,2 +1,10 @@
 bundle/** linguist-generated=true
 dist/** linguist-generated=true
+
+# Keep source/script line endings as LF on every checkout (incl. Windows CI).
+# CRLF in an importable .mjs breaks esbuild's shebang strip and tokenization,
+# which otherwise fails whole test suites with "Invalid or unexpected token".
+*.mjs text eol=lf
+*.ts text eol=lf
+*.js text eol=lf
+*.json text eol=lf

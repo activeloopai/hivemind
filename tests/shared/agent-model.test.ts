@@ -99,7 +99,7 @@ describe("agentModel — per-agent no-tools dispatch", () => {
     expect(argVal(calls[0].args, "-m")).toBe("o3"); // the `model ? ["-m", model] : []` present-branch
   });
 
-  it("rejects a hermes/pi provider override with NO model (the default id wouldn't match)", async () => {
+  it("rejects a harnesses/hermes/pi provider override with NO model (the default id wouldn't match)", async () => {
     const { spawnImpl } = fakeSpawn("x");
     const env = { HIVEMIND_SKILLOPT_HERMES_PROVIDER: "bedrock" } as unknown as NodeJS.ProcessEnv;
     await expect(agentModel({ agent: "hermes", role: "judge", bin: "/x/hermes", spawnImpl, env })("S", "U"))

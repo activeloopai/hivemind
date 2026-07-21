@@ -54,6 +54,9 @@ vi.mock("../../src/embeddings/client.js", () => ({
     async warmup() { return embedWarmupMock(); }
   },
 }));
+// The hook spawns a detached graph-deps worker; stub the spawn boundary so
+// this branch-coverage test never launches a real process.
+vi.mock("../../src/utils/spawn-detached.js", () => ({ spawnDetachedNodeWorker: vi.fn() }));
 
 async function runHook(): Promise<void> {
   delete process.env.HIVEMIND_WIKI_WORKER;

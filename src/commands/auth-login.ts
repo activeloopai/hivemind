@@ -25,6 +25,8 @@ import {
   inviteMember, listMembers, removeMember,
 } from "./auth.js";
 import { sessionPrune } from "./session-prune.js";
+import { loadConfig } from "../config.js";
+import { renderWhoami } from "./whoami.js";
 
 /**
  * Dispatch one auth subcommand.
@@ -48,9 +50,11 @@ export async function runAuthCommand(args: string[]): Promise<void> {
 
     case "whoami": {
       if (!creds) { console.log("Not logged in. Run: hivemind login"); break; }
-      console.log(`User org: ${creds.orgName ?? creds.orgId}`);
-      console.log(`Workspace: ${creds.workspaceId ?? "default"}`);
-      console.log(`API: ${creds.apiUrl ?? "https://api.deeplake.ai"}`);
+      // Report the EFFECTIVE identity for the cwd, not the raw stored creds:
+      // env vars and a per-directory `.hivemind` both override them, and this
+      // is the surface users (and agents) ask "what am I connected to?".
+      // Reading creds directly here made `whoami` misreport under either.
+      console.log(renderWhoami(loadConfig(), creds, process.cwd()));
       break;
     }
 

@@ -1,7 +1,7 @@
 /**
  * Auto-build hook for the codebase-graph feature (Phase 1.5).
  *
- * Registered in claude-code/hooks/hooks.json under BOTH "Stop" AND
+ * Registered in harnesses/claude-code/hooks/hooks.json under BOTH "Stop" AND
  * "SessionEnd" with async: true. Why both:
  *   - "Stop" fires after every model turn in INTERACTIVE Claude sessions.
  *     Rate-limit gate (10 min default) keeps the per-turn cost ~5ms in
@@ -49,7 +49,6 @@ import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { runBuildCommand } from "../commands/graph.js";
 import { acquireBuildLock, releaseBuildLock } from "../graph/build-lock.js";
 import { readLastBuild } from "../graph/last-build.js";
 import { repoDir } from "../graph/snapshot.js";
@@ -208,7 +207,6 @@ export interface MainDeps {
  * crashes the user's session.
  */
 export async function main(deps: MainDeps = {}): Promise<void> {
-  const runBuildFn = deps.runBuildCommand ?? runBuildCommand;
   const acquireFn = deps.acquireBuildLock ?? acquireBuildLock;
   const releaseFn = deps.releaseBuildLock ?? releaseBuildLock;
   const gateFn = deps.decideGate ?? decideGate;
@@ -255,6 +253,21 @@ export async function main(deps: MainDeps = {}): Promise<void> {
   // not "which underlying event"; both feed the same gate + lock so the
   // distinction is invisible to consumers.
   try {
+    // Lazy-load runBuildCommand so this hook's MODULE LOAD never depends on
+    // the tree-sitter native extractors. runBuildCommand → extract/index →
+    // `import Parser from "tree-sitter"` is a chain of static ESM imports;
+    // pulling it at the top of this file would make Node resolve tree-sitter
+    // at load time. tree-sitter is an optionalDependency (may be absent on a
+    // codex/cursor install whose native build failed — Node 24 / arm64), so
+    // an unresolved package would abort module load with ERR_MODULE_NOT_FOUND
+    // and exit the Stop hook with code 1 — BEFORE main()'s catch can swallow
+    // it. Deferring the import to here (behind the gate, inside this try)
+    // means a missing extractor degrades to a logged skip + exit 0, per this
+    // hook's contract that "a buggy hook must never break the user's session".
+    // The esbuild build for this entry uses `splitting` so the dynamic import
+    // stays a runtime chunk load (mirrors the CLI fix in bundle/cli.js).
+    const runBuildFn =
+      deps.runBuildCommand ?? (await import("../commands/graph.js")).runBuildCommand;
     await runBuildFn(["--trigger", "session-end"]);
   } catch (err) {
     logToFile(ctx.cwd, `build threw: ${err instanceof Error ? err.message : String(err)}`);

@@ -10,6 +10,11 @@
  */
 
 import { execSync } from "node:child_process";
+import { loadConfig } from "../config.js";
+import { runDocsOnboarding } from "../docs/onboarding.js";
+import { tryGitTopLevel } from "../graph/git-hook-install.js";
+import { loadCurrentSnapshot } from "../graph/load-current.js";
+import { spawnDetachedNodeWorker } from "../utils/spawn-detached.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
@@ -43,6 +48,7 @@ import type {
   GraphObservation,
 } from "../graph/types.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
+import { maybeSpawnDocsRefresh } from "../docs/auto-refresh-trigger.js";
 
 const USAGE = `hivemind graph — codebase-graph commands (Phase 1.5)
 
@@ -182,6 +188,32 @@ async function runInitCommand(args: string[]): Promise<void> {
   } else {
     console.log("");
     console.log("Skipped initial build (--no-initial-build). Run `hivemind graph build` when ready.");
+  }
+
+  // Docs onboarding — the one moment a human consents to LLM spend. The
+  // build above makes the ~N pages estimate real. Fail-closed by contract:
+  // no git → hint only; no TTY → silent; defaults are No.
+  const initCfg = loadConfig();
+  if (initCfg) {
+    const root = tryGitTopLevel(opts.cwd) ?? opts.cwd;
+    console.log("");
+    const result = await runDocsOnboarding({
+      root,
+      isGitRepo: tryGitTopLevel(opts.cwd) !== null,
+      orgId: initCfg.orgId,
+      orgName: initCfg.orgName,
+      project: deriveProjectKey(root).key,
+      snap: loadCurrentSnapshot(root),
+    });
+    if (result.generate) {
+      const cliEntry = process.argv[1];
+      if (cliEntry) {
+        spawnDetachedNodeWorker(cliEntry, ["docs", "wiki", "--cwd", root]);
+        console.log("Generating wiki docs in the background — check with: hivemind docs list");
+      } else {
+        console.log("Run `hivemind docs wiki` to generate the corpus.");
+      }
+    }
   }
 }
 
@@ -505,7 +537,9 @@ export async function runBuildCommand(args: string[]): Promise<void> {
   // logs and returns; the local snapshot is the source of truth. Skips
   // silently when not authenticated (loadConfig returns null).
   // worktreeId already computed above for the writeSnapshot call.
-  const pushOutcome = await pushSnapshot(snapshot, worktreeId);
+  // Pass the resolved build cwd so `.hivemind` resolves against the target
+  // tree (honors `--cwd`), not the process's invocation directory.
+  const pushOutcome = await pushSnapshot(snapshot, worktreeId, { cwd });
   switch (pushOutcome.kind) {
     case "inserted":
       console.log(`Cloud:         pushed to codebase table (commit ${pushOutcome.commitSha.slice(0, 7)})`);
@@ -527,6 +561,9 @@ export async function runBuildCommand(args: string[]): Promise<void> {
     case "skipped-disabled":
       console.log(`Cloud:         skipped (HIVEMIND_GRAPH_PUSH=0)`);
       break;
+    case "skipped-collect-disabled":
+      console.log(`Cloud:         skipped (.hivemind collect:false for this directory)`);
+      break;
     case "drift":
       console.warn(`Cloud:         DRIFT — commit ${pushOutcome.commitSha.slice(0, 7)} is in cloud with`);
       console.warn(`               sha256=${pushOutcome.cloudSha256.slice(0, 12)}... but local rebuild produced`);
@@ -536,6 +573,14 @@ export async function runBuildCommand(args: string[]): Promise<void> {
     case "error":
       console.warn(`Cloud:         push error (non-fatal): ${pushOutcome.message}`);
       break;
+  }
+
+  // Step 8: after the snapshot is fresh on disk, refresh docs IF the user
+  // opted this (org, repo) in via the CLI registry (`docs auto on` or the
+  // graph-init onboarding). Detached, best-effort — never blocks the build.
+  const autoCfg = loadConfig();
+  if (autoCfg && maybeSpawnDocsRefresh(cwd, { orgId: autoCfg.orgId, project: deriveProjectKey(cwd).key })) {
+    console.log("Docs:          spawned auto sync (enabled for this repo — `hivemind docs list`)");
   }
 }
 

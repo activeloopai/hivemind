@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const stdinMock = vi.fn();
 const loadConfigMock = vi.fn();
@@ -175,6 +178,7 @@ describe("cursor session-start hook — additional_context payload", () => {
 
   it("falls back to orgId in the org-line when orgName is missing", async () => {
     loadCredentialsMock.mockReturnValue({ token: "t", orgId: "o-99" });
+    loadConfigMock.mockReturnValue({ ...validConfig, orgId: "o-99", orgName: undefined });
     await runHook();
     const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
     expect(payload.additional_context).toContain("org: o-99");
@@ -251,5 +255,45 @@ describe("cursor session-start hook — local mined skills note", () => {
     }));
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("auto-mine: triggered"));
+  });
+});
+
+describe("cursor session-start hook — per-directory .hivemind", () => {
+  let hmDir: string;
+  afterEach(() => { if (hmDir) rmSync(hmDir, { recursive: true, force: true }); });
+
+  function withHivemind(body: Record<string, unknown>): void {
+    hmDir = mkdtempSync(join(tmpdir(), "cursor-hivemind-"));
+    writeFileSync(join(hmDir, ".hivemind"), JSON.stringify(body));
+    stdinMock.mockResolvedValue({ session_id: "sid-1", workspace_roots: [hmDir] });
+  }
+
+  function banner(): string {
+    return JSON.parse(consoleLogMock.mock.calls[0][0] as string).additional_context;
+  }
+
+  it("a routing .hivemind discloses the routed org/workspace in the banner", async () => {
+    withHivemind({ orgId: "routed-org", workspaceId: "routed-ws" });
+    await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
+    expect(banner()).toContain("org: routed-org (workspace: routed-ws)");
+    expect(banner()).toContain("routed by");
+    expect(ensureTableMock).toHaveBeenCalled();
+  });
+
+  it("collect:false skips table setup and says capture is disabled", async () => {
+    withHivemind({ collect: false });
+    await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
+    expect(banner()).toContain("capture is disabled for this directory");
+    expect(ensureTableMock).not.toHaveBeenCalled();
+    expect(ensureSessionsTableMock).not.toHaveBeenCalled();
+  });
+
+  it("env HIVEMIND_ORG_ID overrides a routing .hivemind (env > file)", async () => {
+    withHivemind({ orgId: "routed-org", workspaceId: "routed-ws" });
+    loadConfigMock.mockReturnValue({ ...validConfig, orgId: "env-org", orgName: "env-org" });
+    await runHook({ HIVEMIND_ORG_ID: "env-org", HIVEMIND_WORKSPACE_ID: undefined });
+    expect(banner()).toContain("org: env-org");
+    expect(banner()).not.toContain("routed-org");
+    expect(banner()).toContain("workspace: routed-ws");
   });
 });

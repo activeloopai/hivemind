@@ -35,6 +35,7 @@ vi.mock("../../src/notifications/sources/open-goals.js", async (importActual) =>
 import { pickPrimaryBanner, formatTokens } from "../../src/notifications/sources/primary-banner.js";
 import { appendUsageRecord } from "../../src/notifications/usage-tracker.js";
 import type { Credentials } from "../../src/commands/auth-creds.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 let TEMP_HOME = "";
 let ORIGINAL_HOME: string | undefined;
@@ -54,7 +55,7 @@ const FRESH_CREDS: Credentials = {
 beforeEach(() => {
   TEMP_HOME = mkdtempSync(join(tmpdir(), "hivemind-primary-banner-test-"));
   ORIGINAL_HOME = process.env.HOME;
-  process.env.HOME = TEMP_HOME;
+  setFakeHome(TEMP_HOME);
   mkdirSync(join(TEMP_HOME, ".deeplake"), { recursive: true });
   orgStatsMock.mockReset();
   // Default: server unreachable → primary-banner falls back to local jsonl.
@@ -80,7 +81,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  process.env.HOME = ORIGINAL_HOME;
+  clearFakeHome();
   restoreEnv("HIVEMIND_TOKEN", ORIGINAL_HIVEMIND_TOKEN);
   restoreEnv("HIVEMIND_ORG_ID", ORIGINAL_HIVEMIND_ORG_ID);
   rmSync(TEMP_HOME, { recursive: true, force: true });

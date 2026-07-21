@@ -15,14 +15,16 @@ export function isLoggedIn(): boolean {
   return existsSync(CREDS_PATH) && loadCredentials() !== null;
 }
 
-export async function ensureLoggedIn(): Promise<boolean> {
+// ref carries an affiliate campaign code from `--ref <code>`. It only matters on
+// a genuinely new signup; the backend ignores it for already-registered users.
+export async function ensureLoggedIn(ref?: string): Promise<boolean> {
   if (isLoggedIn()) return true;
 
   log("");
   log("No Deeplake credentials found. Starting login...");
 
   try {
-    await login(resolveApiUrl());
+    await login(resolveApiUrl(), ref);
   } catch (err) {
     warn(`Login failed: ${(err as Error).message}`);
     return false;

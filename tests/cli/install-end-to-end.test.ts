@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
  * End-to-end tests for the install/uninstall surface of every per-agent
@@ -37,7 +38,7 @@ let originalHome: string | undefined;
 beforeEach(() => {
   fakeHome = mkdtempSync(join(tmpdir(), "hm-e2e-"));
   originalHome = process.env.HOME;
-  process.env.HOME = fakeHome;
+  setFakeHome(fakeHome);
   // Touch marker dirs so detectPlatforms() recognises each agent.
   for (const d of [".claude", ".codex", ".openclaw", ".cursor", ".hermes", ".pi"]) {
     mkdirSync(join(fakeHome, d), { recursive: true });
@@ -48,7 +49,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  process.env.HOME = originalHome;
+  clearFakeHome();
   rmSync(fakeHome, { recursive: true, force: true });
 });
 
@@ -313,7 +314,7 @@ describe("installHermes / uninstallHermes", () => {
 });
 
 // OpenClaw tests intentionally omitted from this end-to-end file:
-// `openclaw/dist/` is gitignored (esbuild output, see .gitignore: dist/),
+// `harnesses/openclaw/dist/` is gitignored (esbuild output, see .gitignore: dist/),
 // so it doesn't exist on a fresh CI checkout the way the committed
 // codex/cursor/hermes bundles do. The dedicated test file
 // `cli-install-openclaw.test.ts` covers OpenClaw via mock-pkgRoot →

@@ -101,7 +101,13 @@ interface HermesConfig {
 function isHivemindHook(entry: unknown): boolean {
   if (!entry || typeof entry !== "object") return false;
   const cmd = (entry as { command?: string }).command;
-  return typeof cmd === "string" && cmd.includes("/.hermes/hivemind/bundle/");
+  if (typeof cmd !== "string") return false;
+  // Normalize separators: on Windows the command is written with backslashes
+  // (`...\.hermes\hivemind\bundle\capture.js` — buildHookEntry uses join()), so
+  // a forward-slash-only match would fail and re-install would duplicate the
+  // hooks (same Windows bug fixed in codex's isHivemindHookEntry / cursor's
+  // isHivemindEntry).
+  return cmd.replace(/\\/g, "/").includes("/.hermes/hivemind/bundle/");
 }
 
 function buildHookEntry(bundleFile: string, timeout: number, matcher?: string): HermesHookEntry {
@@ -183,7 +189,7 @@ export function installHermes(): void {
   log(`  Hermes         skill installed -> ${SKILLS_DIR}`);
 
   // 2. Hook bundle — auto-capture via Hermes shell-hooks.
-  const srcBundle = join(pkgRoot(), "hermes", "bundle");
+  const srcBundle = join(pkgRoot(), "harnesses", "hermes", "bundle");
   if (!existsSync(srcBundle)) {
     throw new Error(`Hermes bundle missing at ${srcBundle}. Run 'npm run build' first.`);
   }

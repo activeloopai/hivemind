@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setFakeHome, clearFakeHome } from "./fake-home.js";
 
 /**
  * Tests for the balance-exhausted notification path in DeeplakeApi.
@@ -48,7 +49,7 @@ beforeEach(async () => {
   // the file inside the test body.
   TEMP_HOME = mkdtempSync(join(tmpdir(), "hivemind-bal-exh-test-"));
   ORIGINAL_HOME = process.env.HOME;
-  process.env.HOME = TEMP_HOME;
+  setFakeHome(TEMP_HOME);
   mkdirSync(join(TEMP_HOME, ".deeplake"), { recursive: true });
   writeFileSync(
     join(TEMP_HOME, ".deeplake", "credentials.json"),
@@ -66,8 +67,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  if (ORIGINAL_HOME !== undefined) process.env.HOME = ORIGINAL_HOME;
-  else delete process.env.HOME;
+  clearFakeHome();
   rmSync(TEMP_HOME, { recursive: true, force: true });
   vi.restoreAllMocks();
 });

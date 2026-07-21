@@ -154,6 +154,147 @@ describe("grep interceptor", () => {
     expect(result.stdout).toBe("");
   });
 
+  // Honest failure signaling: a backend error with no fallback match must use
+  // grep's error exit code (2) + stderr, NOT exit 1 with empty stderr — which
+  // is indistinguishable from a genuine zero-match.
+  it("returns exitCode=2 + stderr when the backend errors and nothing else matches", async () => {
+    const client = makeClient([]);
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    client.query.mockClear();
+    client.query.mockRejectedValue(new Error("deeplake 500: internal error"));
+
+    const cmd = createGrepCommand(client as never, fs, "test", "sessions");
+    const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr.toLowerCase()).toMatch(/error|deeplake|search/);
+    expect(result.stdout).toBe("");
+  });
+
+  it("returns a semantic hit directly, without a lexical retry", async () => {
+    mockEmbed.mockResolvedValue([0.1, 0.2, 0.3]);
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    client.query.mockClear();
+    client.query.mockResolvedValue([{ path: "/memory/a.txt", content: "hello world" }]);
+
+    const cmd = createGrepCommand(client as never, fs, "test", "sessions");
+    const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
+
+    // Semantic returned rows → the `rows.length === 0` retry guard short-circuits.
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("hello world");
+  });
+
+  it("retries lexically when semantic returns nothing, surfacing those matches (exit 0)", async () => {
+    mockEmbed.mockResolvedValue([0.1, 0.2, 0.3]);
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    client.query.mockClear();
+    client.query
+      .mockResolvedValueOnce([])                                            // semantic → empty
+      .mockResolvedValueOnce([{ path: "/memory/a.txt", content: "hello world" }]); // lexical retry → hit
+
+    const cmd = createGrepCommand(client as never, fs, "test", "sessions");
+    const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("hello world");
+  });
+
+  it("returns exit 2 when semantic finds nothing and the lexical retry errors", async () => {
+    mockEmbed.mockResolvedValue([0.1, 0.2, 0.3]);
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    client.query.mockClear();
+    client.query
+      .mockResolvedValueOnce([])                              // semantic → empty
+      .mockRejectedValueOnce(new Error("deeplake 500"));      // lexical retry → error
+
+    const cmd = createGrepCommand(client as never, fs, "test", "sessions");
+    const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr.toLowerCase()).toMatch(/error|deeplake/);
+  });
+
+  it("wraps a non-Error rejection from the primary search (String(e) path)", async () => {
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    client.query.mockClear();
+    client.query.mockRejectedValue("primary string failure"); // non-Error, semantic off
+
+    const cmd = createGrepCommand(client as never, fs, "test", "sessions");
+    const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("primary string failure");
+  });
+
+  it("wraps a non-Error rejection from the lexical retry (String(e) path)", async () => {
+    mockEmbed.mockResolvedValue([0.1, 0.2, 0.3]);
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    client.query.mockClear();
+    client.query
+      .mockResolvedValueOnce([])                  // semantic → empty
+      .mockRejectedValueOnce("string failure");   // lexical retry → non-Error reject
+
+    const cmd = createGrepCommand(client as never, fs, "test", "sessions");
+    const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("string failure");
+  });
+
+  it("falls through to exit 1 when semantic AND lexical retry both return empty", async () => {
+    mockEmbed.mockResolvedValue([0.1, 0.2, 0.3]);
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    client.query.mockClear();
+    client.query
+      .mockResolvedValueOnce([])   // semantic → empty
+      .mockResolvedValueOnce([]);  // lexical retry → also empty
+
+    const cmd = createGrepCommand(client as never, fs, "test", "sessions");
+    const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
+
+    // No backend error occurred → genuine zero-match, not an error.
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe("");
+  });
+
+  it("does NOT lexically retry when the embed daemon is unavailable (queryEmbedding null)", async () => {
+    mockEmbed.mockRejectedValue(new Error("daemon down")); // → queryEmbedding stays null
+    const client = makeClient();
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    client.query.mockClear();
+    client.query.mockResolvedValueOnce([]); // single lexical search → empty
+
+    const cmd = createGrepCommand(client as never, fs, "test", "sessions");
+    const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
+
+    // Only ONE search ran (no retry, since there was no embedding to fall back from).
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(result.exitCode).toBe(1);
+  });
+
+  it("still returns fallback matches (exit 0) even when the backend errors", async () => {
+    const client = makeClient([]);
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    await fs.writeFile("/memory/a.txt", "hello world");
+    client.query.mockClear();
+    client.query.mockRejectedValue(new Error("deeplake 500: internal error"));
+
+    const cmd = createGrepCommand(client as never, fs, "test");
+    const result = await cmd.execute(["hello", "/memory"], makeCtx(fs) as never);
+
+    // Fallback rescued the result — a backend error that still yields data is
+    // not an error to the caller.
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("hello world");
+  });
+
   it("respects -i (ignore-case) flag", async () => {
     const client = makeClient([{ path: "/memory/a.txt", content: "Hello World" }]);
     const fs = await DeeplakeFs.create(client as never, "test", "/memory");

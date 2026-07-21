@@ -1,0 +1,44 @@
+{
+  "name": "hivemind",
+  "version": "0.7.140",
+  "description": "Cloud-backed persistent memory powered by Deeplake — read, write, and share memory across Codex sessions and agents",
+  "author": {
+    "name": "Activeloop",
+    "url": "https://deeplake.ai"
+  },
+  "homepage": "https://deeplake.ai",
+  "repository": "https://github.com/activeloopai/hivemind",
+  "license": "Apache-2.0",
+  "keywords": [
+    "memory",
+    "deeplake",
+    "persistent-memory",
+    "session-capture",
+    "search"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Hivemind Memory",
+    "shortDescription": "Persistent shared memory for AI agents powered by Deeplake",
+    "longDescription": "Captures all session activity and provides cross-session, cross-agent memory search via ~/.deeplake/memory/. Memory is stored in Deeplake managed tables and shared across sessions, users, and agents in your organization.",
+    "developerName": "Activeloop",
+    "category": "Productivity",
+    "capabilities": [
+      "Persistent memory",
+      "Session capture",
+      "Semantic search"
+    ],
+    "websiteURL": "https://deeplake.ai",
+    "privacyPolicyURL": "https://www.activeloop.ai/privacy/",
+    "termsOfServiceURL": "https://www.activeloop.ai/terms/",
+    "defaultPrompt": [
+      "Recall what our team decided about this project recently.",
+      "Save this as a memory for the team.",
+      "Search our shared memory for anything about rate limits."
+    ],
+    "brandColor": "#101010",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/logo.png",
+    "screenshots": []
+  }
+}

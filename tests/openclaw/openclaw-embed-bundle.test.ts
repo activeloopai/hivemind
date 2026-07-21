@@ -7,8 +7,8 @@ import { resolve } from "node:path";
  *
  * The shipped openclaw bundle MUST produce real embeddings (not silent
  * NULL) when the canonical shared daemon is available. The source-level
- * wiring is verified at openclaw/src/index.ts, but the actually-shipped
- * surface is openclaw/dist/index.js — a slip in the esbuild config
+ * wiring is verified at harnesses/openclaw/src/index.ts, but the actually-shipped
+ * surface is harnesses/openclaw/dist/index.js — a slip in the esbuild config
  * (e.g. an over-aggressive stub-unused-child-process matcher, a
  * tree-shake of the spawn-impl injection, or a re-introduced INSERT
  * that omits the embedding column) would silently regress capture
@@ -16,7 +16,7 @@ import { resolve } from "node:path";
  * the load-bearing strings so the regression is caught at build time.
  */
 
-const BUNDLE_PATH = resolve(process.cwd(), "openclaw", "dist", "index.js");
+const BUNDLE_PATH = resolve(process.cwd(), "harnesses", "openclaw", "dist", "index.js");
 const SRC = readFileSync(BUNDLE_PATH, "utf-8");
 
 describe("openclaw dist bundle — embeddings wiring", () => {
@@ -33,11 +33,11 @@ describe("openclaw dist bundle — embeddings wiring", () => {
   });
 
   it("session INSERT column list includes message_embedding", () => {
-    // The whole INSERT lives on one line in the minified bundle. Match
-    // the column list between INSERT INTO "...sessions..." and VALUES.
-    // Locking in the column NAME, not its position, so a future reorder
-    // doesn't false-fail.
-    const insertMatches = SRC.match(/INSERT INTO "\$\{sessionsTable[^"]*\}"\s*\([^)]+\)/g) ?? [];
+    // The sessions INSERT is now built by the shared buildDirectSessionInsertSql
+    // helper, whose column list is `INSERT INTO "${table}" (...)`. Match the
+    // column list and lock in the column NAME, not its position, so a future
+    // reorder doesn't false-fail.
+    const insertMatches = SRC.match(/INSERT INTO "\$\{table\}"\s*\([^)]+\)/g) ?? [];
     expect(insertMatches.length).toBeGreaterThanOrEqual(1);
     for (const m of insertMatches) {
       expect(m).toContain("message_embedding");
@@ -50,7 +50,9 @@ describe("openclaw dist bundle — embeddings wiring", () => {
     // bundle) — and the daemon auto-spawn fallback silently does nothing,
     // sending us back to "NULL embeddings forever" before any other agent
     // races us.
-    expect(SRC).toMatch(/_setSpawnImpl\(\s*realSpawn\s*\)/);
+    const match = SRC.match(/_setSpawnImpl\(\s*(realSpawn\w*)\s*\)/);
+    expect(match).not.toBeNull();
+    expect(match![1]).toMatch(/^realSpawn/);
   });
 
   it("never writes a literal NULL into message_embedding (graceful fallback only)", () => {

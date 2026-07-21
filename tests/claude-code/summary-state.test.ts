@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync, readFileSync
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn } from "node:child_process";
+import { setFakeHome } from "../shared/fake-home.js";
 
 /**
  * Functional tests for summary-state. The module computes STATE_DIR from
@@ -26,7 +27,7 @@ let mod: typeof import("../../src/hooks/summary-state.js");
 
 beforeAll(async () => {
   tmpHome = mkdtempSync(join(tmpdir(), "summary-state-test-"));
-  process.env.HOME = tmpHome;
+  setFakeHome(tmpHome);
   mod = await import("../../src/hooks/summary-state.js");
 });
 
@@ -585,13 +586,23 @@ describe("cross-process concurrency", () => {
   // (tryAcquireLock) across processes, so these tests are a real stress test
   // of the lock. Session id comes via env (TEST_SID) because tsx's `-e` flag
   // does not forward positional args reliably across node versions.
-  const modPath = new URL("../../src/hooks/summary-state.ts", import.meta.url).pathname;
+  // A file:// URL is a valid ESM import specifier on every platform; the bare
+  // .pathname form yields "/C:/…" on Windows, which import() rejects.
+  const modUrl = new URL("../../src/hooks/summary-state.ts", import.meta.url).href;
 
+  // Run inline TS in a child WITHOUT a shell: write it to a temp file and
+  // invoke `node --import tsx`. `npx tsx -e <code>` breaks on Windows — npx is
+  // a .cmd needing a shell, and cmd.exe mangles the multi-line code arg
+  // ("Transform failed"). process.execPath is absolute (no shell) and the
+  // script rides a file path (no arg-mangling).
+  let runSeq = 0;
   const runParallel = async (code: string, N: number, sid: string): Promise<string[]> => {
     const runs = Array.from({ length: N }, () =>
       new Promise<string>((resolve, reject) => {
-        const child = spawn("npx", ["tsx", "-e", code], {
-          env: { ...process.env, HOME: tmpHome, TEST_SID: sid },
+        const file = join(tmpHome, `rmw-${runSeq++}.mts`);
+        writeFileSync(file, code);
+        const child = spawn(process.execPath, ["--import", "tsx", file], {
+          env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome, TEST_SID: sid },
           stdio: ["ignore", "pipe", "pipe"],
         });
         let out = "";
@@ -607,7 +618,7 @@ describe("cross-process concurrency", () => {
     const sid = newSessionId();
     const N = 8;
     const code =
-      `import("${modPath}").then(m => { ` +
+      `import("${modUrl}").then(m => { ` +
       `  const s = m.bumpTotalCount(process.env.TEST_SID); ` +
       `  process.stdout.write(String(s.totalCount)); ` +
       `});`;
@@ -622,7 +633,7 @@ describe("cross-process concurrency", () => {
     const sid = newSessionId();
     const N = 8;
     const code =
-      `import("${modPath}").then(m => { ` +
+      `import("${modUrl}").then(m => { ` +
       `  process.stdout.write(m.tryAcquireLock(process.env.TEST_SID) ? "1" : "0"); ` +
       `});`;
 

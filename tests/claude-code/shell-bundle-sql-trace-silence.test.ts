@@ -29,7 +29,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const BUNDLE_PATH = join(process.cwd(), "claude-code", "bundle", "shell", "deeplake-shell.js");
+const BUNDLE_PATH = join(process.cwd(), "harnesses", "claude-code", "bundle", "shell", "deeplake-shell.js");
 
 describe("shell bundle one-shot: SQL trace silence (fix #3)", () => {
   it("does not write [deeplake-sql] to stderr even when trace env vars are set", () => {

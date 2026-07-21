@@ -46,7 +46,7 @@ export function parseMessage(m: unknown): ParsedMsg | null {
 
 /** Match a path that loads a skill's SKILL.md anywhere in `s` → the `<dir>` ref (name--author),
  *  else null. Works on a bare path (pi `read` tool_input.path) or inside a shell command string
- *  (codex/hermes `cat …/SKILL.md`). The dir class excludes whitespace/quotes so a command's
+ *  (harnesses/codex/hermes `cat …/SKILL.md`). The dir class excludes whitespace/quotes so a command's
  *  trailing args don't get swallowed into the ref. */
 export function pathToSkillRef(s: unknown): string | null {
   if (typeof s !== "string") return null;

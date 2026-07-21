@@ -27,8 +27,10 @@ import { dirname, join } from "node:path";
 import { loadScopeConfig, saveScopeConfig, type Scope, type InstallLocation } from "../skillify/scope-config.js";
 import { getStateDir } from "../skillify/state-dir.js";
 import { runPull, type PullSummary } from "../skillify/pull.js";
+import { runPush } from "../skillify/push.js";
 import { runUnpull } from "../skillify/unpull.js";
 import { loadConfig } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { runMineLocal } from "./mine-local.js";
 import { renderSubcommandUsageBlock } from "../cli/skillify-spec.js";
@@ -220,7 +222,7 @@ async function pullSkills(args: string[]): Promise<void> {
   else if (userOne) users = [userOne];
   else if (usersMany) users = usersMany.split(",").map(s => s.trim()).filter(Boolean);
 
-  const config = loadConfig();
+  const config = loadRoutedConfig();
   if (!config) {
     console.error("Not logged in. Run: hivemind login");
     process.exit(1);
@@ -249,7 +251,7 @@ async function pullSkills(args: string[]): Promise<void> {
   }
 
   // Pretty output
-  const dest = toRaw === "global" ? join(homedir(), ".claude", "skills") : `${process.cwd()}/.claude/skills`;
+  const dest = toRaw === "global" ? join(homedir(), ".claude", "skills") : join(process.cwd(), ".claude", "skills");
   const filterDesc = users.length === 0 ? "all users" : users.join(", ");
   console.log(`Destination: ${dest}`);
   console.log(`Filter:      ${filterDesc}${skillName ? ` · skill='${skillName}'` : ""}${dryRun ? " · dry-run" : ""}${force ? " · force" : ""}`);
@@ -266,6 +268,61 @@ async function pullSkills(args: string[]): Promise<void> {
     }
   }
   console.log(`Result: ${summary.wrote} written, ${summary.dryrun} dry-run, ${summary.skipped} skipped.`);
+}
+
+async function pushSkills(args: string[]): Promise<void> {
+  // Parse flags first so the remaining positional is the required skill name.
+  const work = [...args];
+  const fromRaw = takeFlagValue(work, "--from") ?? "project";
+  const dryRun = takeBooleanFlag(work, "--dry-run");
+  const skillName = work[0];
+
+  // Throw rather than `process.exit(1)` so the dispatcher's `.catch` is the
+  // single point that surfaces the failure (mirrors unpullSkills).
+  if (fromRaw !== "project" && fromRaw !== "global") {
+    throw new Error(`Invalid --from '${fromRaw}'. Use 'project' or 'global'.`);
+  }
+  if (!skillName) {
+    throw new Error("Usage: hivemind skillify push <skill-name> [--from project|global] [--dry-run]");
+  }
+
+  const config = loadRoutedConfig();
+  if (!config) {
+    throw new Error("Not logged in. Run: hivemind login");
+  }
+  const api = new DeeplakeApi(
+    config.token, config.apiUrl, config.orgId, config.workspaceId, config.skillsTableName,
+  );
+  const query = (sql: string) => api.query(sql) as Promise<Record<string, unknown>[]>;
+  const scopeCfg = loadScopeConfig();
+
+  const summary = await runPush({
+    query,
+    tableName: config.skillsTableName,
+    workspaceId: config.workspaceId,
+    from: fromRaw,
+    cwd: process.cwd(),
+    skillName,
+    pusher: config.userName,
+    scope: scopeCfg.scope,
+    agent: "cli",
+    dryRun,
+  });
+
+  const src = fromRaw === "global"
+    ? join(homedir(), ".claude", "skills")
+    : join(process.cwd(), ".claude", "skills");
+  const verDesc = summary.previousVersion === null
+    ? `v${summary.version} (new)`
+    : `v${summary.previousVersion} → v${summary.version}`;
+  const tag = summary.action === "pushed" ? "✓ pushed" : "→ would push";
+  console.log(`Source:      ${src}`);
+  console.log(`  ${tag.padEnd(15)} ${summary.name.padEnd(40)} ${verDesc.padEnd(18)} (${summary.author}, scope=${summary.scope})`);
+  if (summary.action === "dryrun") {
+    console.log("Dry run — nothing written to the org skills table.");
+  } else {
+    console.log(`Pushed to org skills table as version ${summary.version}. Teammates get it on next \`hivemind skillify pull\`.`);
+  }
 }
 
 async function unpullSkills(args: string[]): Promise<void> {
@@ -315,7 +372,7 @@ async function unpullSkills(args: string[]): Promise<void> {
     legacyCleanup,
   });
 
-  const dest = toRaw === "global" ? join(homedir(), ".claude", "skills") : `${process.cwd()}/.claude/skills`;
+  const dest = toRaw === "global" ? join(homedir(), ".claude", "skills") : join(process.cwd(), ".claude", "skills");
   const filterParts: string[] = [];
   if (users.length > 0) filterParts.push(`users=${users.join(",")}`);
   if (notMine) filterParts.push("not-mine");
@@ -352,6 +409,17 @@ export function runSkillifyCommand(args: string[]): void {
       console.error(`pull error: ${e?.message ?? e}`);
       process.exit(1);
     });
+    return;
+  }
+  if (sub === "push") {
+    pushSkills(args.slice(1))
+      .catch(e => {
+        console.error(`push error: ${e?.message ?? e}`);
+        process.exit(1);
+      })
+      // process.exit is mocked as a throw in unit tests; swallow the
+      // secondary rejection (mirrors unpull).
+      .catch(() => { /* test-only safety net */ });
     return;
   }
   if (sub === "unpull") {

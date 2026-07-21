@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
  * Tests for src/skillify/legacy-migration.ts.
@@ -14,13 +15,6 @@ import { join } from "node:path";
  */
 
 let sandboxHome: string;
-let prevHome: string | undefined;
-// Windows `os.homedir()` resolves from USERPROFILE / HOMEDRIVE+HOMEPATH, not
-// HOME. CI is ubuntu-only today but sandboxing all three keeps the test from
-// touching real user state if anyone runs it on Windows locally.
-let prevUserProfile: string | undefined;
-let prevHomeDrive: string | undefined;
-let prevHomePath: string | undefined;
 
 const legacyOf = (h: string) => join(h, ".deeplake", "state", "skilify");
 const currentOf = (h: string) => join(h, ".deeplake", "state", "skillify");
@@ -33,25 +27,11 @@ async function freshMigrate() {
 
 beforeEach(() => {
   sandboxHome = mkdtempSync(join(tmpdir(), "skillify-migration-"));
-  prevHome = process.env.HOME;
-  prevUserProfile = process.env.USERPROFILE;
-  prevHomeDrive = process.env.HOMEDRIVE;
-  prevHomePath = process.env.HOMEPATH;
-  process.env.HOME = sandboxHome;
-  process.env.USERPROFILE = sandboxHome;
-  delete process.env.HOMEDRIVE;
-  delete process.env.HOMEPATH;
+  setFakeHome(sandboxHome);
 });
 
 afterEach(() => {
-  if (prevHome === undefined) delete process.env.HOME;
-  else process.env.HOME = prevHome;
-  if (prevUserProfile === undefined) delete process.env.USERPROFILE;
-  else process.env.USERPROFILE = prevUserProfile;
-  if (prevHomeDrive === undefined) delete process.env.HOMEDRIVE;
-  else process.env.HOMEDRIVE = prevHomeDrive;
-  if (prevHomePath === undefined) delete process.env.HOMEPATH;
-  else process.env.HOMEPATH = prevHomePath;
+  clearFakeHome();
   // chmodSync the sandbox readable in case a test removed perms; otherwise
   // rmSync hits EACCES on cleanup and leaks the temp dir across runs.
   try { chmodSync(sandboxHome, 0o755); } catch { /* nothing */ }

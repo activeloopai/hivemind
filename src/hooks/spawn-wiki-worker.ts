@@ -3,7 +3,6 @@
  * Called from session-end.ts (always) and capture.ts (periodic trigger).
  */
 
-import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -13,6 +12,7 @@ import { makeWikiLogger } from "../utils/wiki-log.js";
 import { getInstalledVersion } from "../utils/version-check.js";
 import { spawnDetachedNodeWorker } from "../utils/spawn-detached.js";
 import { projectNameFromCwd } from "../utils/project-name.js";
+import { resolveCliBin } from "../utils/resolve-cli-bin.js";
 
 const HOME = homedir();
 const wikiLogger = makeWikiLogger(join(HOME, ".claude", "hooks"));
@@ -43,7 +43,7 @@ Steps:
 - **JSONL offset**: __JSONL_LINES__
 
 ## What Happened
-<2-3 dense sentences. What was the goal, what was accomplished, what's left.>
+<2-3 dense sentences. What was the goal, what was accomplished, what's left. Preserve VERBATIM any precise, non-derivable identifier that defines the work — exact token/key/secret-name values, version numbers, error codes/sqlstates, table/branch/file names, commit SHAs, config keys and their chosen values. If the session established a specific value (e.g. a token "QX7341-ZULU-STAGING", a flag set to 0, a threshold of 0.5), write that EXACT value here, not a paraphrase of it. A future reader must be able to answer "what was the value?" from this section alone.>
 
 ## People
 <For each person mentioned: name, role, what they did/said. Format: **Name** — role — action>
@@ -56,8 +56,11 @@ Format: **entity** (type) — what was done with it, its current state>
 <Every decision made and WHY. Not just "did X" but "did X because Y, considered Z but rejected it because W">
 
 ## Key Facts
-<Bullet list of atomic facts that could answer future questions. Each fact should stand alone.
-Example: "- The memory table uses DELETE+INSERT, not UPDATE (WASM doesn't support upsert)">
+<Bullet list of atomic facts that could answer future questions. Each fact should stand alone and include the EXACT, VERBATIM value where one exists — never replace a concrete identifier/value with a vague gist. Quote literal values inline.
+Examples:
+"- The memory table uses DELETE+INSERT, not UPDATE (WASM doesn't support upsert)"
+"- The staging verification token is QX7341-ZULU-STAGING (set in config key auth.staging_token)"
+"- DEEPLAKE_SNAPSHOT_RESTORE_ON_CLAIM was flipped from 1 to 0 to stop the eviction race">
 
 ## Files Modified
 <bullet list: path (new/modified/deleted) — what changed>
@@ -77,11 +80,7 @@ LENGTH LIMIT: Keep the total summary under 4000 characters. Be dense and concise
 export const wikiLog = wikiLogger.log;
 
 export function findClaudeBin(): string {
-  try {
-    return execSync("which claude 2>/dev/null", { encoding: "utf-8" }).trim();
-  } catch {
-    return join(HOME, ".claude", "local", "claude");
-  }
+  return resolveCliBin("claude");
 }
 
 export interface SpawnOptions {
@@ -90,6 +89,8 @@ export interface SpawnOptions {
   cwd: string;
   bundleDir: string;
   reason: string;
+  /** Value written to the summary's `agent` column. Defaults to "claude_code". */
+  agent?: string;
 }
 
 export function spawnWikiWorker(opts: SpawnOptions): void {
@@ -111,7 +112,9 @@ export function spawnWikiWorker(opts: SpawnOptions): void {
     sessionsTable: config.sessionsTableName,
     sessionId,
     userName: config.userName,
+    orgName: config.orgName,
     project: projectName,
+    agent: opts.agent ?? "claude_code",
     pluginVersion,
     tmpDir,
     claudeBin: findClaudeBin(),

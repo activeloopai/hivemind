@@ -33,6 +33,20 @@ afterEach(() => {
 // ── query() ─────────────────────────────────────────────────────────────────
 
 describe("DeeplakeApi.query", () => {
+  it("throws without fetching when an already-aborted signal is passed", async () => {
+    const api = makeApi();
+    await expect(api.query("SELECT 1", AbortSignal.abort())).rejects.toThrow(/abort/i);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("forwards a live caller signal into the fetch call", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["id"], rows: [["1"]] }));
+    const api = makeApi();
+    const ctrl = new AbortController();
+    await api.query("SELECT id FROM t", ctrl.signal);
+    expect(mockFetch.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("sends correct SQL and parses rows", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({
       columns: ["id", "name"],
@@ -451,6 +465,7 @@ import {
   RULES_COLUMNS,
   GOALS_COLUMNS,
   KPIS_COLUMNS,
+  DOCS_COLUMNS,
   CODEBASE_COLUMNS,
 } from "../../src/deeplake-schema.js";
 
@@ -1037,6 +1052,65 @@ describe("DeeplakeApi.ensureGoalsTable", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX (owner, status)
     const api = makeApi();
     await api.ensureGoalsTable("hivemind_goals");
+    const allSql = mockFetch.mock.calls.filter(c => c[1]?.body).map(c => JSON.parse(c[1].body).query).join(" | ");
+    expect(allSql).not.toContain("ALTER TABLE");
+    expect(allSql).not.toContain("CREATE TABLE");
+  });
+});
+
+// ── ensureDocsTable ─────────────────────────────────────────────────────────
+
+describe("DeeplakeApi.ensureDocsTable", () => {
+  it("creates docs table when missing; heals after CREATE; emits (doc_id, version) index", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                          // CREATE TABLE
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(DOCS_COLUMNS)));    // post-CREATE heal SELECT
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                          // CREATE INDEX (doc_id, version)
+    const api = makeApi();
+    await api.ensureDocsTable("hivemind_docs");
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+
+    const createSql = JSON.parse(mockFetch.mock.calls[1][1].body).query;
+    expect(createSql).toContain(`CREATE TABLE IF NOT EXISTS "hivemind_docs"`);
+    expect(createSql).toContain("doc_id TEXT NOT NULL DEFAULT ''");
+    expect(createSql).toContain("anchors TEXT NOT NULL DEFAULT '[]'");
+    expect(createSql).toContain("tier TEXT NOT NULL DEFAULT 'fast'");
+    expect(createSql).toContain("version BIGINT NOT NULL DEFAULT 1");
+    expect(createSql).toContain("USING deeplake");
+
+    const indexSql = JSON.parse(mockFetch.mock.calls[3][1].body).query;
+    expect(indexSql).toContain(`"hivemind_docs"`);
+    expect(indexSql).toContain(`("doc_id", "version")`);
+  });
+
+  it("heals after CREATE: a missing column gets ALTERed before returning", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [] }),
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                          // CREATE (no-op vs legacy)
+    const legacy = allOf(DOCS_COLUMNS).filter(c => c !== "anchors");
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(legacy));                // heal SELECT
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                          // ALTER anchors
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));                          // CREATE INDEX
+    const api = makeApi();
+    await api.ensureDocsTable("hivemind_docs");
+    const alterSql = JSON.parse(mockFetch.mock.calls[3][1].body).query;
+    expect(alterSql).toBe(`ALTER TABLE "hivemind_docs" ADD COLUMN anchors TEXT NOT NULL DEFAULT '[]'`);
+  });
+
+  it("on existing up-to-date docs table: no CREATE TABLE / no ALTER (listTables + heal + index)", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ tables: [{ table_name: "hivemind_docs" }] }),
+    });
+    mockFetch.mockResolvedValueOnce(infoSchemaResponse(allOf(DOCS_COLUMNS)));
+    mockFetch.mockResolvedValueOnce(jsonResponse({})); // CREATE INDEX (doc_id, version)
+    const api = makeApi();
+    await api.ensureDocsTable("hivemind_docs");
     const allSql = mockFetch.mock.calls.filter(c => c[1]?.body).map(c => JSON.parse(c[1].body).query).join(" | ");
     expect(allSql).not.toContain("ALTER TABLE");
     expect(allSql).not.toContain("CREATE TABLE");

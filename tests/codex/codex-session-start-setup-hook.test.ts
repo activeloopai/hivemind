@@ -21,6 +21,7 @@ const ensureTableMock = vi.fn();
 const ensureSessionsTableMock = vi.fn();
 const queryMock = vi.fn();
 const autoUpdateMock = vi.fn();
+const spawnDetachedMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/commands/auth.js", () => ({
@@ -44,6 +45,13 @@ vi.mock("../../src/deeplake-api.js", () => ({
 // legacy git-clone tag flow is gone.
 vi.mock("../../src/hooks/shared/autoupdate.js", () => ({
   autoUpdate: (...a: any[]) => autoUpdateMock(...a),
+}));
+// The hook no longer provisions graph-deps inline: a cold npm install +
+// native compile can exceed the ~120s hook timeout, so it spawns a DETACHED
+// worker via spawnDetachedNodeWorker. Mock that boundary and assert the hook
+// spawns graph-deps-worker.js (and BEFORE the credentials gate).
+vi.mock("../../src/utils/spawn-detached.js", () => ({
+  spawnDetachedNodeWorker: (...a: any[]) => spawnDetachedMock(...a),
 }));
 
 async function runHook(env: Record<string, string | undefined> = {}): Promise<void> {
@@ -80,6 +88,7 @@ beforeEach(() => {
   ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
   queryMock.mockReset().mockResolvedValue([]); // placeholder SELECT → empty, INSERT will follow
   autoUpdateMock.mockReset().mockResolvedValue(undefined);
+  spawnDetachedMock.mockReset();
 });
 
 afterEach(() => {
@@ -97,6 +106,42 @@ describe("codex session-start-setup hook — guards", () => {
     await runHook();
     expect(debugLogMock).toHaveBeenCalledWith("no credentials");
     expect(ensureTableMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("codex session-start-setup hook — graph-deps provisioning (detached worker)", () => {
+  const spawnedGraphDeps = () =>
+    spawnDetachedMock.mock.calls.find(([p]) => typeof p === "string" && p.endsWith("graph-deps-worker.js"));
+
+  it("spawns the graph-deps worker detached once on the happy path (NOT inline)", async () => {
+    await runHook();
+    expect(spawnedGraphDeps()).toBeDefined();
+  });
+
+  it("spawns graph-deps even when there are NO credentials (local, login-independent)", async () => {
+    loadCredsMock.mockReturnValue(null);
+    await runHook();
+    // The worker spawn must fire BEFORE the credentials early-return.
+    expect(spawnedGraphDeps()).toBeDefined();
+    expect(debugLogMock).toHaveBeenCalledWith("no credentials");
+  });
+
+  it("spawns the graph-deps worker BEFORE loadCredentials (ordering)", async () => {
+    let graphAt = -1;
+    let credsAt = -1;
+    let counter = 0;
+    spawnDetachedMock.mockImplementation((p: string) => { if (p.endsWith("graph-deps-worker.js")) graphAt = counter++; });
+    loadCredsMock.mockImplementation(() => { credsAt = counter++; return { token: "tok", userName: "alice" }; });
+    await runHook();
+    expect(graphAt).toBeGreaterThanOrEqual(0);
+    expect(credsAt).toBeGreaterThanOrEqual(0);
+    expect(graphAt).toBeLessThan(credsAt);
+  });
+
+  it("the detached spawn does not block the rest of the hook (table setup still runs)", async () => {
+    await runHook();
+    expect(spawnedGraphDeps()).toBeDefined();
+    expect(ensureTableMock).toHaveBeenCalled();
   });
 });
 
@@ -134,10 +179,12 @@ describe("codex session-start-setup hook — placeholder branching", () => {
     expect(queryMock).toHaveBeenCalledTimes(1);
   });
 
-  it("skips placeholder when HIVEMIND_CAPTURE=false but still ensures tables", async () => {
+  it("skips all backend setup when HIVEMIND_CAPTURE=false", async () => {
+    // Setup writes (ensure DDL + placeholder) are gated on captureEnabled &&
+    // collect, matching the claude hook — nothing touches the backend.
     await runHook({ HIVEMIND_CAPTURE: "false" });
-    expect(ensureTableMock).toHaveBeenCalled();
-    expect(ensureSessionsTableMock).toHaveBeenCalled();
+    expect(ensureTableMock).not.toHaveBeenCalled();
+    expect(ensureSessionsTableMock).not.toHaveBeenCalled();
     expect(queryMock).not.toHaveBeenCalled();
   });
 
@@ -165,10 +212,16 @@ describe("codex session-start-setup hook — placeholder branching", () => {
 });
 
 describe("codex session-start-setup hook — centralized autoupdate", () => {
-  it("invokes autoUpdate exactly once with agent: 'codex'", async () => {
+  it("invokes autoUpdate exactly once with agent: 'codex' and the running bundleDir", async () => {
     await runHook();
     expect(autoUpdateMock).toHaveBeenCalledTimes(1);
-    expect(autoUpdateMock.mock.calls[0][1]).toEqual({ agent: "codex" });
+    const opts = autoUpdateMock.mock.calls[0][1];
+    expect(opts.agent).toBe("codex");
+    // bundleDir must be threaded so the Codex-managed guard can detect a
+    // plugin-directory install and skip the npm self-update there. It is
+    // dirname(fileURLToPath(import.meta.url)) of session-start-setup, so it
+    // ends with hooks/codex — assert the suffix to catch wrong-dir regressions.
+    expect(opts.bundleDir).toMatch(/[\\/]hooks[\\/]codex$/);
   });
 
   it("passes the loaded creds (so the helper can read creds.autoupdate)", async () => {

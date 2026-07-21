@@ -14,7 +14,7 @@ export const HOME = homedir();
 //                                               → install dir
 // Without the walk-up, the source path resolved to `src/` (one dir up
 // from src/cli/util.ts), so unit tests importing the installers couldn't
-// find the per-agent bundles at project_root/<agent>/bundle/.
+// find the per-agent bundles at project_root/harnesses/<agent>/bundle/.
 export function pkgRoot(): string {
   let dir = fileURLToPath(new URL(".", import.meta.url));
   for (let i = 0; i < 8; i++) {
@@ -93,11 +93,21 @@ export function readVersionStamp(dir: string): string | null {
   try { return readFileSync(p, "utf-8").trim(); } catch { return null; }
 }
 
-export type PlatformId = "claude" | "codex" | "claw" | "cursor" | "hermes" | "pi";
+export type PlatformId = "claude" | "codex" | "claw" | "cursor" | "hermes" | "pi" | "claude_cowork";
 
 export interface DetectedPlatform {
   id: PlatformId;
   markerDir: string;
+}
+
+// Claude Desktop — host app for Claude Cowork — stores its connector config
+// in an OS-specific application-support dir, NOT in ~/.claude (that's the
+// Claude Code CLI). Cowork reads MCP servers from claude_desktop_config.json
+// inside this dir, shared with Claude Desktop chat.
+export function claudeDesktopConfigDir(): string {
+  if (process.platform === "darwin") return join(HOME, "Library", "Application Support", "Claude");
+  if (process.platform === "win32") return join(process.env.APPDATA ?? join(HOME, "AppData", "Roaming"), "Claude");
+  return join(HOME, ".config", "Claude");
 }
 
 // Hivemind's value is bidirectional shared memory — every supported agent
@@ -117,6 +127,11 @@ const PLATFORM_MARKERS: DetectedPlatform[] = [
   // a rich extension event API (session_start / input / tool_call /
   // tool_result / message_end / session_shutdown / etc.) — Tier 1 capable.
   { id: "pi", markerDir: join(HOME, ".pi") },
+  // claude_cowork — Anthropic's agentic desktop assistant, hosted in the
+  // Claude Desktop app. Registers the shared hivemind MCP server into
+  // claude_desktop_config.json (recall-only; capture is the desktop app's
+  // own concern). Marker is the OS-specific Claude Desktop config dir.
+  { id: "claude_cowork", markerDir: claudeDesktopConfigDir() },
 ];
 
 export function detectPlatforms(): DetectedPlatform[] {

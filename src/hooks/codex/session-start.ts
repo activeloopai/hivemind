@@ -58,9 +58,16 @@ async function main(): Promise<void> {
     creds = await healDriftedOrgToken(creds, log);
   }
 
-  // Spawn async setup (table creation, placeholder, version check) as detached process.
-  // Codex doesn't support async hooks, so we use the same pattern as the wiki worker.
-  if (creds?.token) {
+  // Spawn async setup (graph-deps provisioning, table creation, placeholder,
+  // version check) as a detached process. Codex doesn't support async hooks,
+  // so we use the same pattern as the wiki worker.
+  //
+  // Spawned UNCONDITIONALLY — not gated on creds. The setup worker runs
+  // ensureGraphDeps() (purely local code-graph provisioning) BEFORE its own
+  // credentials early-return, so it must fire even when logged out. The
+  // remote/credentialed work (autoupdate, table + placeholder) stays gated
+  // INSIDE the worker on its `if (!creds?.token) return`.
+  {
     const setupScript = join(__bundleDir, "session-start-setup.js");
     const child = spawn("node", [setupScript], {
       detached: true,
@@ -113,16 +120,15 @@ async function main(): Promise<void> {
   // memory tiers via `hivemind --help` and `ls ~/.deeplake/memory/` on demand.
   // We therefore emit only login-state + version here, and trust the model
   // to bootstrap the rest.
-  // Codex DOES NOT receive the HIVEMIND RULES + GOALS inject block.
-  // additionalContext is user-visible in Codex (rendered as
-  // `hook context: <text>` in the TUI history cell), so a multi-line
-  // rules+goals block on every SessionStart would clobber the user's
-  // view. Codex agents discover rules/goals via `hivemind rules list`
-  // / `hivemind goal list --mine` on demand — same pattern as the
-  // DEEPLAKE MEMORY block already deliberately excluded from Codex
-  // above. Tracked as an Open Question: "how to surface rules+goals
-  // to Codex without clobbering the TUI" (model-only injection
-  // channel, or a compact opt-in banner).
+  // The proactive memory instruction (check team memory + pull rules/goals)
+  // is NOT injected here. Codex has no model-only channel — every
+  // additionalContext byte is also rendered to the user as a `hook context:`
+  // cell, so a per-session block would be visible noise. Instead that guidance
+  // lives in the managed hivemind block of `~/.codex/AGENTS.md` (written by
+  // install-codex.ts), which Codex auto-loads into the model context every
+  // session SILENTLY — no TUI cell. Empirically verified: a sentinel placed in
+  // ~/.codex/AGENTS.md reaches the model without surfacing in the transcript.
+  // So additionalContext stays minimal: login-state + version only.
 
   // Async auto-pull of the latest cloud snapshot for HEAD. Detached and
   // truly fire-and-forget — see src/graph/spawn-pull-worker.ts and

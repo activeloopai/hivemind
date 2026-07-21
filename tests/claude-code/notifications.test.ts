@@ -32,6 +32,7 @@ import { readQueue, queuePath } from "../../src/notifications/queue.js";
 import { renderNotifications } from "../../src/notifications/format.js";
 import { localMinedRule } from "../../src/notifications/rules/local-mined.js";
 import type { Credentials } from "../../src/commands/auth-creds.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
  * Source-level tests for src/notifications/.
@@ -58,7 +59,7 @@ const FRESH_CREDS: Credentials = {
 beforeEach(() => {
   TEMP_HOME = mkdtempSync(join(tmpdir(), "hivemind-notif-test-"));
   ORIGINAL_HOME = process.env.HOME;
-  process.env.HOME = TEMP_HOME;
+  setFakeHome(TEMP_HOME);
   _resetRulesForTest();
   // Default: server returns null → primary-banner falls back to local jsonl
   // (which is empty in fresh sandbox) → savings == 0 → welcome wins.
@@ -69,7 +70,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  process.env.HOME = ORIGINAL_HOME;
+  clearFakeHome();
   rmSync(TEMP_HOME, { recursive: true, force: true });
 });
 
@@ -484,7 +485,25 @@ describe("enqueueNotification cross-process safety", () => {
   // would clobber the earlier one's append. Spawn N subprocesses that
   // each enqueue one notification and assert the final queue length
   // equals N — without the lock, the count would be < N.
-  const modPath = new URL("../../src/notifications/queue.ts", import.meta.url).pathname;
+  // .href (file:// URL) not .pathname: the latter yields "/C:/…" on Windows,
+  // which a dynamic import() rejects as an invalid specifier.
+  const modPath = new URL("../../src/notifications/queue.ts", import.meta.url).href;
+
+  // Run inline TS in a child WITHOUT a shell: write it to a temp file and
+  // invoke `node --import tsx`. Passing the code as `npx tsx -e <code>` breaks
+  // on Windows — npx is a .cmd that needs a shell, and cmd.exe mangles the
+  // code arg ("Transform failed"). process.execPath is absolute (no shell)
+  // and the script rides a file path (no arg-mangling).
+  let producerSeq = 0;
+  function runProducer(code: string, extraEnv: Record<string, string> = {}) {
+    const file = join(TEMP_HOME, `producer-${producerSeq++}.mts`);
+    writeFileSync(file, code);
+    return spawnSync(process.execPath, ["--import", "tsx", file], {
+      env: { ...process.env, HOME: TEMP_HOME, USERPROFILE: TEMP_HOME, ...extraEnv },
+      encoding: "utf-8",
+      timeout: 30_000,
+    });
+  }
 
   it("cross-process producers with identical (id, dedupKey) collapse to one queue entry", async () => {
     // Regression for CodeRabbit #8/#12: previously fresh hook processes
@@ -501,11 +520,7 @@ describe("enqueueNotification cross-process safety", () => {
       `  process.stdout.write("ok"); ` +
       `});`;
     for (let i = 0; i < 3; i++) {
-      const r = spawnSync("npx", ["tsx", "-e", code], {
-        env: { ...process.env, HOME: TEMP_HOME },
-        encoding: "utf-8",
-        timeout: 30_000,
-      });
+      const r = runProducer(code);
       expect(r.status, `producer ${i} stderr=${(r.stderr || "").slice(0, 300)}`).toBe(0);
     }
     const q = readQueue().queue;
@@ -527,11 +542,7 @@ describe("enqueueNotification cross-process safety", () => {
 
     const runs = Array.from({ length: N }, (_, i) =>
       new Promise<void>((resolve, reject) => {
-        const r = spawnSync("npx", ["tsx", "-e", code], {
-          env: { ...process.env, HOME: TEMP_HOME, PRODUCER_IDX: String(i) },
-          encoding: "utf-8",
-          timeout: 30_000,
-        });
+        const r = runProducer(code, { PRODUCER_IDX: String(i) });
         if (r.status !== 0) {
           reject(new Error(`producer ${i} exit=${r.status} stderr=${(r.stderr || "").slice(0, 300)}`));
         } else {
@@ -730,7 +741,7 @@ describe("drainSessionStart resilience", () => {
 // ---------------------------------------------------------------------------
 
 describe("bundle/session-notifications.js (built artifact)", () => {
-  const bundlePath = join(process.cwd(), "claude-code", "bundle", "session-notifications.js");
+  const bundlePath = join(process.cwd(), "harnesses", "claude-code", "bundle", "session-notifications.js");
 
   // spawnSync (vs execFileSync) so we can capture stdout + stderr separately.
   // The banner is userVisibleOnly: it must appear in the top-level
@@ -746,7 +757,10 @@ describe("bundle/session-notifications.js (built artifact)", () => {
       input,
       encoding: "utf-8",
       timeout: 5_000,
-      env: { ...process.env, HOME: extraEnv.HOME, HIVEMIND_CAPTURE: "false", ...extraEnv },
+      // USERPROFILE must track the sandbox HOME, else os.homedir() in the
+      // child resolves the outer faked home on Windows and reads the wrong
+      // (empty) sandbox — yielding empty stdout / JSON-parse failures.
+      env: { ...process.env, HOME: extraEnv.HOME, USERPROFILE: extraEnv.HOME, HIVEMIND_CAPTURE: "false", ...extraEnv },
     });
     return { stdout: (r.stdout ?? "").toString(), stderr: (r.stderr ?? "").toString() };
   }
@@ -1079,13 +1093,13 @@ describe("state.tryClaim (per-notification atomic claim)", () => {
     const sentinel = join(TEMP_HOME, "sentinel-file");
     writeFileSync(sentinel, "x", "utf-8");
     const prev = process.env.HOME;
-    process.env.HOME = sentinel;
+    setFakeHome(sentinel);
     try {
       const { tryClaim } = await import("../../src/notifications/state.js");
       const n: Notification = { id: "fail-open-test", dedupKey: { v: 1 }, title: "t", body: "b" };
       expect(tryClaim(n)).toBe(true);
     } finally {
-      process.env.HOME = prev;
+      setFakeHome(prev!);
     }
   });
 

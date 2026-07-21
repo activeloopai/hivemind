@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { fetchOrgStats, _clearCacheForTest } from "../../src/notifications/sources/org-stats.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 let TEMP_HOME = "";
 let ORIGINAL_HOME: string | undefined;
@@ -12,7 +13,7 @@ let cacheFile = "";
 beforeEach(() => {
   TEMP_HOME = mkdtempSync(join(tmpdir(), "hivemind-org-stats-test-"));
   ORIGINAL_HOME = process.env.HOME;
-  process.env.HOME = TEMP_HOME;
+  setFakeHome(TEMP_HOME);
   // The source's CACHE_FILE path is computed at module-load time from
   // homedir(). To redirect it without mocking node:os entirely, we instead
   // rely on the `_clearCacheForTest` helper plus a per-test `existsSync`
@@ -24,8 +25,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  if (ORIGINAL_HOME !== undefined) process.env.HOME = ORIGINAL_HOME;
-  else delete process.env.HOME;
+  clearFakeHome();
   rmSync(TEMP_HOME, { recursive: true, force: true });
 });
 

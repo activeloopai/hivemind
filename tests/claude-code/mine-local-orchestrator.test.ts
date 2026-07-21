@@ -86,7 +86,10 @@ const resolveSkillsRoot = vi.fn();
 const writeNewSkill = vi.fn();
 const listSkills = vi.fn();
 const parseFrontmatter = vi.fn();
-vi.mock("../../src/skillify/skill-writer.js", () => ({
+vi.mock("../../src/skillify/skill-writer.js", async (orig) => ({
+  // Keep the real module (capSkillName etc.) and override only what these
+  // orchestrator tests need to spy on.
+  ...(await orig<typeof import("../../src/skillify/skill-writer.js")>()),
   resolveSkillsRoot: (...args: any[]) => resolveSkillsRoot(...args),
   writeNewSkill: (...args: any[]) => writeNewSkill(...args),
   listSkills: (...args: any[]) => listSkills(...args),
@@ -160,6 +163,7 @@ describe("runMineLocal: orchestrator branches", () => {
     writeLocalManifest.mockImplementation(() => {});
     writeNewSkill.mockImplementation((opts: any) => ({
       path: join(opts.skillsRoot, opts.name, "SKILL.md"),
+      name: opts.name,
       createdAt: "2026-05-15T00:00:00Z",
     }));
 
@@ -569,6 +573,7 @@ describe("runGateViaStdin error branches via orchestrator", () => {
     writeLocalManifest.mockImplementation(() => {});
     writeNewSkill.mockImplementation((opts: any) => ({
       path: join(opts.skillsRoot, opts.name, "SKILL.md"),
+      name: opts.name,
       createdAt: "2026-05-15T00:00:00Z",
     }));
     exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
@@ -641,6 +646,7 @@ describe("happy-path with already-existing skill check (loadExistingSummaries)",
     writeLocalManifest.mockImplementation(() => {});
     writeNewSkill.mockImplementation((opts: any) => ({
       path: join(opts.skillsRoot, opts.name, "SKILL.md"),
+      name: opts.name,
       createdAt: "2026-05-15T00:00:00Z",
     }));
 

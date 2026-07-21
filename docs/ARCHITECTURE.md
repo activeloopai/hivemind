@@ -20,17 +20,17 @@ hivemind/
 │   ├── hooks/codex/        ← Codex hooks
 │   ├── hooks/cursor/       ← Cursor hooks
 │   ├── hooks/hermes/       ← Hermes shell hooks
-│   ├── hooks/pi/           ← pi wiki-worker (extension lives in pi/extension-source/)
+│   ├── hooks/pi/           ← pi wiki-worker (extension lives in harnesses/pi/extension-source/)
 │   ├── embeddings/         ← nomic embed-daemon + protocol + SQL helpers
 │   ├── mcp/                ← MCP server (used by Hermes; available to any future MCP-aware client)
 │   ├── commands/           ← auth, auth-creds, auth-login, session-prune
 │   └── cli/                ← unified `hivemind install` CLI + per-agent installers
-├── claude-code/            ← Claude Code plugin source (marketplace-distributed)
-├── codex/                  ← Codex plugin build output (npm-distributed)
+├── harnesses/claude-code/            ← Claude Code plugin source (marketplace-distributed)
+├── harnesses/codex/                  ← Codex plugin build output (npm-distributed)
 ├── cursor/                 ← Cursor plugin build output (npm-distributed)
-├── hermes/                 ← Hermes plugin build output (npm-distributed)
+├── harnesses/hermes/                 ← Hermes plugin build output (npm-distributed)
 ├── mcp/                    ← MCP server build output (shared by Hermes + future MCP clients)
-├── openclaw/               ← OpenClaw plugin source + build output (ClawHub-distributed)
-├── pi/                     ← pi extension source (ships raw .ts; pi compiles at load)
+├── harnesses/openclaw/               ← OpenClaw plugin source + build output (ClawHub-distributed)
+├── harnesses/pi/                     ← pi extension source (ships raw .ts; pi compiles at load)
 └── bundle/                 ← unified `hivemind` CLI build output
 ```

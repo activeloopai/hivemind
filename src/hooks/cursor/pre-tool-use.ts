@@ -27,12 +27,15 @@
  */
 
 import { readStdin } from "../../utils/stdin.js";
-import { loadConfig } from "../../config.js";
+import { deriveProjectKey } from "../../utils/repo-identity.js";
+import { loadRoutedConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { log as _log } from "../../utils/debug.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 import { touchesMemory, rewritePaths } from "../memory-path-utils.js";
 import { tryGraphRead } from "../../graph/graph-command.js";
+import { tryDocsRead } from "../../docs/docs-command.js";
+import { makeQueryEmbedder } from "../../docs/embed.js";
 const log = (msg: string) => _log("cursor-pre-tool-use", msg);
 
 interface CursorShellToolInput {
@@ -79,10 +82,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const grepParams = parseBashGrep(rewritten);
-  if (!grepParams) return; // not a grep/rg invocation we can handle directly
-
-  const config = loadConfig();
+  const config = loadRoutedConfig(input.cwd ?? process.cwd());
   if (!config) {
     log("no config — falling through to Cursor's bash");
     return;
@@ -95,6 +95,33 @@ async function main(): Promise<void> {
     config.workspaceId,
     config.tableName,
   );
+
+  // Docs VFS dispatch — a cat of /docs/* (browse or find/) answered from the
+  // docs table, same rewrite trick as the graph dispatch above. Runs before the
+  // grep parse so `cat /docs/find/x` (not a grep) isn't left to Cursor's host bash.
+  const docsTable = process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName;
+  // Fail OPEN like the grep path below: a throw here would crash the hook
+  // without a decision and let a memory-touching command reach the host shell.
+  let docsBody: string | null = null;
+  try {
+    docsBody = await tryDocsRead(rewritten, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+  } catch (err) {
+    log(`docs vfs failed: ${(err as Error).message}`);
+    docsBody = "(docs temporarily unavailable — try again)";
+  }
+  if (docsBody !== null) {
+    log(`docs vfs intercept: ${command.slice(0, 80)}`);
+    const echoCmd = `cat <<'__HIVEMIND_RESULT__'\n${docsBody}\n__HIVEMIND_RESULT__`;
+    process.stdout.write(JSON.stringify({
+      permission: "allow",
+      updated_input: { command: echoCmd },
+      agent_message: "[Hivemind docs]",
+    }));
+    return;
+  }
+
+  const grepParams = parseBashGrep(rewritten);
+  if (!grepParams) return; // not a grep/rg invocation we can handle directly
 
   try {
     const result = await handleGrepDirect(api, config.tableName, config.sessionsTableName, grepParams);

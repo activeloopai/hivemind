@@ -25,7 +25,7 @@ function tokenize(s: string): string[] {
 }
 
 /** Strip one layer of surrounding matching quotes from a token. */
-function stripQuotes(p: string): string {
+export function stripQuotes(p: string): string {
   if (p.length >= 2 && ((p[0] === '"' && p[p.length - 1] === '"') || (p[0] === "'" && p[p.length - 1] === "'"))) {
     return p.slice(1, -1);
   }
@@ -86,7 +86,7 @@ export function parseReadTargetPath(rewrittenCommand: string): string | null {
 }
 
 /** True when a virtual path tries to escape the graph subtree via a `..` segment. */
-function hasTraversal(virtualPath: string): boolean {
+export function hasTraversal(virtualPath: string): boolean {
   return virtualPath.split("/").includes("..");
 }
 

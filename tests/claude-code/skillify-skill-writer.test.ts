@@ -5,10 +5,13 @@ import { tmpdir, homedir } from "node:os";
 import {
   writeNewSkill,
   mergeSkill,
+  composeDescription,
   parseFrontmatter,
   listSkills,
   resolveSkillsRoot,
   assertValidSkillName,
+  capSkillName,
+  MAX_SKILL_NAME_LEN,
 } from "../../src/skillify/skill-writer.js";
 
 let projectRoot: string;
@@ -47,7 +50,9 @@ describe("writeNewSkill", () => {
 
     const text = readFileSync(result.path, "utf-8");
     expect(text).toContain("name: my-skill");
-    expect(text).toContain(`description: "Does X"`);
+    // The trigger is folded into the host-visible description (the host reads
+    // `description`, not `trigger`); the raw trigger field is still written.
+    expect(text).toContain(`description: "Does X. Use this skill when X happens"`);
     expect(text).toContain(`trigger: "When X happens"`);
     expect(text).toContain("version: 1");
     expect(text).toContain("created_by_agent: claude_code");
@@ -70,9 +75,59 @@ describe("writeNewSkill", () => {
     expect(existsSync(join(skillsRoot, "n"))).toBe(true);
     expect(existsSync(result.path)).toBe(true);
   });
+
+  it("length-caps an over-long name and returns the canonical name", () => {
+    const long = "pg-deeplake-multi-layer-issue-diagnosis-and-workaround-prioritization";
+    const result = writeNewSkill({
+      skillsRoot, name: long, description: "", body: VALID_BODY, sourceSessions: [], agent: "x",
+    });
+    // result.name is the capped on-disk name (what callers must record) …
+    expect(result.name.length).toBeLessThanOrEqual(64);
+    expect(result.name).toBe(capSkillName(long));
+    // … the dir + frontmatter use it, not the raw name.
+    expect(existsSync(join(skillsRoot, result.name, "SKILL.md"))).toBe(true);
+    expect(existsSync(join(skillsRoot, long))).toBe(false);
+    const fm = readFileSync(join(skillsRoot, result.name, "SKILL.md"), "utf-8");
+    expect(fm).toContain(`name: ${result.name}`);
+  });
+
+  it("validates the RAW name before capping — rejects an invalid truncated-away tail", () => {
+    // First chars form a valid slug; the tail (dropped by capping) hides `..`.
+    // Validating the capped prefix would miss it — writeNewSkill must see raw.
+    const evil = "a".repeat(60) + "-b/../../x";
+    expect(() =>
+      writeNewSkill({ skillsRoot, name: evil, description: "", body: VALID_BODY, sourceSessions: [], agent: "x" })
+    ).toThrow(/path separator|kebab-case/);
+  });
 });
 
 describe("mergeSkill", () => {
+  it("does NOT cap — updates a legacy >64-char target in place, no truncated fork", () => {
+    // Round-1 regression: a MERGE into a pre-cap over-long skill must find and
+    // update THAT dir (preserving version/lineage), not create a truncated v1.
+    // Verified end-to-end against the real functions on a real FS (2026-07-20).
+    const long = "pg-deeplake-multi-layer-issue-diagnosis-and-workaround-prioritization"; // 69 chars
+    expect(long.length).toBeGreaterThan(64);
+    mkdirSync(join(skillsRoot, long), { recursive: true });
+    writeFileSync(join(skillsRoot, long, "SKILL.md"),
+      `---\nname: ${long}\ndescription: old\nversion: 1\ncreated_by_agent: cc\ncreated_at: t\nupdated_at: t\n---\n\nlegacy body`);
+    const before = listSkills(skillsRoot).length;
+
+    const result = mergeSkill({
+      skillsRoot, name: long, description: "new",
+      body: "## Y\nmerged body", newSourceSessions: ["s2"], agent: "cc", editor: "bob",
+    });
+
+    // Target found + updated in place (uncapped), no new truncated dir.
+    expect(result.name).toBe(long);
+    expect(result.version).toBe(2);
+    expect(result.path).toBe(join(skillsRoot, long, "SKILL.md"));
+    expect(listSkills(skillsRoot).length).toBe(before);
+    const text = readFileSync(join(skillsRoot, long, "SKILL.md"), "utf-8");
+    expect(text).toContain("merged body");
+    expect(text).toMatch(/^version: 2$/m);
+  });
+
   it("bumps version, preserves created_at, updates updated_at, dedups source_sessions", () => {
     writeNewSkill({
       skillsRoot, name: "m", description: "v1 desc", body: "v1 body",
@@ -134,6 +189,50 @@ describe("mergeSkill", () => {
     mergeSkill({ skillsRoot, name: "t", body: "new body", newSourceSessions: [], agent: "x" });
     const text = readFileSync(join(skillsRoot, "t", "SKILL.md"), "utf-8");
     expect(text).toContain(`trigger: "original trigger"`);
+  });
+});
+
+describe("composeDescription (trigger → host-visible description)", () => {
+  it("folds the trigger into the description as a 'Use this skill when' clause", () => {
+    expect(composeDescription("Diagnose pg crashes", "When task pg:test cascades"))
+      .toBe("Diagnose pg crashes. Use this skill when task pg:test cascades");
+  });
+
+  it("normalizes 'Use when X' / 'Use this skill when X' to a single clause", () => {
+    expect(composeDescription("Build kernels", "Use when auditing CUDA paths"))
+      .toBe("Build kernels. Use this skill when auditing CUDA paths");
+    expect(composeDescription("Build kernels", "Use this skill when auditing CUDA paths"))
+      .toBe("Build kernels. Use this skill when auditing CUDA paths");
+  });
+
+  it("returns the description unchanged when there is no trigger", () => {
+    expect(composeDescription("Just a capability", "")).toBe("Just a capability");
+    expect(composeDescription("Just a capability", undefined)).toBe("Just a capability");
+  });
+
+  it("returns just the trigger clause when the description is empty", () => {
+    expect(composeDescription("", "When SDK open_table crashes"))
+      .toBe("Use this skill when SDK open_table crashes");
+  });
+
+  it("is idempotent — re-composing an already-composed description is a no-op", () => {
+    const once = composeDescription("Does X", "When Y happens");
+    expect(composeDescription(once, "When Y happens")).toBe(once);
+    // even when the trigger is re-phrased differently on a later render
+    expect(composeDescription(once, "Use when Y happens")).toBe(once);
+  });
+
+  it("does not stack the clause across a writeNewSkill → mergeSkill roundtrip", () => {
+    writeNewSkill({
+      skillsRoot, name: "rt", description: "Capability", trigger: "When the thing breaks",
+      body: VALID_BODY, sourceSessions: [], agent: "x",
+    });
+    mergeSkill({ skillsRoot, name: "rt", body: "new body", newSourceSessions: [], agent: "x" });
+    const text = readFileSync(join(skillsRoot, "rt", "SKILL.md"), "utf-8");
+    // exactly one occurrence — in the description line; the trigger field keeps
+    // the raw "When the thing breaks" phrasing.
+    expect((text.match(/Use this skill when/g) ?? []).length).toBe(1);
+    expect(text).toContain(`description: "Capability. Use this skill when the thing breaks"`);
   });
 });
 
@@ -300,9 +399,77 @@ describe("assertValidSkillName (path-traversal guard)", () => {
     expect(() => assertValidSkillName(42 as any)).toThrow(/empty/);
   });
 
-  it("rejects names longer than 100 chars", () => {
+  it("rejects names longer than 100 chars (path-safety ceiling, not the loader limit)", () => {
+    // assertValidSkillName is a path-safety validator with a generous ceiling
+    // so it can vet a long remote name's characters before capSkillName trims
+    // the length. The 64-char loader limit is capSkillName's job, not this one.
     expect(() => assertValidSkillName("a".repeat(101))).toThrow(/too long/);
     expect(() => assertValidSkillName("a".repeat(100))).not.toThrow();
+    // A legacy 65-100 char name must still validate (push/merge look it up).
+    expect(() => assertValidSkillName("a".repeat(80))).not.toThrow();
+  });
+});
+
+describe("capSkillName (64-char frontmatter-name ceiling)", () => {
+  const HASH_SUFFIX = /-[a-z0-9]{5}$/;
+
+  it("leaves short names untouched", () => {
+    expect(capSkillName("my-skill")).toBe("my-skill");
+    expect(capSkillName("a".repeat(MAX_SKILL_NAME_LEN))).toHaveLength(MAX_SKILL_NAME_LEN);
+  });
+
+  it("truncates a >64 name to <=64 with a hyphen-aligned prefix + hash suffix", () => {
+    const long = "pg-deeplake-multi-layer-issue-diagnosis-and-workaround-prioritization";
+    expect(long.length).toBeGreaterThan(MAX_SKILL_NAME_LEN);
+    const capped = capSkillName(long);
+    expect(capped.length).toBeLessThanOrEqual(MAX_SKILL_NAME_LEN);
+    expect(capped).toMatch(HASH_SUFFIX);
+    // The prefix before the hash is a hyphen-delimited prefix of the original.
+    const prefix = capped.replace(HASH_SUFFIX, "");
+    expect(long.startsWith(prefix)).toBe(true);
+    expect(long[prefix.length]).toBe("-");
+  });
+
+  it("is idempotent — re-capping a capped name is a no-op", () => {
+    const long = "pg-incident-tactical-relief-insufficient-structural-root-phased-fix";
+    const capped = capSkillName(long);
+    expect(capSkillName(capped)).toBe(capped);
+  });
+
+  it("gives distinct results to two long names sharing a prefix (no collision)", () => {
+    // Same prefix through the hyphen boundary, different tail — must NOT collapse
+    // onto one identity (which would overwrite/version-confuse the two skills).
+    const base = "aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-jjjj-kkkk-llll";
+    const a = capSkillName(`${base}-alpha-one-tail`);
+    const b = capSkillName(`${base}-alpha-two-tail`);
+    expect(a).not.toBe(b);
+    expect(a.length).toBeLessThanOrEqual(MAX_SKILL_NAME_LEN);
+    expect(b.length).toBeLessThanOrEqual(MAX_SKILL_NAME_LEN);
+  });
+
+  it("disambiguates names differing only in the last char (low-order hash digits)", () => {
+    // djb2 makes `…-0` and `…-1` differ by 1 in the final hash; a hash that
+    // kept the HIGH-order base-36 digits would slice that difference away and
+    // collide. The suffix must come from the low-order digits.
+    const base = "seg-".repeat(16); // 64 chars, > ceiling once a tail is added
+    const a = capSkillName(`${base}alpha0`);
+    const b = capSkillName(`${base}alpha1`);
+    expect(a.length).toBeLessThanOrEqual(MAX_SKILL_NAME_LEN);
+    expect(b.length).toBeLessThanOrEqual(MAX_SKILL_NAME_LEN);
+    expect(a).not.toBe(b);
+  });
+
+  it("produces a result that still passes assertValidSkillName", () => {
+    const long = "a-" + "b".repeat(200);
+    const capped = capSkillName(long);
+    expect(() => assertValidSkillName(capped)).not.toThrow();
+    expect(capped.endsWith("-")).toBe(false);
+  });
+
+  it("hard-truncates a hyphenless name that overflows", () => {
+    const capped = capSkillName("x".repeat(200));
+    expect(capped.length).toBeLessThanOrEqual(MAX_SKILL_NAME_LEN);
+    expect(capped.length).toBeGreaterThan(0);
   });
 
   it("rejects uppercase / underscores / spaces / dots", () => {
@@ -334,7 +501,7 @@ describe("writeNewSkill / mergeSkill reject invalid names", () => {
 
 describe("resolveSkillsRoot", () => {
   it("returns <cwd>/.claude/skills for project install", () => {
-    expect(resolveSkillsRoot("project", "/tmp/foo")).toBe("/tmp/foo/.claude/skills");
+    expect(resolveSkillsRoot("project", "/tmp/foo")).toBe(join("/tmp/foo", ".claude", "skills"));
   });
 
   it("returns ~/.claude/skills for global install", () => {

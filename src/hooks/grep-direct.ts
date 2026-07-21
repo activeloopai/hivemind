@@ -338,6 +338,11 @@ export async function handleGrepDirect(
     }
   }
 
+  // On a backend error this throws — by design. The pre-tool-use hook's outer
+  // catch then falls through to the sandboxed VFS shell (deeplake-shell.js),
+  // whose grep-interceptor re-attempts and signals a true backend failure as
+  // grep exit-code 2 + stderr (never a silent "(no matches)"). Swallowing the
+  // error here would pre-empt that retry and the honest signal.
   const output = await grepBothTables(
     api, table, sessionsTable, matchParams, params.targetPath, queryEmbedding,
   );

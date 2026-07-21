@@ -10,6 +10,7 @@ import {
   sumMetric,
   type UsageRecord,
 } from "../../src/notifications/usage-tracker.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 let TEMP_HOME = "";
 let ORIGINAL_HOME: string | undefined;
@@ -27,12 +28,11 @@ function rec(over: Partial<UsageRecord> = {}): UsageRecord {
 beforeEach(() => {
   TEMP_HOME = mkdtempSync(join(tmpdir(), "hivemind-usage-test-"));
   ORIGINAL_HOME = process.env.HOME;
-  process.env.HOME = TEMP_HOME;
+  setFakeHome(TEMP_HOME);
 });
 
 afterEach(() => {
-  if (ORIGINAL_HOME !== undefined) process.env.HOME = ORIGINAL_HOME;
-  else delete process.env.HOME;
+  clearFakeHome();
   rmSync(TEMP_HOME, { recursive: true, force: true });
 });
 
@@ -64,7 +64,7 @@ describe("usage-tracker — append/read", () => {
   it("appendUsageRecord swallows errors when HOME points at a non-directory", () => {
     const sentinel = join(TEMP_HOME, "sentinel-file");
     writeFileSync(sentinel, "x", "utf-8");
-    process.env.HOME = sentinel;
+    setFakeHome(sentinel);
     expect(() => appendUsageRecord(rec())).not.toThrow();
   });
 
@@ -170,12 +170,12 @@ describe("usage-tracker — statsFilePath", () => {
     const first = statsFilePath();
     const otherHome = mkdtempSync(join(tmpdir(), "hivemind-usage-test-other-"));
     try {
-      process.env.HOME = otherHome;
+      setFakeHome(otherHome);
       const second = statsFilePath();
       expect(second).not.toBe(first);
       expect(second.startsWith(otherHome)).toBe(true);
     } finally {
-      process.env.HOME = TEMP_HOME;
+      setFakeHome(TEMP_HOME);
       rmSync(otherHome, { recursive: true, force: true });
     }
   });

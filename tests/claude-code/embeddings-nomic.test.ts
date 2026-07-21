@@ -12,6 +12,13 @@ import {
   _importFromCanonicalSharedDeps,
 } from "../../src/embeddings/nomic.js";
 
+// Non-literal specifier (typed `string`) so `tsc` does not resolve the optional
+// @huggingface/transformers package at compile time — it's absent on some
+// platforms (e.g. Windows CI). The `vi.mock(...)` below still intercepts it at
+// runtime by resolved module id, so the dynamic `import(TRANSFORMERS_PKG)`
+// calls return the mock.
+const TRANSFORMERS_PKG: string = "@huggingface/transformers";
+
 // Mock the heavy transformers import so these tests don't pull in
 // onnxruntime-node or download any model weights. `load()` resolves
 // transformers via an injected importer (default goes through the canonical
@@ -41,7 +48,7 @@ vi.mock("@huggingface/transformers", () => {
 beforeEach(() => {
   // Route the embedder's loader through the vi.mock-intercepted bare specifier
   // instead of the real canonical-shared-deps resolver.
-  _setTransformersImporterForTesting(() => import("@huggingface/transformers") as any);
+  _setTransformersImporterForTesting(() => import(TRANSFORMERS_PKG) as any);
 });
 
 afterEach(() => {
@@ -55,7 +62,7 @@ describe("NomicEmbedder", () => {
     await e.load(); // second call is a no-op (cached)
     // If load() didn't memoize, pipeline() would be invoked twice; the
     // mock would return a fresh spy whose call counts would differ.
-    const mod: any = await import("@huggingface/transformers");
+    const mod: any = await import(TRANSFORMERS_PKG);
     expect((mod.pipeline as any).mock.calls.length).toBe(1);
   });
 
@@ -63,7 +70,7 @@ describe("NomicEmbedder", () => {
     const e = new NomicEmbedder({ dims: 4 });
     const v = await e.embed("hello", "document");
     expect(v).toHaveLength(4);
-    const mod: any = await import("@huggingface/transformers");
+    const mod: any = await import(TRANSFORMERS_PKG);
     const pipeline = await (mod.pipeline as any).mock.results[0].value;
     const callArg = (pipeline as any).mock.calls.at(-1)[0];
     expect(callArg).toBe("search_document: hello");
@@ -72,7 +79,7 @@ describe("NomicEmbedder", () => {
   it("embeds a query with the search_query: prefix", async () => {
     const e = new NomicEmbedder({ dims: 4 });
     await e.embed("q", "query");
-    const mod: any = await import("@huggingface/transformers");
+    const mod: any = await import(TRANSFORMERS_PKG);
     const pipeline = await (mod.pipeline as any).mock.results[0].value;
     const callArg = (pipeline as any).mock.calls.at(-1)[0];
     expect(callArg).toBe("search_query: q");
@@ -113,7 +120,7 @@ describe("NomicEmbedder", () => {
 
   it("handles a zero-norm truncation without dividing by zero", async () => {
     // Reach through the private helper via a custom mock that returns zeros.
-    const mod: any = await import("@huggingface/transformers");
+    const mod: any = await import(TRANSFORMERS_PKG);
     const origPipeline = mod.pipeline;
     const wrapped = vi.fn(() => Promise.resolve(() => Promise.resolve({ data: [0, 0, 0, 0] })));
     (mod as any).pipeline = wrapped;
@@ -145,7 +152,7 @@ describe("NomicEmbedder", () => {
   it("coalesces concurrent load() calls onto a single pipeline build", async () => {
     // Replace pipeline with a slow one so the two load() calls overlap and
     // the second enters the `if (this.loading) return this.loading;` branch.
-    const mod: any = await import("@huggingface/transformers");
+    const mod: any = await import(TRANSFORMERS_PKG);
     const orig = mod.pipeline;
     let calls = 0;
     mod.pipeline = vi.fn(async () => {
@@ -168,7 +175,7 @@ describe("NomicEmbedder", () => {
   it("embeds a query in embedBatch with the search_query prefix", async () => {
     const e = new NomicEmbedder({ dims: 4 });
     await e.embedBatch(["hi"], "query");
-    const mod: any = await import("@huggingface/transformers");
+    const mod: any = await import(TRANSFORMERS_PKG);
     const pipeline = await (mod.pipeline as any).mock.results[0].value;
     const lastCall = (pipeline as any).mock.calls.at(-1)[0];
     expect(lastCall).toEqual(["search_query: hi"]);

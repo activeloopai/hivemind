@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
  * Tests for the disk-side of src/cli/install-pi.ts. The pure helpers
@@ -24,18 +25,18 @@ beforeEach(() => {
   tmpPkg = join(tmpRoot, "pkg");
   mkdirSync(tmpHome, { recursive: true });
 
-  mkdirSync(join(tmpPkg, "pi", "extension-source"), { recursive: true });
-  writeFileSync(join(tmpPkg, "pi", "extension-source", "hivemind.ts"), "// fake pi extension");
+  mkdirSync(join(tmpPkg, "harnesses", "pi", "extension-source"), { recursive: true });
+  writeFileSync(join(tmpPkg, "harnesses", "pi", "extension-source", "hivemind.ts"), "// fake pi extension");
   writeFileSync(join(tmpPkg, "package.json"), JSON.stringify({ version: "7.7.7" }));
 
-  vi.stubEnv("HOME", tmpHome);
+  setFakeHome(tmpHome);
   vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 });
 
 afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
-  vi.unstubAllEnvs();
+  clearFakeHome();
   vi.restoreAllMocks();
   vi.resetModules();
 });
@@ -77,7 +78,7 @@ describe("installPi — cold install", () => {
   });
 
   it("throws with a 'reinstall the package' hint when the extension source is absent", async () => {
-    rmSync(join(tmpPkg, "pi", "extension-source"), { recursive: true, force: true });
+    rmSync(join(tmpPkg, "harnesses", "pi", "extension-source"), { recursive: true, force: true });
     const { installPi } = await importInstaller();
     expect(() => installPi()).toThrow(/pi extension source missing/);
     expect(() => installPi()).toThrow(/Reinstall the @deeplake\/hivemind package/);

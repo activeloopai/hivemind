@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
  * Tests for src/cli/install-openclaw.ts. The installer mirrors the
@@ -19,22 +20,22 @@ beforeEach(() => {
   tmpPkg = join(tmpRoot, "pkg");
   mkdirSync(tmpHome, { recursive: true });
 
-  mkdirSync(join(tmpPkg, "openclaw", "dist"), { recursive: true });
-  writeFileSync(join(tmpPkg, "openclaw", "dist", "index.js"), "// fake dist");
-  writeFileSync(join(tmpPkg, "openclaw", "openclaw.plugin.json"), JSON.stringify({ name: "hivemind", version: "1.2.3" }));
-  writeFileSync(join(tmpPkg, "openclaw", "package.json"), JSON.stringify({ name: "hivemind", version: "1.2.3" }));
-  mkdirSync(join(tmpPkg, "openclaw", "skills"), { recursive: true });
-  writeFileSync(join(tmpPkg, "openclaw", "skills", "hivemind.md"), "skill body");
+  mkdirSync(join(tmpPkg, "harnesses", "openclaw", "dist"), { recursive: true });
+  writeFileSync(join(tmpPkg, "harnesses", "openclaw", "dist", "index.js"), "// fake dist");
+  writeFileSync(join(tmpPkg, "harnesses", "openclaw", "openclaw.plugin.json"), JSON.stringify({ name: "hivemind", version: "1.2.3" }));
+  writeFileSync(join(tmpPkg, "harnesses", "openclaw", "package.json"), JSON.stringify({ name: "hivemind", version: "1.2.3" }));
+  mkdirSync(join(tmpPkg, "harnesses", "openclaw", "skills"), { recursive: true });
+  writeFileSync(join(tmpPkg, "harnesses", "openclaw", "skills", "hivemind.md"), "skill body");
   writeFileSync(join(tmpPkg, "package.json"), JSON.stringify({ version: "1.2.3" }));
 
-  vi.stubEnv("HOME", tmpHome);
+  setFakeHome(tmpHome);
   vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 });
 
 afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
-  vi.unstubAllEnvs();
+  clearFakeHome();
   vi.restoreAllMocks();
   vi.resetModules();
 });
@@ -83,8 +84,8 @@ describe("installOpenclaw", () => {
   });
 
   it("skips optional sources that don't exist (skills, manifest) without throwing", async () => {
-    rmSync(join(tmpPkg, "openclaw", "skills"), { recursive: true, force: true });
-    rmSync(join(tmpPkg, "openclaw", "openclaw.plugin.json"));
+    rmSync(join(tmpPkg, "harnesses", "openclaw", "skills"), { recursive: true, force: true });
+    rmSync(join(tmpPkg, "harnesses", "openclaw", "openclaw.plugin.json"));
     const { installOpenclaw } = await importInstaller();
     expect(() => installOpenclaw()).not.toThrow();
     const root = join(tmpHome, ".openclaw", "extensions", "hivemind");
@@ -94,7 +95,7 @@ describe("installOpenclaw", () => {
   });
 
   it("throws when the dist source is missing (build hasn't run)", async () => {
-    rmSync(join(tmpPkg, "openclaw", "dist"), { recursive: true, force: true });
+    rmSync(join(tmpPkg, "harnesses", "openclaw", "dist"), { recursive: true, force: true });
     const { installOpenclaw } = await importInstaller();
     expect(() => installOpenclaw()).toThrow(/OpenClaw bundle missing/);
   });

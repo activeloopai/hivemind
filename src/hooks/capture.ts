@@ -8,12 +8,14 @@
  */
 
 import { readStdin } from "../utils/stdin.js";
-import { loadConfig, type Config } from "../config.js";
+import { type Config } from "../config.js";
+import { resolveCaptureConfig } from "./shared/dir-gate.js";
+import { redactSecrets } from "./shared/redact.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
 import { projectNameFromCwd } from "../utils/project-name.js";
 import { log as _log } from "../utils/debug.js";
 import { buildSessionPath } from "../utils/session-path.js";
+import { parseClaudeTurnMetaLive } from "../notifications/model-usage.js";
 import {
   bumpTotalCount,
   loadTriggerConfig,
@@ -23,10 +25,12 @@ import {
   ensureSessionOwner,
 } from "./summary-state.js";
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
+import { appendSessionEvent } from "./session-event-cache.js";
 import { tryStopCounterTrigger } from "../skillify/triggers.js";
 import { reactSkillOpt } from "./shared/skillopt-hook.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
+import { buildDirectSessionInsertSql } from "./shared/session-insert-sql.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
 import { isHivemindPluginEnabled } from "../utils/plugin-state.js";
 import { ensurePluginNodeModulesLink } from "../embeddings/self-heal.js";
@@ -80,8 +84,10 @@ async function main(): Promise<void> {
   if (!isHivemindPluginEnabled()) { log("plugin disabled, skipping capture"); return; }
   if (!entrypointPassesOnlyCliGate()) return;
   const input = await readStdin<HookInput>();
-  const config = loadConfig();
-  if (!config) { log("no config"); return; }
+  // Per-directory `.hivemind`: skip capture where opted out, and route to the
+  // configured org/workspace otherwise.
+  const config = resolveCaptureConfig(input.cwd ?? process.cwd(), log);
+  if (!config) return;
 
   // Self-heal the owner record for sessions that were already open before this
   // shipped (SessionStart only records it for new sessions). One /proc walk on
@@ -129,12 +135,34 @@ async function main(): Promise<void> {
     };
   } else if (input.last_assistant_message !== undefined) {
     log(`assistant session=${input.session_id}`);
+    // Model / usage aren't in the hook payload — read them from the transcript's
+    // last assistant turn (best-effort; null on any read/parse failure). On
+    // SubagentStop, last_assistant_message belongs to the subagent transcript;
+    // transcript_path points at the parent session, so prefer the agent one.
+    // The Stop event races the transcript writer (the turn's final assistant
+    // record may not be flushed yet), so this re-reads across a short backoff
+    // and correlates the record with last_assistant_message — never attributing
+    // a PREVIOUS turn's tokens to this one. A sidechain record is a subagent's
+    // on a main-session Stop, but IS the turn on SubagentStop.
+    // An empty last_assistant_message can't be correlated with a transcript
+    // record — skipping the correlation would silently accept the PREVIOUS
+    // turn's record, so skip the enrichment instead.
+    const expectText = typeof input.last_assistant_message === "string" ? input.last_assistant_message.trim() : "";
+    if (!expectText) log("empty last_assistant_message — skipping turn-meta enrichment");
+    const modelMeta = expectText
+      ? await parseClaudeTurnMetaLive(
+          input.agent_transcript_path ?? input.transcript_path,
+          expectText,
+          Boolean(input.agent_transcript_path),
+        )
+      : null;
     entry = {
       id: crypto.randomUUID(),
       ...meta,
       type: "assistant_message",
       content: input.last_assistant_message,
       ...(input.agent_transcript_path ? { agent_transcript_path: input.agent_transcript_path } : {}),
+      ...(modelMeta ?? {}),
     };
   } else {
     log("unknown event, skipping");
@@ -142,7 +170,10 @@ async function main(): Promise<void> {
   }
 
   const sessionPath = buildSessionPath(config, input.session_id);
-  const line = JSON.stringify(entry);
+  // Mask secrets (tokens, passwords, API keys) before the payload is embedded
+  // or written to the store. Redacting the serialized line covers every field
+  // (content / tool_input / tool_response) and both egress paths at once.
+  const line = redactSecrets(JSON.stringify(entry));
   log(`writing to ${sessionPath}`);
 
   // Simple INSERT — one row per event, no concat, no race conditions.
@@ -160,10 +191,22 @@ async function main(): Promise<void> {
     : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");
   const embeddingSql = embeddingSqlLiteral(embedding);
 
-  const insertSql =
-    `INSERT INTO "${sessionsTable}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(sessionPath)}', '${sqlStr(filename)}', '${jsonForSql}'::jsonb, ${embeddingSql}, '${sqlStr(config.userName)}', ` +
-    `${Buffer.byteLength(line, "utf-8")}, '${sqlStr(projectName)}', '${sqlStr(input.hook_event_name ?? "")}', 'claude_code', '${sqlStr(PLUGIN_VERSION)}', '${ts}', '${ts}')`;
+  const insertSql = buildDirectSessionInsertSql(sessionsTable, {
+    // Reuse the event id already embedded in the message JSON so the row PK
+    // matches the payload's id (and keeps the dedup key = the logical event).
+    id: entry.id as string,
+    sessionPath,
+    filename,
+    jsonForSql,
+    embeddingSql,
+    userName: config.userName,
+    sizeBytes: Buffer.byteLength(line, "utf-8"),
+    projectName,
+    description: input.hook_event_name ?? "",
+    agent: "claude_code",
+    pluginVersion: PLUGIN_VERSION,
+    timestamp: ts,
+  });
 
   try {
     await api.query(insertSql);
@@ -180,6 +223,13 @@ async function main(): Promise<void> {
   }
 
   log("capture ok → cloud");
+
+  // Mirror the event into the local per-session cache (row-for-row identical
+  // to the `message` column just INSERTed). The wiki-worker reads this instead
+  // of re-scanning the entire fat `message` column for the current session on
+  // every periodic / session-end summary trigger. Best-effort; DB stays the
+  // source of truth. Only reached after a successful INSERT above.
+  appendSessionEvent(input.session_id, line);
 
   // Commit-driven KPI auto-extract is disabled for now — the
   // fire-and-forget sub-agent spawned per `git commit` (see

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import {
@@ -17,7 +17,9 @@ import {
   type QueryFn,
 } from "../../src/skillify/pull.js";
 import { lstatSync, readlinkSync, symlinkSync } from "node:fs";
-import { loadManifest } from "../../src/skillify/manifest.js";
+import { loadManifest, recordPull } from "../../src/skillify/manifest.js";
+import { capSkillName } from "../../src/skillify/skill-writer.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 let projectRoot: string;
 let projectSkillsRoot: string;
@@ -31,14 +33,13 @@ beforeEach(() => {
   // directory instead of polluting the developer's real ~/.deeplake state.
   fakeHome = mkdtempSync(join(tmpdir(), "skillify-pull-home-"));
   originalHome = process.env.HOME;
-  process.env.HOME = fakeHome;
+  setFakeHome(fakeHome);
 });
 
 afterEach(() => {
   try { rmSync(projectRoot, { recursive: true, force: true }); } catch { /* nothing */ }
   try { rmSync(fakeHome, { recursive: true, force: true }); } catch { /* nothing */ }
-  if (originalHome === undefined) delete process.env.HOME;
-  else process.env.HOME = originalHome;
+  clearFakeHome();
 });
 
 // ── assertValidAuthor ──────────────────────────────────────────────────────
@@ -124,7 +125,7 @@ describe("resolvePullDestination", () => {
   });
 
   it("returns <cwd>/.claude/skills for project with cwd", () => {
-    expect(resolvePullDestination("project", "/tmp/foo")).toBe("/tmp/foo/.claude/skills");
+    expect(resolvePullDestination("project", "/tmp/foo")).toBe(join("/tmp/foo", ".claude", "skills"));
   });
 
   it("throws for project without cwd", () => {
@@ -306,7 +307,8 @@ describe("renderSkillFile", () => {
       body: "## Workflow\n\nDo it.",
     });
     expect(text).toContain("name: my-skill");
-    expect(text).toContain(`description: "Does X"`);
+    // Pull folds the trigger into the host-visible description (composeDescription).
+    expect(text).toContain(`description: "Does X. Use this skill when X"`);
     expect(text).toContain(`trigger: "When X"`);
     expect(text).toContain("version: 2");
     expect(text).toContain("created_by_agent: claude_code");
@@ -332,6 +334,24 @@ describe("renderSkillFile", () => {
     // Frontmatter should still render — just with empty list
     expect(text).toContain("source_sessions:\n");
     expect(text).not.toContain("- not json");
+  });
+
+  it("retroactively folds a separate trigger_text into description on reconstruction", () => {
+    // A row mined before the fix has a capability-only description and the
+    // condition stranded in trigger_text. Because pull re-renders from columns
+    // on every sync, the host-visible description gains the trigger with no
+    // table backfill.
+    const text = renderSkillFile({
+      name: "pg-crash",
+      description: "Diagnose pg-deeplake test-suite crashes",
+      trigger_text: "When task pg:test cascades after one crash",
+      source_sessions: [], version: 5,
+      source_agent: "codex", created_at: "t", updated_at: "t",
+      body: "## Workflow\n\nDo it.",
+    });
+    expect(text).toContain(
+      `description: "Diagnose pg-deeplake test-suite crashes. Use this skill when task pg:test cascades after one crash"`,
+    );
   });
 
   it("omits trigger field when trigger_text is empty", () => {
@@ -444,6 +464,257 @@ describe("runPull", () => {
     const text = readFileSync(path, "utf-8");
     expect(text).toContain("version: 2");
     expect(text).toContain("Use vox");
+  });
+
+  it("caps an over-long row name so the frontmatter name fits codex's 64-char limit", async () => {
+    // Real offender codex dropped: 68-char frontmatter name. codex validates
+    // the frontmatter `name` (not the dir length), so the write must truncate
+    // it to <=64 rather than skip the row.
+    const longName = "pg-deeplake-multi-layer-issue-diagnosis-and-workaround-prioritization";
+    const { fn } = makeMockQuery([sampleRow({ name: longName, author: "sasun" })]);
+    const summary = await runPull({
+      query: fn, tableName: "skills", install: "project", cwd: projectRoot,
+      users: [], dryRun: false, force: false,
+    });
+    expect(summary.wrote).toBe(1);
+    expect(summary.skipped).toBe(0);
+    const dirs = readdirSync(projectSkillsRoot);
+    expect(dirs).toHaveLength(1);
+    // The dir base equals the capped name, suffixed by the author.
+    expect(dirs[0].endsWith("--sasun")).toBe(true);
+    // The frontmatter `name` — the value codex rejects when >64 — is capped
+    // (<=64), matches the dir base, and its content prefix comes from the
+    // original name (the tail is a disambiguating hash).
+    const text = readFileSync(join(projectSkillsRoot, dirs[0], "SKILL.md"), "utf-8");
+    const fmName = text.match(/^name: (.+)$/m)?.[1] ?? "";
+    expect(fmName.length).toBeLessThanOrEqual(64);
+    expect(`${fmName}--sasun`).toBe(dirs[0]);
+    const prefix = fmName.replace(/-[a-z0-9]{5}$/, "");
+    expect(longName.startsWith(prefix)).toBe(true);
+  });
+
+  it("migrates an EQUAL-version stale over-long install to the capped dir (the common upgrade case)", async () => {
+    // A user who pulled this row BEFORE capping has it at the raw dir at the
+    // SAME version as remote — the normal upgrade case. Migration must still
+    // fire (decide on the capped dir's own absence), else the invalid old dir
+    // lingers forever and codex keeps warning.
+    const longName = "pg-deeplake-multi-layer-issue-diagnosis-and-workaround-prioritization";
+    const staleDir = `${longName}--sasun`;
+    mkdirSync(join(projectSkillsRoot, staleDir), { recursive: true });
+    writeFileSync(join(projectSkillsRoot, staleDir, "SKILL.md"),
+      `---\nname: ${longName}\ndescription: "old"\nversion: 2\ncreated_by_agent: cc\ncreated_at: t\nupdated_at: t\n---\n\nold body`);
+    recordPull({
+      dirName: staleDir, name: longName, author: "sasun", projectKey: "pk",
+      remoteVersion: 2, install: "project", installRoot: projectSkillsRoot,
+      pulledAt: "2026-05-06T00:00:00.000Z", symlinks: [],
+    });
+    expect(loadManifest().entries.some(e => e.dirName === staleDir)).toBe(true);
+
+    // Remote version EQUALS the stale local version.
+    const { fn } = makeMockQuery([sampleRow({ name: longName, author: "sasun", version: 2 })]);
+    const summary = await runPull({
+      query: fn, tableName: "skills", install: "project", cwd: projectRoot,
+      users: [], dryRun: false, force: false,
+    });
+
+    expect(summary.wrote).toBe(1);
+    // The old invalid dir is gone (otherwise codex keeps warning on it) …
+    expect(existsSync(join(projectSkillsRoot, staleDir))).toBe(false);
+    // … its manifest entry is removed …
+    expect(loadManifest().entries.some(e => e.dirName === staleDir)).toBe(false);
+    // … and exactly the capped dir remains, with a <=64 frontmatter name.
+    const dirs = readdirSync(projectSkillsRoot);
+    expect(dirs).toHaveLength(1);
+    expect(dirs[0]).not.toBe(staleDir);
+    const fmName = readFileSync(join(projectSkillsRoot, dirs[0], "SKILL.md"), "utf-8").match(/^name: (.+)$/m)?.[1] ?? "";
+    expect(fmName.length).toBeLessThanOrEqual(64);
+  });
+
+  it("migrates a NEWER stale copy's content (preserves edits) rather than overwriting from an older remote row", async () => {
+    // Guards against discarding a newer/edited local copy: the stale content is
+    // preserved and MOVED to the capped dir with the frontmatter name fixed —
+    // not overwritten from the older remote row, and not left at the invalid dir.
+    const longName = "pg-deeplake-multi-layer-issue-diagnosis-and-workaround-prioritization";
+    const staleDir = `${longName}--sasun`;
+    mkdirSync(join(projectSkillsRoot, staleDir), { recursive: true });
+    writeFileSync(join(projectSkillsRoot, staleDir, "SKILL.md"),
+      `---\nname: ${longName}\ndescription: "local"\nversion: 9\ncreated_by_agent: cc\ncreated_at: t\nupdated_at: t\n---\n\nlocal newer body`);
+    recordPull({
+      dirName: staleDir, name: longName, author: "sasun", projectKey: "pk",
+      remoteVersion: 9, install: "project", installRoot: projectSkillsRoot,
+      pulledAt: "2026-05-06T00:00:00.000Z", symlinks: [],
+    });
+
+    // Remote row is OLDER (v2) than the local stale copy (v9).
+    const { fn } = makeMockQuery([sampleRow({ name: longName, author: "sasun", version: 2 })]);
+    const summary = await runPull({
+      query: fn, tableName: "skills", install: "project", cwd: projectRoot,
+      users: [], dryRun: false, force: false,
+    });
+
+    expect(summary.wrote).toBe(1);
+    // Invalid old dir retired …
+    expect(existsSync(join(projectSkillsRoot, staleDir))).toBe(false);
+    // … local content preserved at the capped dir, with the name fixed (<=64).
+    const dirs = readdirSync(projectSkillsRoot);
+    expect(dirs).toHaveLength(1);
+    const text = readFileSync(join(projectSkillsRoot, dirs[0], "SKILL.md"), "utf-8");
+    expect(text).toContain("local newer body");
+    const fmName = text.match(/^name: (.+)$/m)?.[1] ?? "";
+    expect(fmName.length).toBeLessThanOrEqual(64);
+    expect(fmName).not.toBe(longName);
+  });
+
+  it("never deletes a `<rawName>--<author>` dir that is NOT pull-managed (no manifest entry)", async () => {
+    // A user could coincidentally own a dir matching a long row's raw name.
+    // Migration must only remove dirs we manage (present in the manifest).
+    const longName = "pg-deeplake-multi-layer-issue-diagnosis-and-workaround-prioritization";
+    const userDir = `${longName}--sasun`;
+    mkdirSync(join(projectSkillsRoot, userDir), { recursive: true });
+    writeFileSync(join(projectSkillsRoot, userDir, "SKILL.md"),
+      `---\nname: ${longName}\ndescription: "user"\nversion: 1\ncreated_by_agent: cc\ncreated_at: t\nupdated_at: t\n---\n\nuser-owned body`);
+    // NB: no recordPull — the dir is unmanaged.
+
+    const { fn } = makeMockQuery([sampleRow({ name: longName, author: "sasun", version: 2 })]);
+    await runPull({
+      query: fn, tableName: "skills", install: "project", cwd: projectRoot,
+      users: [], dryRun: false, force: false,
+    });
+
+    // The unmanaged user dir is untouched.
+    expect(existsSync(join(projectSkillsRoot, userDir, "SKILL.md"))).toBe(true);
+    expect(readFileSync(join(projectSkillsRoot, userDir, "SKILL.md"), "utf-8")).toContain("user-owned body");
+  });
+
+  it("skips (does not overwrite) a second row that caps to the same destination as the first", async () => {
+    // These two distinct over-long names hash to the same capped dir. The first
+    // claims it; the collider is skipped rather than overwriting it.
+    const a = "collide-prefix-aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-zzz16634";
+    const b = "collide-prefix-aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-zzz400000";
+    const { fn } = makeMockQuery([
+      sampleRow({ name: a, author: "al", version: 1 }),
+      sampleRow({ name: b, author: "al", version: 1 }),
+    ]);
+    const summary = await runPull({
+      query: fn, tableName: "skills", install: "project", cwd: projectRoot,
+      users: [], dryRun: false, force: false,
+    });
+
+    expect(summary.wrote).toBe(1);
+    expect(summary.skipped).toBe(1);
+    // Only one dir exists; the collider's entry names the conflict.
+    expect(readdirSync(projectSkillsRoot)).toHaveLength(1);
+    const collider = summary.entries.find(e => e.action === "skipped");
+    expect(collider?.destination).toContain("collision");
+  });
+
+  it("detects a cap collision ACROSS separate pulls via the persisted raw name", async () => {
+    // These two distinct over-long names hash to the same capped dir. Pulled in
+    // separate invocations (e.g. `--skill`), the manifest's persisted rawName
+    // must let the second recognise the destination as another skill's and skip
+    // it — not overwrite the first.
+    const a = "collide-prefix-aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-zzz16634";
+    const b = "collide-prefix-aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-zzz400000";
+
+    const run1 = await runPull({
+      query: makeMockQuery([sampleRow({ name: a, author: "al", version: 1 })]).fn,
+      tableName: "skills", install: "project", cwd: projectRoot, users: [], dryRun: false, force: false,
+    });
+    expect(run1.wrote).toBe(1);
+    const dir = readdirSync(projectSkillsRoot)[0];
+    const contentAfterRun1 = readFileSync(join(projectSkillsRoot, dir, "SKILL.md"), "utf-8");
+
+    // Second, separate pull of the colliding name — even with --force.
+    const run2 = await runPull({
+      query: makeMockQuery([sampleRow({ name: b, author: "al", version: 9 })]).fn,
+      tableName: "skills", install: "project", cwd: projectRoot, users: [], dryRun: false, force: true,
+    });
+    expect(run2.wrote).toBe(0);
+    expect(run2.skipped).toBe(1);
+    expect(run2.entries[0].destination).toContain("collision");
+    // First skill's file is untouched.
+    expect(readdirSync(projectSkillsRoot)).toHaveLength(1);
+    expect(readFileSync(join(projectSkillsRoot, dir, "SKILL.md"), "utf-8")).toBe(contentAfterRun1);
+  });
+
+  it("detects a collision against a LEGACY manifest entry (no rawName) via the name fallback", async () => {
+    // Pre-rawName entries have no persisted raw identity; the collision check
+    // must fall back to `name` so a new colliding row is still blocked.
+    const b = "collide-prefix-aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-zzz400000";
+    const dirName = `${capSkillName(b)}--al`;
+    // Back the manifest entry with a real dir on disk (matches how a real pull
+    // leaves state) so the entry is retained on reload.
+    mkdirSync(join(projectSkillsRoot, dirName), { recursive: true });
+    writeFileSync(join(projectSkillsRoot, dirName, "SKILL.md"),
+      `---\nname: legacy-owner\ndescription: x\nversion: 1\ncreated_by_agent: cc\ncreated_at: t\nupdated_at: t\n---\n\nowner body`);
+    recordPull({
+      // Legacy shape: NO rawName field.
+      dirName, name: "legacy-owner", author: "al", projectKey: "pk",
+      remoteVersion: 1, install: "project", installRoot: projectSkillsRoot,
+      pulledAt: "2026-05-06T00:00:00.000Z", symlinks: [],
+    });
+
+    const { fn } = makeMockQuery([sampleRow({ name: b, author: "al", version: 9 })]);
+    const summary = await runPull({
+      query: fn, tableName: "skills", install: "project", cwd: projectRoot,
+      users: [], dryRun: false, force: true,
+    });
+
+    expect(summary.wrote).toBe(0);
+    expect(summary.skipped).toBe(1);
+    expect(summary.entries[0].destination).toContain("legacy-owner");
+  });
+
+  it("adopts an untracked canonical file on a later skipped pull, then retires the stale dir", async () => {
+    // Simulates a prior migration whose recordPull failed: the capped file is on
+    // disk but unrecorded, and the stale managed dir still exists. This pull sees
+    // the capped file at the remote version (→ skipped), so it must adopt the
+    // canonical into the manifest and finish retiring the stale dir.
+    const longName = "pg-deeplake-multi-layer-issue-diagnosis-and-workaround-prioritization";
+    const cappedDir = `${capSkillName(longName)}--sasun`;
+    const staleDir = `${longName}--sasun`;
+
+    // Canonical capped file on disk at v2, but NOT recorded in the manifest.
+    mkdirSync(join(projectSkillsRoot, cappedDir), { recursive: true });
+    writeFileSync(join(projectSkillsRoot, cappedDir, "SKILL.md"),
+      `---\nname: ${capSkillName(longName)}\ndescription: "x"\nversion: 2\ncreated_by_agent: cc\ncreated_at: t\nupdated_at: t\n---\n\ncanonical body`);
+    // Stale managed dir + manifest entry.
+    mkdirSync(join(projectSkillsRoot, staleDir), { recursive: true });
+    writeFileSync(join(projectSkillsRoot, staleDir, "SKILL.md"),
+      `---\nname: ${longName}\ndescription: "x"\nversion: 2\ncreated_by_agent: cc\ncreated_at: t\nupdated_at: t\n---\n\nstale body`);
+    recordPull({
+      dirName: staleDir, name: longName, author: "sasun", projectKey: "pk",
+      remoteVersion: 2, install: "project", installRoot: projectSkillsRoot,
+      pulledAt: "2026-05-06T00:00:00.000Z", symlinks: [],
+    });
+    expect(loadManifest().entries.some(e => e.dirName === cappedDir)).toBe(false);
+
+    const { fn } = makeMockQuery([sampleRow({ name: longName, author: "sasun", version: 2 })]);
+    const summary = await runPull({
+      query: fn, tableName: "skills", install: "project", cwd: projectRoot,
+      users: [], dryRun: false, force: false,
+    });
+
+    expect(summary.skipped).toBe(1); // capped already at remote version
+    // Canonical is now recorded (adopted) …
+    expect(loadManifest().entries.some(e => e.dirName === cappedDir)).toBe(true);
+    // … and the stale dir + entry are retired.
+    expect(existsSync(join(projectSkillsRoot, staleDir))).toBe(false);
+    expect(loadManifest().entries.some(e => e.dirName === staleDir)).toBe(false);
+  });
+
+  it("rejects an over-long name whose truncated-away tail carries traversal syntax", async () => {
+    // First 64 chars are a valid slug; the discarded tail hides `..`. Capping
+    // before validating would admit it — validation must see the RAW name.
+    const evil = "a".repeat(60) + "-b/../../etc";
+    const { fn } = makeMockQuery([sampleRow({ name: evil, author: "sasun" })]);
+    const summary = await runPull({
+      query: fn, tableName: "skills", install: "project", cwd: projectRoot,
+      users: [], dryRun: false, force: false,
+    });
+    expect(summary.wrote).toBe(0);
+    expect(summary.skipped).toBe(1);
+    expect(summary.entries[0].destination).toContain("invalid name");
   });
 
   it("skips the SELECT when tableExists reports the skills table absent", async () => {

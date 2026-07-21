@@ -22,10 +22,10 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { loadCredentials, healDriftedOrgToken } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
+import { resolveDirConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { renderContextBlock } from "../shared/context-renderer.js";
-import { sqlStr } from "../../utils/sql.js";
-import { projectNameFromCwd } from "../../utils/project-name.js";
+import { createPlaceholderSummary } from "../shared/placeholder-summary.js";
 import { renderSkillifyCommands } from "../../cli/skillify-spec.js";
 import { countLocalManifestEntries } from "../../skillify/local-manifest.js";
 import { maybeAutoMineLocal } from "../../skillify/spawn-mine-local-worker.js";
@@ -96,6 +96,7 @@ function resolveCwd(input: CursorSessionStartInput): string {
   return process.cwd();
 }
 
+/** Create a placeholder summary via the shared race-safe writer (see placeholder-summary.ts). */
 async function createPlaceholder(
   api: DeeplakeApi,
   table: string,
@@ -106,29 +107,9 @@ async function createPlaceholder(
   workspaceId: string,
   pluginVersion: string,
 ): Promise<void> {
-  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
-  const existing = await api.query(
-    `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`,
-  );
-  if (existing.length > 0) return;
-
-  const now = new Date().toISOString();
-  const projectName = projectNameFromCwd(cwd);
-  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
-  const content = [
-    `# Session ${sessionId}`,
-    `- **Source**: ${sessionSource}`,
-    `- **Started**: ${now}`,
-    `- **Project**: ${projectName}`,
-    `- **Status**: in-progress`,
-    "",
-  ].join("\n");
-  const filename = `${sessionId}.md`;
-
-  await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'cursor', '${sqlStr(pluginVersion)}', '${now}', '${now}')`,
+  await createPlaceholderSummary(
+    (sql) => api.query(sql),
+    { table, sessionId, cwd, userName, orgName, workspaceId, agent: "cursor", pluginVersion },
   );
 }
 
@@ -166,21 +147,29 @@ async function main(): Promise<void> {
   // + pass 4 together surfaced this layering: only writes (placeholder
   // + ensure DDL) are gated; reads (renderer) always run.
   const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
+
+  // Per-directory `.hivemind`: route / opt out for this tree. Resolved once and
+  // reused for the placeholder write and the disclosure banner below.
+  const baseConfig = loadConfig();
+  const dirRes = baseConfig ? resolveDirConfig(baseConfig, cwd) : null;
+  const collectHere = captureEnabled && (dirRes?.collect ?? true);
   let rulesBlock = "";
   if (creds?.token) {
     try {
-      const config = loadConfig();
+      const config = dirRes?.config;
       if (config) {
         const table = config.tableName;
         const sessionsTable = config.sessionsTableName;
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-        if (captureEnabled) {
+        if (collectHere) {
           await api.ensureTable();
           await api.ensureSessionsTable(sessionsTable);
           await createPlaceholder(api, table, sessionId, cwd, config.userName, config.orgName, config.workspaceId, pluginVersion);
           log("placeholder created");
         } else {
-          log("placeholder + schema ensure skipped (HIVEMIND_CAPTURE=false)");
+          log(dirRes && !dirRes.collect
+            ? `placeholder + schema ensure skipped (.hivemind collect:false ${dirRes.found?.path})`
+            : "placeholder + schema ensure skipped (HIVEMIND_CAPTURE=false)");
         }
         // Read-only renderer. Cursor's additional_context is invisible
         // to the user (model-only), so the full block is fine. Renderer
@@ -228,8 +217,17 @@ async function main(): Promise<void> {
   // (pullSnapshot would early-return skipped-no-auth anyway).
   if (creds?.token) spawnGraphPullWorker(resolveCwd(input), __bundleDir);
 
+  // Disclose the EFFECTIVE identity (after any `.hivemind` overlay).
+  const effConfig = dirRes?.config ?? baseConfig;
+  const routed = !!(dirRes?.found && dirRes.collect && baseConfig &&
+    (dirRes.config.orgId !== baseConfig.orgId || dirRes.config.workspaceId !== baseConfig.workspaceId));
+  const effOrg = effConfig ? (effConfig.orgName ?? effConfig.orgId) : (creds?.orgName ?? creds?.orgId);
+  const effWs = effConfig ? effConfig.workspaceId : (creds?.workspaceId ?? "default");
+  const identityLine = dirRes && !dirRes.collect
+    ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search still uses org: ${effOrg}`
+    : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`;
   const baseContext = creds?.token
-    ? `${context}\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${versionNotice}`
+    ? `${context}\n${identityLine}${versionNotice}`
     : `${context}\nNot logged in to Deeplake. Run: hivemind login${localMinedNote}${versionNotice}`;
   // Cursor cannot route Write/Edit through hivemind hooks (its
   // pre-tool-use only intercepts Shell). So the agent here uses

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
  * Tests for src/cli/install-claude.ts.
@@ -137,6 +138,25 @@ describe("installClaude — happy path argv shape", () => {
     // But still attempts plugin install + enable.
     expect(argvList).toContain("plugin install hivemind");
     expect(argvList).toContain("plugin enable hivemind@hivemind");
+  });
+
+  it("refreshes the marketplace BEFORE install when the marketplace pre-existed but the plugin is not installed (stale-cache self-heal)", async () => {
+    // Regression guard for the SSO/install failure: a prior attempt added
+    // the marketplace but failed to install, leaving a STALE marketplace.json
+    // cached (old pinned sha/path). A plain re-run skips `marketplace add`
+    // (already present) and would `plugin install` against the stale catalog
+    // — re-failing forever. We now `marketplace update` first so the newest
+    // marketplace.json (with the fixed path) is used.
+    setupClaudeResponses({ marketplaceList: "hivemind", pluginList: "" });
+    const { installClaude } = await importFresh();
+    installClaude();
+
+    const argvList = calls().map(c => c.args.join(" "));
+    expect(argvList).not.toContain("plugin marketplace add activeloopai/hivemind");
+    const refreshIdx = argvList.indexOf("plugin marketplace update hivemind");
+    const installIdx = argvList.indexOf("plugin install hivemind");
+    expect(refreshIdx).toBeGreaterThanOrEqual(0);
+    expect(installIdx).toBeGreaterThan(refreshIdx);
   });
 
   it("skips 'plugin install' AND triggers 'plugin update' across all 4 scopes when already installed", async () => {
@@ -326,12 +346,11 @@ describe("cleanupBrokenSettingsHooks", () => {
   beforeEach(() => {
     TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "hivemind-cleanup-test-"));
     ORIGINAL_HOME = process.env.HOME;
-    process.env.HOME = TEMP_HOME;
+    setFakeHome(TEMP_HOME);
     execFileSyncMock.mockReset();
   });
   afterEach(() => {
-    if (ORIGINAL_HOME !== undefined) process.env.HOME = ORIGINAL_HOME;
-    else delete process.env.HOME;
+    clearFakeHome();
     fs.rmSync(TEMP_HOME, { recursive: true, force: true });
   });
 

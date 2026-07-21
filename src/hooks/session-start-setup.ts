@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../commands/auth.js";
-import { loadConfig } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
@@ -18,6 +18,7 @@ import { makeWikiLogger } from "../utils/wiki-log.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingsDisabled, embeddingsStatus } from "../embeddings/disable.js";
 import { autoUpdate } from "./shared/autoupdate.js";
+import { spawnDetachedNodeWorker } from "../utils/spawn-detached.js";
 const log = (msg: string) => _log("session-setup", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -32,6 +33,17 @@ async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<SessionStartInput>();
+
+  // Provision the code-graph tree-sitter parsers into the shared embed-deps
+  // dir so the graph-on-stop hook can auto-build the graph. Spawned as a
+  // DETACHED worker — NOT run inline — because a cold provision runs npm +
+  // a from-source native compile that can exceed this hook's ~120s async
+  // timeout; the worker outlives the hook and finishes in the background.
+  // Fired BEFORE the credentials early-return: provisioning is purely local
+  // and must not depend on login. Best-effort — the spawn helper swallows any
+  // failure, and ensureGraphDeps inside the worker serializes via its own lock.
+  spawnDetachedNodeWorker(join(__bundleDir, "graph-deps-worker.js"));
+
   const creds = loadCredentials();
   if (!creds?.token) { log("no credentials"); return; }
 
@@ -54,7 +66,7 @@ async function main(): Promise<void> {
 
   if (input.session_id) {
     try {
-      const config = loadConfig();
+      const config = loadRoutedConfig(input.cwd ?? process.cwd());
       if (config) {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
         await api.ensureTable();

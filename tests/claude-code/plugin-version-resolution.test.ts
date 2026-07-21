@@ -36,11 +36,11 @@ interface AgentLayout {
 }
 
 const AGENTS: AgentLayout[] = [
-  { agent: "claude-code", bundleDir: resolve(REPO_ROOT, "claude-code", "bundle"), manifestDir: ".claude-plugin" },
-  { agent: "codex",       bundleDir: resolve(REPO_ROOT, "codex", "bundle"),       manifestDir: ".codex-plugin" },
-  { agent: "cursor",      bundleDir: resolve(REPO_ROOT, "cursor", "bundle"),      manifestDir: ".claude-plugin" },
-  { agent: "hermes",      bundleDir: resolve(REPO_ROOT, "hermes", "bundle"),      manifestDir: ".claude-plugin" },
-  { agent: "pi",          bundleDir: resolve(REPO_ROOT, "pi", "bundle"),          manifestDir: ".claude-plugin" },
+  { agent: "claude-code", bundleDir: resolve(REPO_ROOT, "harnesses", "claude-code", "bundle"), manifestDir: ".claude-plugin" },
+  { agent: "codex",       bundleDir: resolve(REPO_ROOT, "harnesses", "codex", "bundle"),       manifestDir: ".codex-plugin" },
+  { agent: "cursor",      bundleDir: resolve(REPO_ROOT, "harnesses", "cursor", "bundle"),      manifestDir: ".claude-plugin" },
+  { agent: "hermes",      bundleDir: resolve(REPO_ROOT, "harnesses", "hermes", "bundle"),      manifestDir: ".claude-plugin" },
+  { agent: "pi",          bundleDir: resolve(REPO_ROOT, "harnesses", "pi", "bundle"),          manifestDir: ".claude-plugin" },
 ];
 
 describe("plugin_version stamps a non-empty value for every shipped agent", () => {
@@ -64,35 +64,41 @@ describe("plugin_version is wired into every agent's capture INSERT", () => {
   // SQL for every agent's session-event writer. Mirrors the spirit of
   // wiki-worker-upload-sql.test.ts.
   const CAPTURE_BUNDLES: Array<[string, string]> = [
-    ["claude-code capture", resolve(REPO_ROOT, "claude-code", "bundle", "capture.js")],
-    ["codex capture",       resolve(REPO_ROOT, "codex", "bundle", "capture.js")],
-    ["cursor capture",      resolve(REPO_ROOT, "cursor", "bundle", "capture.js")],
-    ["hermes capture",      resolve(REPO_ROOT, "hermes", "bundle", "capture.js")],
-    ["codex stop",          resolve(REPO_ROOT, "codex", "bundle", "stop.js")],
-    ["openclaw index",      resolve(REPO_ROOT, "openclaw", "dist", "index.js")],
+    ["claude-code capture", resolve(REPO_ROOT, "harnesses", "claude-code", "bundle", "capture.js")],
+    ["codex capture",       resolve(REPO_ROOT, "harnesses", "codex", "bundle", "capture.js")],
+    ["cursor capture",      resolve(REPO_ROOT, "harnesses", "cursor", "bundle", "capture.js")],
+    ["hermes capture",      resolve(REPO_ROOT, "harnesses", "hermes", "bundle", "capture.js")],
+    ["codex stop",          resolve(REPO_ROOT, "harnesses", "codex", "bundle", "stop.js")],
+    ["openclaw index",      resolve(REPO_ROOT, "harnesses", "openclaw", "dist", "index.js")],
   ];
 
   it.each(CAPTURE_BUNDLES)("%s INSERT lists plugin_version column", (_label, path) => {
     const src = readFileSync(path, "utf-8");
-    // The INSERT into the sessions table must include plugin_version in
-    // its column list. Regex matches the actual concatenated INSERT line
+    // The INSERT into the sessions table must carry the exact canonical column
+    // list (built by the shared buildDirectSessionInsertSql helper), with
+    // plugin_version present. Asserting the full literal — not a wildcard —
     // so a typo or column-list drift fails here, not silently in prod.
-    const sessionsInsert = /INSERT INTO\s+"\$\{sessionsTable\}"[^`]*?plugin_version[^`]*?VALUES/;
-    expect(src).toMatch(sessionsInsert);
+    const expectedColumns =
+      'INSERT INTO "${table}" (id, path, filename, message, message_embedding, ' +
+      "author, size_bytes, project, description, agent, plugin_version, " +
+      "creation_date, last_update_date)";
+    expect(src).toContain(expectedColumns);
   });
 });
 
 describe("plugin_version is wired into every agent's session-start placeholder INSERT", () => {
   const PLACEHOLDER_BUNDLES: Array<[string, string]> = [
-    ["claude-code session-start", resolve(REPO_ROOT, "claude-code", "bundle", "session-start.js")],
-    ["codex session-start-setup", resolve(REPO_ROOT, "codex", "bundle", "session-start-setup.js")],
-    ["cursor session-start",      resolve(REPO_ROOT, "cursor", "bundle", "session-start.js")],
-    ["hermes session-start",      resolve(REPO_ROOT, "hermes", "bundle", "session-start.js")],
+    ["claude-code session-start", resolve(REPO_ROOT, "harnesses", "claude-code", "bundle", "session-start.js")],
+    ["codex session-start-setup", resolve(REPO_ROOT, "harnesses", "codex", "bundle", "session-start-setup.js")],
+    ["cursor session-start",      resolve(REPO_ROOT, "harnesses", "cursor", "bundle", "session-start.js")],
+    ["hermes session-start",      resolve(REPO_ROOT, "harnesses", "hermes", "bundle", "session-start.js")],
   ];
 
   it.each(PLACEHOLDER_BUNDLES)("%s placeholder INSERT lists plugin_version column", (_label, path) => {
     const src = readFileSync(path, "utf-8");
-    const placeholderInsert = /INSERT INTO\s+"\$\{table\}"[^`]*?plugin_version[^`]*?VALUES/;
+    // Accept both shapes: the original `INSERT ... VALUES` and the race-safe
+    // `INSERT ... SELECT ... WHERE NOT EXISTS` placeholder write.
+    const placeholderInsert = /INSERT INTO\s+"\$\{table\}"[^`]*?plugin_version[^`]*?(?:VALUES|SELECT)/;
     expect(src).toMatch(placeholderInsert);
   });
 });

@@ -19,7 +19,8 @@ const AGENTS = ["claude-code", "codex", "cursor", "hermes", "openclaw"] as const
 
 function bundlePath(agent: string, file: string): string {
   const dir = agent === "openclaw" ? "dist" : "bundle";
-  return join(ROOT, agent, dir, file);
+  const base = join(ROOT, "harnesses", agent);
+  return join(base, dir, file);
 }
 
 describe("skillify-worker bundle is shipped per agent", () => {
@@ -135,8 +136,8 @@ describe("legacy state-dir migration is shipped in every agent's bundle", () => 
     });
   }
 
-  it("openclaw/dist/index.js: inlined migration present and called before fsMkdir", () => {
-    const text = readFileSync(join(ROOT, "openclaw", "dist", "index.js"), "utf-8");
+  it("harnesses/openclaw/dist/index.js: inlined migration present and called before fsMkdir", () => {
+    const text = readFileSync(join(ROOT, "harnesses", "openclaw", "dist", "index.js"), "utf-8");
     expect(text).toContain("function migrateOpenclawSkillifyLegacyStateDir");
     // Must be called inside tryAcquireOpenclawSkillifyLock before the fsMkdir.
     // The order matters: once fsMkdir creates the new dir, the migration

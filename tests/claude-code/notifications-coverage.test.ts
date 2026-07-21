@@ -17,6 +17,7 @@ import { drainSessionStart } from "../../src/notifications/index.js";
 import { fetchBackendNotifications } from "../../src/notifications/sources/backend.js";
 import type { Notification, Rule } from "../../src/notifications/index.js";
 import type { Credentials } from "../../src/commands/auth-creds.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
  * Targeted coverage tests for branches not exercised by the main
@@ -29,12 +30,12 @@ let ORIGINAL_HOME: string | undefined;
 beforeEach(() => {
   TEMP_HOME = mkdtempSync(join(tmpdir(), "hivemind-notif-cov-"));
   ORIGINAL_HOME = process.env.HOME;
-  process.env.HOME = TEMP_HOME;
+  setFakeHome(TEMP_HOME);
   _resetRulesForTest();
 });
 
 afterEach(() => {
-  process.env.HOME = ORIGINAL_HOME;
+  clearFakeHome();
   rmSync(TEMP_HOME, { recursive: true, force: true });
 });
 

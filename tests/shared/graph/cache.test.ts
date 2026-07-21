@@ -68,10 +68,10 @@ describe("cache — content hash", () => {
 
 describe("cache — paths", () => {
   it("cacheDir lives inside baseDir", () => {
-    expect(cacheDir("/tmp/foo")).toBe("/tmp/foo/.cache");
+    expect(cacheDir("/tmp/foo")).toBe(join("/tmp/foo", ".cache"));
   });
   it("cachePath composes dir + hash + .json", () => {
-    expect(cachePath("/tmp/foo", "abc")).toBe("/tmp/foo/.cache/abc.json");
+    expect(cachePath("/tmp/foo", "abc")).toBe(join("/tmp/foo", ".cache", "abc.json"));
   });
 });
 

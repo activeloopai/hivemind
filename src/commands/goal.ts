@@ -35,7 +35,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { loadConfig } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
 
@@ -78,7 +78,7 @@ function parseAgentFlag(args: string[]): { agent: string; rest: string[] } {
 }
 
 function loadApiOrDie(table: string): { api: DeeplakeApi; query: QueryFn; userName: string } {
-  const cfg = loadConfig();
+  const cfg = loadRoutedConfig();
   if (!cfg) {
     process.stderr.write("hivemind: not logged in. Run `hivemind login` first.\n");
     process.exit(1);
@@ -97,7 +97,7 @@ function loadApiOrDie(table: string): { api: DeeplakeApi; query: QueryFn; userNa
 // ── goal subcommands ────────────────────────────────────────────────────────
 
 async function goalAdd(text: string, agent: string = "manual"): Promise<void> {
-  const cfg = loadConfig();
+  const cfg = loadRoutedConfig();
   if (!cfg) {
     process.stderr.write("hivemind: not logged in.\n");
     process.exit(1);
@@ -126,7 +126,7 @@ async function goalAdd(text: string, agent: string = "manual"): Promise<void> {
 }
 
 async function goalList(filter: "all" | "mine"): Promise<void> {
-  const cfg = loadConfig();
+  const cfg = loadRoutedConfig();
   if (!cfg) { process.stderr.write("not logged in\n"); process.exit(1); }
   const { query } = loadApiOrDie(cfg.goalsTableName);
   const safe = sqlIdent(cfg.goalsTableName);
@@ -152,7 +152,7 @@ async function goalList(filter: "all" | "mine"): Promise<void> {
 
 async function goalGet(goalId: string): Promise<void> {
   if (!goalId) { process.stderr.write("usage: hivemind goal get <goal_id>\n"); process.exit(1); }
-  const cfg = loadConfig();
+  const cfg = loadRoutedConfig();
   if (!cfg) { process.stderr.write("not logged in\n"); process.exit(1); }
   const { query } = loadApiOrDie(cfg.goalsTableName);
   const safe = sqlIdent(cfg.goalsTableName);
@@ -183,7 +183,7 @@ async function goalProgress(goalId: string, status: string): Promise<void> {
     process.stderr.write(`invalid status: ${status} (expected opened|in_progress|closed)\n`);
     process.exit(1);
   }
-  const cfg = loadConfig();
+  const cfg = loadRoutedConfig();
   if (!cfg) { process.stderr.write("not logged in\n"); process.exit(1); }
   const { api, query } = loadApiOrDie(cfg.goalsTableName);
   // Heal the schema before the UPDATE: an upgraded workspace's preexisting
@@ -212,7 +212,7 @@ async function kpiAdd(args: string[]): Promise<void> {
     process.exit(1);
   }
   const name = nameParts.length > 0 ? nameParts.join(" ") : kpiId;
-  const cfg = loadConfig();
+  const cfg = loadRoutedConfig();
   if (!cfg) { process.stderr.write("not logged in\n"); process.exit(1); }
   const { api, query } = loadApiOrDie(cfg.kpisTableName);
   await api.ensureKpisTable(cfg.kpisTableName);
@@ -237,7 +237,7 @@ async function kpiAdd(args: string[]): Promise<void> {
 
 async function kpiList(goalId: string): Promise<void> {
   if (!goalId) { process.stderr.write("usage: hivemind kpi list <goal_id>\n"); process.exit(1); }
-  const cfg = loadConfig();
+  const cfg = loadRoutedConfig();
   if (!cfg) { process.stderr.write("not logged in\n"); process.exit(1); }
   const { query } = loadApiOrDie(cfg.kpisTableName);
   const safe = sqlIdent(cfg.kpisTableName);
@@ -266,7 +266,7 @@ async function kpiBump(goalId: string, kpiId: string, deltaStr: string): Promise
     process.stderr.write(`invalid delta: ${deltaStr}\n`);
     process.exit(1);
   }
-  const cfg = loadConfig();
+  const cfg = loadRoutedConfig();
   if (!cfg) { process.stderr.write("not logged in\n"); process.exit(1); }
   const { api, query } = loadApiOrDie(cfg.kpisTableName);
   // Heal the schema before the UPDATE — same reason as goalProgress: a

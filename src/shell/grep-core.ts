@@ -15,7 +15,7 @@
  */
 
 import type { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr, sqlLike } from "../utils/sql.js";
+import { sqlStr, sqlLike, sqlIdent } from "../utils/sql.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -52,6 +52,8 @@ export interface SearchOptions {
   multiWordPatterns?: string[];
   /** Per-table row cap. */
   limit?: number;
+  /** Scope docs search to one project (legacy '' rows always included). */
+  project?: string;
   /**
    * If set, switches to semantic (cosine) search via Deeplake's `<#>` operator
    * against `summary_embedding` / `message_embedding` FLOAT4[] columns. When
@@ -173,6 +175,26 @@ function formatToolCall(obj: any): string {
   return `[tool:${obj?.tool_name ?? "?"}]\ninput: ${formatToolInput(obj?.tool_input)}\nresponse: ${formatToolResponse(obj?.tool_response, obj?.tool_input, obj?.tool_name)}`;
 }
 
+/**
+ * Diagnostic emitted when a session path resolves to real rows whose message
+ * bodies are all empty/null. A captured event is never legitimately empty
+ * (capture.ts always writes a populated JSON entry), so an empty reconstruction
+ * is always a pathology — the row carries a non-zero `size_bytes` (so `ls`/stat
+ * shows a size) but no readable body. Returning this notice instead of a
+ * silently-empty file is the difference between "the transcript body is gone"
+ * and "this file is genuinely empty" — the exact ambiguity that made the mirror
+ * look populated when it wasn't.
+ */
+export function emptySessionBodyNotice(rowCount: number): string {
+  const plural = rowCount === 1 ? "row" : "rows";
+  return (
+    `[hivemind: this session has ${rowCount} stored ${plural} but the message ` +
+    `body is empty — capture recorded metadata (size only) without content, so ` +
+    `the transcript body is unavailable. This is not an empty file; there is ` +
+    `nothing to read here.]`
+  );
+}
+
 export function normalizeContent(path: string, raw: string): string {
   // Any unknown shape falls through to `raw` below. This function never
   // returns null/empty — if the result would be trivially empty (e.g.
@@ -288,6 +310,13 @@ export async function searchDeeplakeTables(
   memoryTable: string,
   sessionsTable: string,
   opts: SearchOptions,
+  /**
+   * Optional out-param. Set `truncated` to true when a per-source row cap was
+   * hit, so callers can warn the agent that matches were dropped (the result
+   * is incomplete, not the full set). Especially important for the regex-only
+   * content scan, which inspects only the first `limit` unordered rows.
+   */
+  meta?: { truncated: boolean },
 ): Promise<ContentRow[]> {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, multiWordPatterns } = opts;
   const limit = opts.limit ?? 100;
@@ -371,6 +400,8 @@ export async function searchDeeplakeTables(
       `) AS combined ORDER BY score DESC LIMIT ${outerLimit}`
     );
 
+    if (meta && rows.length >= outerLimit) meta.truncated = true;
+
     const seen = new Set<string>();
     const unique: ContentRow[] = [];
     for (const row of rows) {
@@ -398,13 +429,95 @@ export async function searchDeeplakeTables(
     `) AS combined ORDER BY path, source_order, creation_date`
   );
 
+  // Each subquery is capped at `limit`. If a source returned exactly `limit`
+  // rows it (almost certainly) had more — flag the result as truncated so the
+  // caller can tell the agent it is incomplete.
+  if (meta) {
+    let memCount = 0;
+    let sessCount = 0;
+    for (const row of rows) {
+      if (Number(row["source_order"]) === 0) memCount++;
+      else sessCount++;
+    }
+    if (memCount >= limit || sessCount >= limit) meta.truncated = true;
+  }
+
   return rows.map(row => ({
     path: String(row["path"]),
     content: String(row["content"] ?? ""),
   }));
 }
 
-function serializeFloat4Array(vec: number[]): string {
+/**
+ * Hybrid semantic+lexical search over the per-file docs table (`content` +
+ * `content_embedding`, `status='active'`). Mirrors {@link searchDeeplakeTables}
+ * for a single source, reusing the same primitives (float serialization,
+ * content filter, the `ARRAY_LENGTH(...) > 0` empty-vector guard, dedup-by-path)
+ * — so semantic scoring/ordering stays byte-identical to memory grep. Kept a
+ * SEPARATE entry point on purpose: docs must never leak into memory retrieval
+ * (see src/docs/vfs-handler.ts). `path` in the result is the doc's file id.
+ */
+export async function searchDocs(
+  query: (sql: string) => Promise<Record<string, unknown>[]>,
+  docsTable: string,
+  opts: SearchOptions,
+): Promise<ContentRow[]> {
+  const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, multiWordPatterns } = opts;
+  const safeDocsTable = sqlIdent(docsTable);
+  const limit = opts.limit ?? 100;
+  // Legacy rows carry project '' and stay visible to every project.
+  const projFilter = opts.project !== undefined ? ` AND (project = '${sqlStr(opts.project)}' OR project = '')` : "";
+  const active = ` AND status = 'active'${projFilter}`;
+  const dedup = (rows: Record<string, unknown>[]): ContentRow[] => {
+    const seen = new Set<string>();
+    const out: ContentRow[] = [];
+    for (const row of rows) {
+      const p = String(row["path"]);
+      if (seen.has(p)) continue;
+      seen.add(p);
+      out.push({ path: p, content: String(row["content"] ?? "") });
+    }
+    return out;
+  };
+
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const vecLit = serializeFloat4Array(queryEmbedding);
+    const semanticLimit = Math.min(limit, Number(process.env.HIVEMIND_SEMANTIC_LIMIT ?? "20"));
+    const lexicalLimit = Math.min(limit, Number(process.env.HIVEMIND_HYBRID_LEXICAL_LIMIT ?? "20"));
+    const filterPatternsForLex = contentScanOnly
+      ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
+      : [escapedPattern];
+    const lexFilter = buildContentFilter("content::text", likeOp, filterPatternsForLex);
+    const lexQuery = lexFilter
+      ? `SELECT doc_id AS path, content::text AS content, 1.0 AS score ` +
+        `FROM "${safeDocsTable}" WHERE 1=1${pathFilter}${active}${lexFilter} LIMIT ${lexicalLimit}`
+      : null;
+    const semQuery =
+      `SELECT doc_id AS path, content::text AS content, (content_embedding <#> ${vecLit}) AS score ` +
+      `FROM "${safeDocsTable}" WHERE ARRAY_LENGTH(content_embedding, 1) > 0${pathFilter}${active} ` +
+      `ORDER BY score DESC LIMIT ${semanticLimit}`;
+    const parts = [semQuery];
+    if (lexQuery) parts.push(lexQuery);
+    const unionSql = parts.map(q => `(${q})`).join(" UNION ALL ");
+    const rows = await query(
+      `SELECT path, content, score FROM (${unionSql}) AS combined ORDER BY score DESC LIMIT ${semanticLimit + lexicalLimit}`,
+    );
+    return dedup(rows);
+  }
+
+  // Lexical-only (no query embedding available — daemon off / disabled).
+  const filterPatterns = contentScanOnly
+    ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
+    : (multiWordPatterns && multiWordPatterns.length > 1 ? multiWordPatterns : [escapedPattern]);
+  const filter = buildContentFilter("content::text", likeOp, filterPatterns);
+  const rows = await query(
+    `SELECT doc_id AS path, content::text AS content ` +
+    `FROM "${safeDocsTable}" WHERE 1=1${pathFilter}${active}${filter} LIMIT ${limit}`,
+  );
+  return dedup(rows);
+}
+
+export function serializeFloat4Array(vec: number[]): string {
   const parts: string[] = [];
   for (const v of vec) {
     if (!Number.isFinite(v)) return "NULL";
@@ -610,10 +723,11 @@ export async function grepBothTables(
   targetPath: string,
   queryEmbedding?: number[] | null,
 ): Promise<string[]> {
+  const meta = { truncated: false };
   const rows = await searchDeeplakeTables(api, memoryTable, sessionsTable, {
     ...buildGrepSearchOptions(params, targetPath),
     queryEmbedding,
-  });
+  }, meta);
   // Defensive path dedup — memory and sessions tables use disjoint path
   // prefixes in every schema we ship (/summaries/… vs /sessions/…), so the
   // overlap is theoretical, but we dedupe to match grep-interceptor.ts and
@@ -638,9 +752,26 @@ export async function grepBothTables(
           if (trimmed) lines.push(`${r.path}:${line}`);
         }
       }
-      return lines;
+      return withTruncationNotice(lines, meta.truncated);
     }
   }
 
-  return refineGrepMatches(normalized, params);
+  return withTruncationNotice(refineGrepMatches(normalized, params), meta.truncated);
+}
+
+/**
+ * Append an explicit incomplete-results notice when a per-source row cap was
+ * hit. Emitted even when no lines matched: in regex content-scan mode only the
+ * first `limit` rows are fetched, so an empty refined result on a truncated
+ * fetch means "your match may be in the rows we didn't scan" — NOT a confirmed
+ * zero. Collapsing that back to "(no matches)" would reintroduce the exact
+ * silent failure this change exists to remove.
+ */
+export const TRUNCATION_NOTICE =
+  "[hivemind: results incomplete — a per-source row cap was hit, so more matches " +
+  "likely exist. Narrow the path or use a more specific pattern to see them.]";
+
+export function withTruncationNotice(lines: string[], truncated: boolean): string[] {
+  if (!truncated) return lines;
+  return lines.length > 0 ? [...lines, TRUNCATION_NOTICE] : [TRUNCATION_NOTICE];
 }

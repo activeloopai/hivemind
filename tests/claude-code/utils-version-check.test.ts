@@ -49,10 +49,10 @@ describe("getInstalledVersion — plugin-manifest branch", () => {
   });
 
   it("prefers <bundle>/../<manifestDir>/plugin.json when present", () => {
-    const bundle = join(root, "claude-code", "bundle");
-    mkdirSync(join(root, "claude-code", ".claude-plugin"), { recursive: true });
+    const bundle = join(root, "harnesses", "claude-code", "bundle");
+    mkdirSync(join(root, "harnesses", "claude-code", ".claude-plugin"), { recursive: true });
     mkdirSync(bundle, { recursive: true });
-    writeFileSync(join(root, "claude-code", ".claude-plugin", "plugin.json"),
+    writeFileSync(join(root, "harnesses", "claude-code", ".claude-plugin", "plugin.json"),
       JSON.stringify({ version: "1.2.3" }));
     writeFileSync(join(root, "package.json"),
       JSON.stringify({ name: "@deeplake/hivemind", version: "9.9.9" }));

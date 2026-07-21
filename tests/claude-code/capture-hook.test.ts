@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Direct source-level tests for src/hooks/capture.ts. The module runs
@@ -27,6 +30,8 @@ const ensureSessionOwnerMock = vi.fn();
 const debugLogMock = vi.fn();
 const queryMock = vi.fn();
 const ensureSessionsTableMock = vi.fn();
+const apiCtorMock = vi.fn();
+const appendSessionEventMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: any[]) => loadConfigMock(...a) }));
@@ -48,6 +53,7 @@ vi.mock("../../src/utils/debug.js", () => ({
 }));
 vi.mock("../../src/deeplake-api.js", () => ({
   DeeplakeApi: class {
+    constructor(...args: any[]) { apiCtorMock(...args); }
     query(sql: string) { return queryMock(sql); }
     ensureSessionsTable(t: string) { return ensureSessionsTableMock(t); }
   },
@@ -57,6 +63,9 @@ vi.mock("../../src/embeddings/client.js", () => ({
     embed(_text: string, _kind?: string) { return Promise.resolve(null); }
     warmup() { return Promise.resolve(false); }
   },
+}));
+vi.mock("../../src/hooks/session-event-cache.js", () => ({
+  appendSessionEvent: (...a: any[]) => appendSessionEventMock(...a),
 }));
 
 async function runHook(env: Record<string, string | undefined> = {}): Promise<void> {
@@ -98,6 +107,8 @@ beforeEach(() => {
   debugLogMock.mockReset();
   queryMock.mockReset().mockResolvedValue([]);
   ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
+  apiCtorMock.mockReset();
+  appendSessionEventMock.mockReset();
 });
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -117,6 +128,63 @@ describe("capture hook — guard", () => {
   });
 });
 
+describe("capture hook — per-directory .hivemind", () => {
+  let hmDir: string;
+
+  afterEach(() => {
+    if (hmDir) rmSync(hmDir, { recursive: true, force: true });
+  });
+
+  function withHivemind(body: Record<string, unknown>): void {
+    hmDir = mkdtempSync(join(tmpdir(), "capture-hivemind-"));
+    writeFileSync(join(hmDir, ".hivemind"), JSON.stringify(body));
+    stdinMock.mockResolvedValue({
+      session_id: "sid-1",
+      cwd: hmDir,
+      hook_event_name: "UserPromptSubmit",
+      prompt: "hello",
+    });
+  }
+
+  it("collect:false writes nothing for this directory", async () => {
+    withHivemind({ collect: false });
+    await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(apiCtorMock).not.toHaveBeenCalled();
+  });
+
+  it("a routing .hivemind constructs the API against the routed org/workspace", async () => {
+    withHivemind({ orgId: "routed-org", workspaceId: "routed-ws" });
+    await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    // DeeplakeApi(token, apiUrl, orgId, workspaceId, table)
+    const args = apiCtorMock.mock.calls[0];
+    expect(args[2]).toBe("routed-org");
+    expect(args[3]).toBe("routed-ws");
+  });
+
+  it("env HIVEMIND_ORG_ID overrides the routed org (env > file)", async () => {
+    withHivemind({ orgId: "routed-org", workspaceId: "routed-ws" });
+    loadConfigMock.mockReturnValue({ ...validConfig, orgId: "env-org", orgName: "env-org" });
+    await runHook({ HIVEMIND_ORG_ID: "env-org", HIVEMIND_WORKSPACE_ID: undefined });
+    const args = apiCtorMock.mock.calls[0];
+    expect(args[2]).toBe("env-org"); // env wins for org
+    expect(args[3]).toBe("routed-ws"); // workspace still routes
+  });
+
+  it("resolves against process.cwd() when the hook passes an empty cwd", async () => {
+    // Exercises resolveCaptureConfig's `cwd || process.cwd()` fallback. The
+    // repo root has no `.hivemind`, so capture proceeds against the global org.
+    stdinMock.mockResolvedValue({
+      session_id: "sid-1", cwd: "", hook_event_name: "UserPromptSubmit", prompt: "hello",
+    });
+    await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    // The skip log (if it fired) prints the resolved cwd, never a bare "?".
+    expect(debugLogMock).not.toHaveBeenCalledWith(expect.stringContaining("cwd=? "));
+  });
+});
+
 describe("capture hook — event-type branches", () => {
   it("user_message: INSERT contains prompt content", async () => {
     await runHook();
@@ -126,6 +194,21 @@ describe("capture hook — event-type branches", () => {
     expect(sql).toContain('"type":"user_message"');
     expect(sql).toContain('"content":"hello"');
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringMatching(/^user session=sid-1$/));
+    // The same normalized line is mirrored into the local per-session cache so
+    // the wiki-worker never has to re-`SELECT` the fat message column.
+    expect(appendSessionEventMock).toHaveBeenCalledTimes(1);
+    const [cachedSid, cachedLine] = appendSessionEventMock.mock.calls[0];
+    expect(cachedSid).toBe("sid-1");
+    expect(JSON.parse(cachedLine)).toMatchObject({ type: "user_message", content: "hello" });
+  });
+
+  it("does NOT append to the local cache when the INSERT fails", async () => {
+    // A failed INSERT re-throws before the append — the cache must not diverge
+    // from the DB by recording an event that was never persisted.
+    vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    queryMock.mockReset().mockRejectedValue(new Error("random SQL boom"));
+    await runHook();
+    expect(appendSessionEventMock).not.toHaveBeenCalled();
   });
 
   it("tool_call: INSERT contains tool_name + serialized input/response", async () => {
@@ -147,6 +230,30 @@ describe("capture hook — event-type branches", () => {
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringMatching(/^tool=Bash session=sid-2$/));
   });
 
+  it("tool_call: masks secrets in the tool input/response before insert + embed", async () => {
+    // Split literal so GitHub push protection doesn't flag this fixture.
+    const secretToken = "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const secretPw = "s3cr3tP4ssword";
+    stdinMock.mockResolvedValue({
+      session_id: "sid-secret",
+      cwd: "/p",
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_use_id: "tu-2",
+      tool_input: { command: `git remote set-url origin https://${secretToken}@github.com/o/r` },
+      tool_response: { stdout: `PGPASSWORD=${secretPw} psql -h db` },
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    // Neither the raw token nor the password reaches the stored row...
+    expect(sql).not.toContain(secretToken);
+    expect(sql).not.toContain(secretPw);
+    // ...but the masked, type-hinted form is present. capture.ts derives the
+    // embedding from this same redacted `line`, so the secret is never embedded.
+    expect(sql).toContain("ghp_********");
+    expect(sql).toContain("PGPASSWORD=********");
+  });
+
   it("assistant_message without agent_transcript_path", async () => {
     stdinMock.mockResolvedValue({
       session_id: "sid-3",
@@ -155,6 +262,9 @@ describe("capture hook — event-type branches", () => {
       last_assistant_message: "reply text",
     });
     await runHook();
+    // The Stop path re-reads the (here: absent) transcript across a bounded
+    // backoff before inserting unenriched — wait for the INSERT, not a tick.
+    await vi.waitFor(() => expect(queryMock).toHaveBeenCalled(), { timeout: 2000 });
     const sql = queryMock.mock.calls[0][0] as string;
     expect(sql).toContain('"type":"assistant_message"');
     expect(sql).toContain('"content":"reply text"');
@@ -170,6 +280,7 @@ describe("capture hook — event-type branches", () => {
       agent_transcript_path: "/tmp/agent.jsonl",
     });
     await runHook();
+    await vi.waitFor(() => expect(queryMock).toHaveBeenCalled(), { timeout: 2000 });
     const sql = queryMock.mock.calls[0][0] as string;
     expect(sql).toContain('"agent_transcript_path":"/tmp/agent.jsonl"');
   });

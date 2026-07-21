@@ -15,8 +15,8 @@ import { resolve } from "node:path";
 
 const ROOT = process.cwd();
 const BUNDLES: Array<[string, string]> = [
-  ["claude-code", resolve(ROOT, "claude-code", "bundle", "wiki-worker.js")],
-  ["codex", resolve(ROOT, "codex", "bundle", "wiki-worker.js")],
+  ["claude-code", resolve(ROOT, "harnesses", "claude-code", "bundle", "wiki-worker.js")],
+  ["codex", resolve(ROOT, "harnesses", "codex", "bundle", "wiki-worker.js")],
 ];
 
 for (const [label, path] of BUNDLES) {

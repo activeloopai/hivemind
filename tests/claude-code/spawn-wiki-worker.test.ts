@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 
 import { spawnWikiWorker, bundleDirFromImportMeta, findClaudeBin } from "../../src/hooks/spawn-wiki-worker.js";
@@ -21,6 +22,7 @@ import {
   bundleDirFromImportMeta as hermesBundleDir,
 } from "../../src/hooks/hermes/spawn-wiki-worker.js";
 import type { Config } from "../../src/config.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
  * Per-agent guard for the spawn-wiki-worker helpers.
@@ -56,6 +58,10 @@ vi.mock("node:child_process", async () => {
     // tests rely on real `which` behavior); individual tests override per-call
     // with mock*Once to deterministically hit the resolve/fallback branches.
     execSync: vi.fn((...args: Parameters<typeof actual.execSync>) => actual.execSync(...args)),
+    // find*Bin now delegates to resolveCliBin(), which probes the CLI via
+    // execFileSync("which"/"where", [cli]). Delegate to the real impl by
+    // default; per-agent resolver tests override per-call.
+    execFileSync: vi.fn((...args: Parameters<typeof actual.execFileSync>) => actual.execFileSync(...args)),
     spawn: vi.fn((cmd: string, args: readonly string[]) => {
       spawnCalls.push({ cmd, args });
       // Match the surface the production code touches: a child object with
@@ -81,12 +87,11 @@ beforeEach(() => {
   fakeHome = join(scratchRoot, "home");
   mkdirSync(fakeHome, { recursive: true });
   originalHome = process.env.HOME;
-  process.env.HOME = fakeHome;
+  setFakeHome(fakeHome);
 });
 
 afterEach(() => {
-  if (originalHome === undefined) delete process.env.HOME;
-  else process.env.HOME = originalHome;
+  clearFakeHome();
   rmSync(scratchRoot, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
@@ -124,6 +129,7 @@ function fakeConfig(): Config {
     rulesTableName: "hivemind_rules",
     goalsTableName: "hivemind_goals",
     kpisTableName: "hivemind_kpis",
+    docsTableName: "hivemind_docs",
     codebaseTableName: "codebase",
     memoryPath: "/tmp/fake-memory",
   };
@@ -266,14 +272,22 @@ describe("bundleDirFromImportMeta", () => {
   // Each agent ships its own copy of this helper; assert every copy resolves
   // the parent dir of the entry module (mirrors how each hook bootstrap calls
   // it) so no copy drifts or goes uncovered.
-  const fakeUrl = "file:///path/to/some/bundle/capture.js";
+  //
+  // `fileURLToPath` requires a platform-ABSOLUTE path: a POSIX-rooted URL
+  // (`file:///path/...`) throws "File URL path must be absolute" on Windows,
+  // which needs a drive letter (`file:///C:/path/...`). Build the fixture URL
+  // + expected dir from `pathToFileURL` on a real absolute path so the test
+  // is correct on every OS without asserting against a hardcoded string.
+  const isWin = process.platform === "win32";
+  const absDir = isWin ? "C:\\path\\to\\some\\bundle" : "/path/to/some/bundle";
+  const fakeUrl = pathToFileURL(join(absDir, "capture.js")).href;
   it.each([
     ["claude", bundleDirFromImportMeta],
     ["codex", codexBundleDir],
     ["cursor", cursorBundleDir],
     ["hermes", hermesBundleDir],
   ])("%s: returns the directory containing the entry module", (_agent, fn) => {
-    expect(fn(fakeUrl)).toBe("/path/to/some/bundle");
+    expect(fn(fakeUrl)).toBe(absDir);
   });
 });
 
@@ -291,38 +305,39 @@ describe("findClaudeBin", () => {
 });
 
 describe("per-agent bin resolvers", () => {
-  // Each agent has its own find<Agent>Bin that probes `which <cli>` and falls
-  // back to the literal CLI name. Both branches are covered deterministically
-  // by overriding execSync per-call (success → resolved path; throw → literal
-  // fallback), independent of whether the CLI exists in the test environment.
-  // [agent, resolver, literal-fallback, expected `which` command] — the last
-  // column pins each resolver to the RIGHT CLI name so a copy probing the
-  // wrong binary (e.g. cursor probing `which codex`) is caught.
+  // Each agent's find<Agent>Bin now delegates to resolveCliBin(cli, fallback),
+  // which probes the CLI cross-platform via execFileSync("which"/"where", [cli])
+  // — `which` on the (Linux) test host — and falls back to the literal CLI name.
+  // [agent, resolver, literal-fallback, expected cli arg] — the last column
+  // pins each resolver to the RIGHT CLI name so a copy probing the wrong binary
+  // (e.g. cursor probing `codex`) is caught.
   const RESOLVERS: Array<[string, () => string, string, string]> = [
-    ["codex", findCodexBin, "codex", "which codex 2>/dev/null"],
-    ["cursor", findCursorBin, "cursor-agent", "which cursor-agent 2>/dev/null"],
-    ["hermes", findHermesBin, "hermes", "which hermes 2>/dev/null"],
+    ["codex", findCodexBin, "codex", "codex"],
+    ["cursor", findCursorBin, "cursor-agent", "cursor-agent"],
+    ["hermes", findHermesBin, "hermes", "hermes"],
   ];
 
-  it.each(RESOLVERS)("find%sBin returns the resolved path when `which` succeeds", (_n, fn, _fallback, whichCmd) => {
-    vi.mocked(execSync).mockReturnValueOnce("/usr/local/bin/the-cli\n");
+  // resolveCliBin probes the PATH with the platform-native lookup command:
+  // `which` on POSIX, `where` on Windows. The mock returns the same canned
+  // path regardless, so only the asserted command name is platform-dependent.
+  const lookupCmd = process.platform === "win32" ? "where" : "which";
+
+  it.each(RESOLVERS)("find%sBin returns the resolved path when the lookup succeeds", (_n, fn, _fallback, cli) => {
+    vi.mocked(execFileSync).mockReturnValueOnce("/usr/local/bin/the-cli\n");
     expect(fn()).toBe("/usr/local/bin/the-cli");
-    expect(execSync).toHaveBeenCalledWith(whichCmd, { encoding: "utf-8" });
+    expect(execFileSync).toHaveBeenCalledWith(lookupCmd, [cli], { encoding: "utf-8" });
   });
 
-  it.each(RESOLVERS)("find%sBin falls back to the literal name when `which` fails", (_n, fn, fallback, whichCmd) => {
-    vi.mocked(execSync).mockImplementationOnce(() => { throw new Error("not found"); });
+  it.each(RESOLVERS)("find%sBin falls back to the literal name when the lookup fails", (_n, fn, fallback, cli) => {
+    vi.mocked(execFileSync).mockImplementationOnce(() => { throw new Error("not found"); });
     expect(fn()).toBe(fallback);
-    expect(execSync).toHaveBeenCalledWith(whichCmd, { encoding: "utf-8" });
+    expect(execFileSync).toHaveBeenCalledWith(lookupCmd, [cli], { encoding: "utf-8" });
   });
 
-  // cursor/hermes additionally guard `.trim() || "<literal>"` — a successful
-  // `which` that prints nothing must still resolve to the literal name (codex
-  // has no such `||` and is covered by the two cases above).
-  it.each(RESOLVERS.filter(([n]) => n !== "codex"))(
-    "find%sBin falls back to the literal name when `which` prints empty output",
+  it.each(RESOLVERS)(
+    "find%sBin falls back to the literal name when the lookup prints no matches",
     (_n, fn, fallback) => {
-      vi.mocked(execSync).mockReturnValueOnce("  \n");
+      vi.mocked(execFileSync).mockReturnValueOnce("  \n");
       expect(fn()).toBe(fallback);
     },
   );

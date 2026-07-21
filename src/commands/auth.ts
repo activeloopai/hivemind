@@ -91,13 +91,33 @@ async function apiDelete(path: string, token: string, apiUrl: string, orgId?: st
 
 // ── Device Flow ──────────────────────────────────────────────────────────────
 
-export async function requestDeviceCode(apiUrl = DEFAULT_API_URL): Promise<DeviceCodeResponse> {
+// Returns `{ "X-Hivemind-Referrer": "<code>" }` for spreading into a headers
+// object, or `{}` when there is no referral. The backend parks this code against
+// the device flow and attributes the signup if a NEW user registers. Trimmed
+// here; the backend lowercases + validates against its affiliate registry.
+export function hivemindReferrerHeader(ref?: string): Record<string, string> {
+  const code = ref?.trim();
+  if (!code) return {};
+  return { "X-Hivemind-Referrer": code };
+}
+
+// Tags the signup with the product entry point. The backend reads
+// X-Deeplake-Signup-Flow at user creation (first-write-wins) and persists it on
+// users.signup_flow, driving per-flow onboarding (the CLI signup plan step) and
+// attribution. Always "hivemind" for this CLI.
+export function signupFlowHeader(): Record<string, string> {
+  return { "X-Deeplake-Signup-Flow": "hivemind" };
+}
+
+export async function requestDeviceCode(apiUrl = DEFAULT_API_URL, ref?: string): Promise<DeviceCodeResponse> {
   const resp = await fetch(`${apiUrl}/auth/device/code`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...deeplakeClientHeader(),
       ...hivemindInstallIDHeader(),
+      ...hivemindReferrerHeader(ref),
+      ...signupFlowHeader(),
     },
   });
   if (!resp.ok) throw new Error(`Device flow unavailable: HTTP ${resp.status}`);
@@ -111,6 +131,10 @@ export async function pollForToken(deviceCode: string, apiUrl = DEFAULT_API_URL)
       "Content-Type": "application/json",
       ...deeplakeClientHeader(),
       ...hivemindInstallIDHeader(),
+      // The backend resolves/creates the user on this poll (trackDeviceFlowAuth),
+      // so the flow header must ride along here too — the /auth/device/code
+      // request alone no longer parks it (signup_flow_pending was dropped).
+      ...signupFlowHeader(),
     },
     body: JSON.stringify({ device_code: deviceCode }),
   });
@@ -136,8 +160,8 @@ function openBrowser(url: string): boolean {
   }
 }
 
-export async function deviceFlowLogin(apiUrl = DEFAULT_API_URL): Promise<{ token: string; expiresIn: number }> {
-  const code = await requestDeviceCode(apiUrl);
+export async function deviceFlowLogin(apiUrl = DEFAULT_API_URL, ref?: string): Promise<{ token: string; expiresIn: number }> {
+  const code = await requestDeviceCode(apiUrl, ref);
 
   const opened = openBrowser(code.verification_uri_complete);
   const msg = [
@@ -415,7 +439,7 @@ export async function saveCredentialsFromToken(
   return creds;
 }
 
-export async function login(apiUrl = DEFAULT_API_URL): Promise<Credentials> {
-  const { token: authToken } = await deviceFlowLogin(apiUrl);
+export async function login(apiUrl = DEFAULT_API_URL, ref?: string): Promise<Credentials> {
+  const { token: authToken } = await deviceFlowLogin(apiUrl, ref);
   return saveCredentialsFromToken(authToken, apiUrl, { skipTokenMint: false });
 }

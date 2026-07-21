@@ -47,7 +47,8 @@ function workTreeIdFor(cwd: string): string {
   return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
 }
 
-import { loadConfig, type Config } from "../config.js";
+import { type Config } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
@@ -95,7 +96,9 @@ export async function pullSnapshot(
   if (process.env.HIVEMIND_GRAPH_PULL === "0") {
     return { kind: "skipped-disabled" };
   }
-  const config = (deps.loadConfig ?? loadConfig)();
+  // Route by the caller's cwd so a pull lands from the same `.hivemind`
+  // workspace the graph was pushed to (deeplake-push routes identically).
+  const config = (deps.loadConfig ?? (() => loadRoutedConfig(cwd)))();
   if (config === null) {
     return { kind: "skipped-no-auth" };
   }

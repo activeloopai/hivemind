@@ -113,6 +113,37 @@ describe("graph-on-stop main()", () => {
     }
   });
 
+  it("injected runBuildCommand that rejects with ERR_MODULE_NOT_FOUND (tree-sitter missing) → lock released, error logged, main() resolves", async () => {
+    // Simulates the codex/cursor case where the tree-sitter native extractor
+    // is not installed: the lazy `import("../commands/graph.js")` rejects.
+    // main() must swallow it (log + release lock + resolve) so the Stop hook
+    // exits 0 instead of crashing with a non-zero code.
+    const acquire = vi.fn(() => ({ acquired: true, reason: "acquired" }));
+    const release = vi.fn();
+    const run = vi.fn(async () => {
+      const err = new Error("Cannot find package 'tree-sitter'");
+      (err as NodeJS.ErrnoException).code = "ERR_MODULE_NOT_FOUND";
+      throw err;
+    });
+    await expect(
+      main({
+        decideGate: () => ({ fire: true, reason: "test-fire" }),
+        acquireBuildLock: acquire,
+        releaseBuildLock: release,
+        runBuildCommand: run,
+      }),
+    ).resolves.toBeUndefined();
+    expect(release).toHaveBeenCalledTimes(1);
+    // Logging is part of this regression's contract (the operator's only trace
+    // that the build was skipped), so assert it unconditionally with the
+    // specific message rather than guarding on the file's existence.
+    const log = join(baseDir, ".graph-on-stop.log");
+    expect(existsSync(log)).toBe(true);
+    expect(readFileSync(log, "utf8")).toContain(
+      "build threw: Cannot find package 'tree-sitter'",
+    );
+  });
+
   it("decideGate throws → early return, no lock attempt, error logged", async () => {
     const acquire = vi.fn();
     const release = vi.fn();

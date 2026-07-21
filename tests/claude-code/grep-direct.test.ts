@@ -15,6 +15,7 @@ vi.mock("../../src/embeddings/client.js", () => ({
 }));
 
 import { parseBashGrep, handleGrepDirect, type GrepParams } from "../../src/hooks/grep-direct.js";
+import { TRUNCATION_NOTICE } from "../../src/shell/grep-core.js";
 
 describe("handleGrepDirect", () => {
   const baseParams: GrepParams = {
@@ -65,6 +66,76 @@ describe("handleGrepDirect", () => {
     await handleGrepDirect(api, "memory", "sessions", { ...baseParams, ignoreCase: true });
     const sql = api.query.mock.calls[0][0] as string;
     expect(sql).toContain("ILIKE");
+  });
+});
+
+// ── Honest failure signaling: backend errors propagate (do NOT become empty) ─
+//
+// The core defect behind "hivemind search is silently broken": a backend
+// failure must never read as a genuine zero-match. The fast path intentionally
+// lets the error throw — the pre-tool-use hook's outer catch then falls back to
+// the sandboxed VFS shell (deeplake-shell.js), whose grep-interceptor signals a
+// true backend failure as grep exit-code 2 + stderr (see grep-interceptor.test).
+// What must NOT happen here is the error being swallowed into "(no matches)".
+describe("handleGrepDirect: backend errors are not swallowed", () => {
+  const baseParams: GrepParams = {
+    pattern: "foo", targetPath: "/",
+    ignoreCase: false, wordMatch: false, filesOnly: false, countOnly: false,
+    lineNumber: false, invertMatch: false, fixedString: false,
+  };
+
+  it("propagates the backend error instead of returning '(no matches)'", async () => {
+    const api = { query: vi.fn().mockRejectedValue(new Error("deeplake 500")) } as any;
+    await expect(
+      handleGrepDirect(api, "memory", "sessions", baseParams),
+    ).rejects.toThrow(/500/);
+  });
+});
+
+// ── Truncation signaling ────────────────────────────────────────────────────
+//
+// Each table is fetched with a per-source LIMIT (100). When that cap is hit,
+// matches beyond it are dropped with no signal — so an incomplete result reads
+// to the agent as the complete set. (The regex-only content scan is the worst
+// case: it fetches up to 100 *unordered* rows and regexes them in-memory.)
+// Best practice: never silently truncate — tell the caller the result may be
+// incomplete so it can refine the pattern or narrow the path.
+describe("handleGrepDirect: truncation signaling", () => {
+  const baseParams: GrepParams = {
+    pattern: "foo", targetPath: "/",
+    ignoreCase: false, wordMatch: false, filesOnly: false, countOnly: false,
+    lineNumber: false, invertMatch: false, fixedString: false,
+  };
+  function mockApi(rows: unknown[]) {
+    return { query: vi.fn().mockImplementationOnce(async () => rows) } as any;
+  }
+
+  it("appends the exact incomplete-results notice when a source hits the row cap", async () => {
+    const rows = Array.from({ length: 100 }, (_, i) => ({
+      path: `/summaries/s${i}.md`, content: "foo match", source_order: 0,
+    }));
+    const api = { query: vi.fn().mockResolvedValueOnce(rows) } as any;
+    const r = await handleGrepDirect(api, "memory", "sessions", baseParams);
+    expect(r).toContain(TRUNCATION_NOTICE);
+  });
+
+  it("emits the notice (not '(no matches)') when a truncated scan matched nothing in-window", async () => {
+    // Regex content-scan mode: 100 rows fetched (cap hit, truncated) but none
+    // match the in-memory regex — the real hit may be in rows we didn't scan.
+    // This must NOT read as a confirmed zero-match.
+    const rows = Array.from({ length: 100 }, (_, i) => ({
+      path: `/summaries/s${i}.md`, content: "unrelated body", source_order: 0,
+    }));
+    const api = { query: vi.fn().mockResolvedValueOnce(rows) } as any;
+    const r = await handleGrepDirect(api, "memory", "sessions", { ...baseParams, pattern: "ne+dle" });
+    expect(r).toBe(TRUNCATION_NOTICE);
+    expect(r).not.toBe("(no matches)");
+  });
+
+  it("does NOT add the notice for a normal, fully-returned result", async () => {
+    const api = mockApi([{ path: "/summaries/a.md", content: "foo line", source_order: 0 }]);
+    const r = await handleGrepDirect(api, "memory", "sessions", baseParams);
+    expect(r).not.toContain(TRUNCATION_NOTICE);
   });
 });
 

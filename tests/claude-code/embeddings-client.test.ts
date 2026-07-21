@@ -62,7 +62,13 @@ async function startFakeDaemon(dir: string, handler: (req: DaemonRequest) => Dae
 }
 
 describe("EmbedClient", () => {
-  it("returns the embedding vector when the daemon responds", async () => {
+  // Unix-domain-socket IPC: the embed daemon (real or fake) listens on a /tmp
+  // socket path; the client connects/spawns over it. Windows can't bind or
+  // connect a Unix-domain socket (needs named pipes), so these time out. Pure
+  // construction tests below (no socket I/O) stay unguarded.
+  const itNix = it.skipIf(process.platform === "win32");
+
+  itNix("returns the embedding vector when the daemon responds", async () => {
     const dir = makeTmpDir();
     await startFakeDaemon(dir, (req) => {
       if (req.op === "embed") return { id: req.id, embedding: [0.1, 0.2, 0.3] };
@@ -78,7 +84,7 @@ describe("EmbedClient", () => {
     expect(vec).toEqual([0.1, 0.2, 0.3]);
   });
 
-  it("returns null when the daemon returns an error", async () => {
+  itNix("returns null when the daemon returns an error", async () => {
     const dir = makeTmpDir();
     await startFakeDaemon(dir, (req) => ({ id: req.id, error: "boom" }));
     const client = new EmbedClient({ socketDir: dir, timeoutMs: 500, autoSpawn: false });
@@ -86,14 +92,14 @@ describe("EmbedClient", () => {
     expect(vec).toBeNull();
   });
 
-  it("returns null when no daemon is running and autoSpawn is disabled", async () => {
+  itNix("returns null when no daemon is running and autoSpawn is disabled", async () => {
     const dir = makeTmpDir();
     const client = new EmbedClient({ socketDir: dir, timeoutMs: 100, autoSpawn: false });
     const vec = await client.embed("hello");
     expect(vec).toBeNull();
   });
 
-  it("does not create a duplicate pidfile under concurrent first-call race", async () => {
+  itNix("does not create a duplicate pidfile under concurrent first-call race", async () => {
     const dir = makeTmpDir();
     const client1 = new EmbedClient({
       socketDir: dir,
@@ -120,7 +126,7 @@ describe("EmbedClient", () => {
     expect(existsSync(join(dir, `hivemind-embed-${uid}.pid`))).toBe(false);
   });
 
-  it("round-trips multiple requests on the same client without leaking sockets", async () => {
+  itNix("round-trips multiple requests on the same client without leaking sockets", async () => {
     const dir = makeTmpDir();
     await startFakeDaemon(dir, (req) => ({ id: req.id, embedding: [Math.random()] }));
     const client = new EmbedClient({ socketDir: dir, timeoutMs: 500, autoSpawn: false });
@@ -132,7 +138,7 @@ describe("EmbedClient", () => {
     expect(results.every((r) => r !== null && r.length === 1)).toBe(true);
   });
 
-  it("warmup() returns true when the daemon is already listening", async () => {
+  itNix("warmup() returns true when the daemon is already listening", async () => {
     const dir = makeTmpDir();
     await startFakeDaemon(dir, (req) => ({ id: req.id, ready: true }));
     const client = new EmbedClient({ socketDir: dir, timeoutMs: 500, autoSpawn: false });
@@ -140,14 +146,14 @@ describe("EmbedClient", () => {
     expect(ok).toBe(true);
   });
 
-  it("warmup() returns false when no daemon and autoSpawn is disabled", async () => {
+  itNix("warmup() returns false when no daemon and autoSpawn is disabled", async () => {
     const dir = makeTmpDir();
     const client = new EmbedClient({ socketDir: dir, timeoutMs: 100, autoSpawn: false });
     const ok = await client.warmup();
     expect(ok).toBe(false);
   });
 
-  it("warmup() returns false when autoSpawn is on but entry cannot be launched", async () => {
+  itNix("warmup() returns false when autoSpawn is on but entry cannot be launched", async () => {
     const dir = makeTmpDir();
     const client = new EmbedClient({
       socketDir: dir,
@@ -160,7 +166,7 @@ describe("EmbedClient", () => {
     expect(ok).toBe(false);
   });
 
-  it("cleans up a stale pidfile (dead PID) before trying to spawn", async () => {
+  itNix("cleans up a stale pidfile (dead PID) before trying to spawn", async () => {
     const dir = makeTmpDir();
     const uid = String(process.getuid?.() ?? "test");
     const pidPath = join(dir, `hivemind-embed-${uid}.pid`);
@@ -179,7 +185,7 @@ describe("EmbedClient", () => {
     expect(existsSync(pidPath)).toBe(false);
   });
 
-  it("leaves an alive-PID pidfile alone (treats the daemon as still starting)", async () => {
+  itNix("leaves an alive-PID pidfile alone (treats the daemon as still starting)", async () => {
     const dir = makeTmpDir();
     const uid = String(process.getuid?.() ?? "test");
     const pidPath = join(dir, `hivemind-embed-${uid}.pid`);
@@ -198,7 +204,7 @@ describe("EmbedClient", () => {
     expect(existsSync(pidPath)).toBe(true);
   });
 
-  it("treats a garbage pidfile as stale and removes it", async () => {
+  itNix("treats a garbage pidfile as stale and removes it", async () => {
     const dir = makeTmpDir();
     const uid = String(process.getuid?.() ?? "test");
     const pidPath = join(dir, `hivemind-embed-${uid}.pid`);
@@ -215,7 +221,7 @@ describe("EmbedClient", () => {
     expect(existsSync(pidPath)).toBe(false);
   });
 
-  it("returns null when the socket closes mid-request", async () => {
+  itNix("returns null when the socket closes mid-request", async () => {
     const dir = makeTmpDir();
     const uid = String(process.getuid?.() ?? "test");
     const sockPath = join(dir, `hivemind-embed-${uid}.sock`);
@@ -231,7 +237,7 @@ describe("EmbedClient", () => {
     expect(vec).toBeNull();
   });
 
-  it("returns null when the daemon writes malformed JSON", async () => {
+  itNix("returns null when the daemon writes malformed JSON", async () => {
     const dir = makeTmpDir();
     const uid = String(process.getuid?.() ?? "test");
     const sockPath = join(dir, `hivemind-embed-${uid}.sock`);
@@ -249,7 +255,7 @@ describe("EmbedClient", () => {
     expect(vec).toBeNull();
   });
 
-  it("returns null on request timeout (daemon accepts but never replies)", async () => {
+  itNix("returns null on request timeout (daemon accepts but never replies)", async () => {
     const dir = makeTmpDir();
     const uid = String(process.getuid?.() ?? "test");
     const sockPath = join(dir, `hivemind-embed-${uid}.sock`);
@@ -264,7 +270,7 @@ describe("EmbedClient", () => {
     expect(vec).toBeNull();
   });
 
-  it("returns null fast when the daemon FINs without sending a response (half-close)", async () => {
+  itNix("returns null fast when the daemon FINs without sending a response (half-close)", async () => {
     // Regression guard for the PR review fix: before the `end` handler in
     // sendAndWait, this scenario would block until the configured timeoutMs
     // (10 minutes by default). Now the client must reject immediately on
@@ -302,7 +308,7 @@ describe("EmbedClient", () => {
     expect(c).toBeInstanceOf(EmbedClient);
   });
 
-  it("defaults the embed 'kind' argument to document when omitted", async () => {
+  itNix("defaults the embed 'kind' argument to document when omitted", async () => {
     const dir = makeTmpDir();
     const kinds: string[] = [];
     await startFakeDaemon(dir, (req) => {
@@ -327,7 +333,7 @@ describe("EmbedClient", () => {
     }
   });
 
-  it("warmup() succeeds after auto-spawning a fake daemon entry", async () => {
+  itNix("warmup() succeeds after auto-spawning a fake daemon entry", async () => {
     const dir = makeTmpDir();
     const uid = String(process.getuid?.() ?? "test");
     const sockPath = join(dir, `hivemind-embed-${uid}.sock`);
@@ -408,7 +414,10 @@ describe("isTransformersMissingError", () => {
   });
 });
 
-describe("EmbedClient — transformers-missing handling (silent — no user banner)", () => {
+// Unix-domain-socket IPC: every test here spins up a fake daemon on a /tmp
+// socket and drives the client over it. Windows can't bind/connect a
+// Unix-domain socket, so the suite is skipped.
+describe.skipIf(process.platform === "win32")("EmbedClient — transformers-missing handling (silent — no user banner)", () => {
   // Previously this path enqueued a "Hivemind embeddings disabled — deps
   // missing" notification telling the user to run `hivemind embeddings
   // install`. The notification was removed; the recycle-stuck-daemon
@@ -478,7 +487,10 @@ describe("EmbedClient — transformers-missing handling (silent — no user bann
   });
 });
 
-describe("EmbedClient — hello handshake / stuck daemon recycle", () => {
+// Unix-domain-socket IPC: every test here spins up a fake daemon on a /tmp
+// socket and drives the hello/recycle handshake over it. Windows can't
+// bind/connect a Unix-domain socket, so the suite is skipped.
+describe.skipIf(process.platform === "win32")("EmbedClient — hello handshake / stuck daemon recycle", () => {
   beforeEach(() => {
     enqueueNotificationMock.mockReset();
     _resetClientStateForTesting();

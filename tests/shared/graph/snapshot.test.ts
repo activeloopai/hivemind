@@ -89,7 +89,7 @@ describe("graphsRoot / repoDir", () => {
     const prev = process.env.HIVEMIND_GRAPHS_HOME;
     process.env.HIVEMIND_GRAPHS_HOME = "/tmp/x";
     try {
-      expect(repoDir("abc")).toBe("/tmp/x/abc");
+      expect(repoDir("abc")).toBe(join("/tmp/x", "abc"));
     } finally {
       if (prev === undefined) delete process.env.HIVEMIND_GRAPHS_HOME;
       else process.env.HIVEMIND_GRAPHS_HOME = prev;

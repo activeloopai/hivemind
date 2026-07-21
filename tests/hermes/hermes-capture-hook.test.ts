@@ -15,6 +15,7 @@ const debugLogMock = vi.fn();
 const queryMock = vi.fn();
 const ensureSessionsTableMock = vi.fn();
 const buildSessionPathMock = vi.fn();
+const appendSessionEventMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: unknown[]) => stdinMock(...a) }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: unknown[]) => loadConfigMock(...a) }));
@@ -33,6 +34,9 @@ vi.mock("../../src/embeddings/client.js", () => ({
 }));
 vi.mock("../../src/utils/session-path.js", () => ({
   buildSessionPath: (...a: unknown[]) => buildSessionPathMock(...a),
+}));
+vi.mock("../../src/hooks/session-event-cache.js", () => ({
+  appendSessionEvent: (...a: unknown[]) => appendSessionEventMock(...a),
 }));
 
 const validConfig = {
@@ -77,6 +81,7 @@ beforeEach(() => {
   queryMock.mockReset().mockResolvedValue([]);
   ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
   buildSessionPathMock.mockReset().mockReturnValue("/sessions/alice/foo.jsonl");
+  appendSessionEventMock.mockReset();
 });
 
 afterEach(async () => {
@@ -232,6 +237,24 @@ describe("hermes capture hook — post_llm_call (assistant message)", () => {
     await runHook();
     expect(queryMock).not.toHaveBeenCalled();
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringContaining("no response found"));
+  });
+
+  it("captures model + platform from extra (Hermes nests them there)", async () => {
+    stdinMock.mockResolvedValue({
+      hook_event_name: "post_llm_call",
+      session_id: "sid",
+      extra: { response: "done", model: "hermes-4-405b", platform: "nousresearch" },
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    expect(sql).toContain('"model":"hermes-4-405b"');
+    expect(sql).toContain('"usage_extra":{"platform":"nousresearch"}');
+  });
+
+  it("omits model when extra carries none (no fabrication)", async () => {
+    stdinMock.mockResolvedValue({ hook_event_name: "post_llm_call", session_id: "sid", extra: { response: "done" } });
+    await runHook();
+    expect((queryMock.mock.calls[0][0] as string)).not.toContain('"model"');
   });
 });
 

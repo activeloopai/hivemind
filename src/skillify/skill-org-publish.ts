@@ -33,6 +33,9 @@ export interface CurrentSkillRow {
   trigger: string;
   body: string;
   version: number;
+  /** Original lineage creation time — preserved across version bumps. May be
+   *  "" for legacy rows written before this column carried a value. */
+  createdAt: string;
 }
 
 function asString(v: unknown): string {
@@ -60,7 +63,7 @@ export async function readCurrentSkillRow(
 ): Promise<CurrentSkillRow | null> {
   const rows = await query(
     `SELECT name, author, project, project_key, local_path, install, source_sessions, ` +
-    `source_agent, scope, contributors, description, trigger_text, body, version ` +
+    `source_agent, scope, contributors, description, trigger_text, body, version, created_at ` +
     `FROM "${sqlIdent(skillsTable)}" ` +
     `WHERE name = '${sqlStr(name)}' AND author = '${sqlStr(author)}' ` +
     // version DESC, then created_at DESC as a deterministic tie-breaker — if two workers
@@ -86,6 +89,7 @@ export async function readCurrentSkillRow(
     trigger: asString(r.trigger_text),
     body: asString(r.body),
     version: Number.isFinite(version) && version > 0 ? version : 1,
+    createdAt: asString(r.created_at),
   };
 }
 

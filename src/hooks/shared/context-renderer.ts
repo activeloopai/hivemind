@@ -16,7 +16,7 @@
  *   - Per-agent forks differ only in how they wrap the surrounding
  *     context (stdin shape, output envelope, agent-specific log lines).
  *     The rules / goals rendering is invariant.
- *   - `hivemind context` CLI for pi/openclaw calls the same renderer
+ *   - `hivemind context` CLI for harnesses/pi/openclaw calls the same renderer
  *     to print the block on demand — same output as SessionStart,
  *     deterministically.
  *

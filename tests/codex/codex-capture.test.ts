@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { sqlStr } from "../../src/utils/sql.js";
 
-// ── buildSessionPath (mirrors codex/capture.ts and codex/stop.ts) ────────────
+// ── buildSessionPath (mirrors harnesses/codex/capture.ts and harnesses/codex/stop.ts) ────────────
 
 function buildSessionPath(config: { userName: string; orgName: string; workspaceId: string }, sessionId: string): string {
   return `/sessions/${config.userName}/${config.userName}_${config.orgName}_${config.workspaceId}_${sessionId}.jsonl`;

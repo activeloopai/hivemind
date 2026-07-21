@@ -6,6 +6,7 @@ import {
   getOrCreateInstallID,
   hivemindInstallIDHeader,
 } from "../../src/commands/install-id.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
  * Source-level tests for src/commands/install-id.ts.
@@ -27,11 +28,11 @@ function installIDFile(): string {
 beforeEach(() => {
   TEMP_HOME = mkdtempSync(join(tmpdir(), "hivemind-install-id-test-"));
   ORIGINAL_HOME = process.env.HOME;
-  process.env.HOME = TEMP_HOME;
+  setFakeHome(TEMP_HOME);
 });
 
 afterEach(() => {
-  process.env.HOME = ORIGINAL_HOME;
+  clearFakeHome();
   rmSync(TEMP_HOME, { recursive: true, force: true });
 });
 

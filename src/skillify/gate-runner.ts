@@ -23,8 +23,8 @@ import { createRequire } from "node:module";
 // the gate prompt, but the literal symbol name `execFileSync` paired with
 // a `child_process` import would trip ClawHub's per-bundle static scanner
 // (`dangerous-exec`) when this module is bundled into
-// `openclaw/dist/skillify-worker.js`. Mirrors the same `createRequire`-
-// based bypass used by `openclaw/src/index.ts:78-80` for `spawn`. The
+// `harnesses/openclaw/dist/skillify-worker.js`. Mirrors the same `createRequire`-
+// based bypass used by `harnesses/openclaw/src/index.ts:78-80` for `spawn`. The
 // scanner's regex `\bexecFileSync\s*\(` doesn't match the renamed
 // identifier, and esbuild can't statically intercept `require()` returned
 // from `createRequire`.
@@ -76,7 +76,7 @@ export interface GateRunResult {
  * install locations, in priority order, until one exists on disk.
  *
  * Why no `which` / no PATH walk: this module is bundled into the openclaw
- * skillify-worker (`openclaw/dist/skillify-worker.js`), which ClawHub
+ * skillify-worker (`harnesses/openclaw/dist/skillify-worker.js`), which ClawHub
  * scans per-file at publish time. Both `child_process.execFileSync`
  * (`dangerous-exec`) and `process.env.PATH` reads (`env-harvesting`)
  * trip critical rules because the worker also `fetch()`-es Deeplake. So
@@ -146,7 +146,7 @@ export function findAgentBin(agent: Agent): string {
   }
 }
 
-function buildArgs(agent: Agent, prompt: string, opts: GateRunOptions): string[] {
+export function buildArgs(agent: Agent, prompt: string, opts: GateRunOptions): string[] {
   switch (agent) {
     case "claude_code":
       return [

@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
 import { mkdirSync, writeFileSync } from "node:fs";
+import { deriveProjectKey } from "../utils/repo-identity.js";
 import { homedir } from "node:os";
 import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
+import { resolveDirConfig } from "../dir-config.js";
 import { armSkillOptOnSkillUse } from "./shared/skillopt-hook.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlLike } from "../utils/sql.js";
@@ -13,6 +15,10 @@ import { log as _log } from "../utils/debug.js";
 import { isDirectRun } from "../utils/direct-run.js";
 import { type GrepParams, parseBashGrep, handleGrepDirect } from "./grep-direct.js";
 import { handleGraphVfs } from "../graph/vfs-handler.js";
+import { handleDocsVfs } from "../docs/vfs-handler.js";
+import { makeQueryEmbedder } from "../docs/embed.js";
+import { defaultGit } from "../docs/candidates.js";
+import { currentScope } from "../docs/branch-scope.js";
 import { executeCompiledBashCommand } from "./bash-command-compiler.js";
 import {
   findVirtualPaths,
@@ -24,7 +30,7 @@ import {
   readCachedIndexContent,
   writeCachedIndexContent,
 } from "./query-cache.js";
-import { isSafe, touchesMemory, rewritePaths } from "./memory-path-utils.js";
+import { isSafe, touchesMemory, rewritePaths, bashTouchesMemory } from "./memory-path-utils.js";
 import { capOutputForClaude } from "../utils/output-cap.js";
 import { ensureSessionOwner } from "./summary-state.js";
 
@@ -35,6 +41,8 @@ const log = (msg: string) => _log("pre", msg);
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
 
 export interface PreToolUseInput {
+  /** Session working directory (present in the hook payload). */
+  cwd?: string;
   session_id: string;
   tool_name: string;
   tool_input: Record<string, unknown>;
@@ -174,7 +182,7 @@ export function getShellCommand(toolName: string, toolInput: Record<string, unkn
     }
     case "Bash": {
       const cmd = toolInput.command as string | undefined;
-      if (!cmd || !touchesMemory(cmd)) break;
+      if (!cmd || !bashTouchesMemory(cmd)) break;
       const rewritten = rewritePaths(cmd);
       if (!isSafe(rewritten)) {
         log(`unsafe command blocked: ${rewritten}`);
@@ -246,6 +254,7 @@ interface ClaudePreToolDeps {
   executeCompiledBashCommandFn?: typeof executeCompiledBashCommand;
   handleGrepDirectFn?: typeof handleGrepDirect;
   handleGraphVfsFn?: typeof handleGraphVfs;
+  handleDocsVfsFn?: typeof handleDocsVfs;
   readVirtualPathContentsFn?: typeof readVirtualPathContents;
   readVirtualPathContentFn?: typeof readVirtualPathContent;
   listVirtualPathRowsFn?: typeof listVirtualPathRows;
@@ -258,7 +267,7 @@ interface ClaudePreToolDeps {
 
 export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreToolDeps = {}): Promise<ClaudePreToolDecision | null> {
   const {
-    config = loadConfig(),
+    config: baseConfig = loadConfig(),
     createApi = (table, activeConfig) => new DeeplakeApi(
       activeConfig.token,
       activeConfig.apiUrl,
@@ -269,6 +278,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     executeCompiledBashCommandFn = executeCompiledBashCommand,
     handleGrepDirectFn = handleGrepDirect,
     handleGraphVfsFn = handleGraphVfs,
+    handleDocsVfsFn = handleDocsVfs,
     readVirtualPathContentsFn = readVirtualPathContents,
     readVirtualPathContentFn = readVirtualPathContent,
     listVirtualPathRowsFn = listVirtualPathRows,
@@ -297,7 +307,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     return buildDenyDecision(WRITE_EDIT_DENY_REASON, `[DeepLake] ${input.tool_name} denied on memory path`);
   }
 
-  if (!shellCmd && (touchesMemory(cmd) || touchesMemory(toolPath))) {
+  if (!shellCmd && (bashTouchesMemory(cmd) || touchesMemory(toolPath))) {
     // Unsupported/unsafe command targeting memory (interpreter, $(), pipes,
     // chains, …). Do NOT rewrite it to a host `cat`: that decision runs on the
     // real filesystem, not the VFS, so `python3 ~/.deeplake/memory/../../etc/passwd`
@@ -313,7 +323,13 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
   // unreachable. Do NOT return null here — that hands the original command to
   // the host shell. Return the retry guidance instead so the command never
   // touches the real filesystem.
-  if (!config) return buildRetryGuidanceDecision(input.tool_name);
+  if (!baseConfig) return buildRetryGuidanceDecision(input.tool_name);
+
+  // Reads are routed by the nearest `.hivemind` exactly like capture is: a
+  // directory pinned to another org/workspace must SEE that workspace's memory,
+  // not the global one. `collect` is a capture switch and deliberately does not
+  // gate reads (see src/dir-config.ts).
+  const config = resolveDirConfig(baseConfig, input.cwd ?? process.cwd()).config;
 
   const table = process.env["HIVEMIND_TABLE"] ?? "memory";
   const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
@@ -446,6 +462,33 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
       return buildAllowDecision(safeEchoCommand(body), `[hivemind graph] ls /graph`);
     }
 
+    // Docs VFS dispatch — the browsable per-directory docs index under
+    // <memory>/docs/. Separate surface from the memory index (no retrieval
+    // pollution). Backed by the docs TABLE, so this is async via api.query.
+    // `/docs` (bare) and `/docs/index.md` both render the root index.
+    if (virtualPath && (virtualPath === "/docs" || virtualPath.startsWith("/docs/")) && !virtualPath.endsWith("/")) {
+      const subpath = virtualPath === "/docs" ? "" : virtualPath.slice("/docs/".length);
+      logFn(`docs vfs: ${subpath || "(root)"}`);
+      const docsCwd = input.cwd ?? process.cwd();
+      const docsGit = defaultGit(docsCwd);
+      const result = await handleDocsVfsFn(subpath, (sql) => api.query(sql), config.docsTableName, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(docsCwd).key, readerScope: currentScope(docsGit), git: docsGit });
+      const body = result.kind === "ok" ? result.body : `(${result.kind}) ${result.message}`;
+      if (input.tool_name === "Read") {
+        const file_path = writeReadCacheFileFn(input.session_id, virtualPath, body);
+        return buildReadDecision(file_path, `[hivemind docs] ${virtualPath}`);
+      }
+      return buildAllowDecision(safeEchoCommand(capOutputForClaude(body, { kind: "docs" })), `[hivemind docs] /docs/${subpath}`);
+    }
+    if (lsDir === "/docs" || lsDir === "/docs/") {
+      const result = await handleDocsVfsFn("", (sql) => api.query(sql), config.docsTableName, { project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+      const body = result.kind === "ok" ? result.body : `(${result.kind}) ${result.message}`;
+      if (input.tool_name === "Read") {
+        const file_path = writeReadCacheFileFn(input.session_id, "/docs/_listing.txt", body);
+        return buildReadDecision(file_path, "[hivemind docs] ls /docs");
+      }
+      return buildAllowDecision(safeEchoCommand(capOutputForClaude(body, { kind: "docs" })), `[hivemind docs] ls /docs`);
+    }
+
     if (virtualPath && !virtualPath.endsWith("/")) {
       logFn(`direct read: ${virtualPath}`);
       let content = virtualPath === "/index.md"
@@ -457,6 +500,13 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
         // `readVirtualPathContents` (fix #1). Other paths fall back to the
         // same helper which returns null when neither table has a row, at
         // which point we let the shell bundle handle the miss below.
+        //
+        // A genuine backend failure now THROWS out of readVirtualPathContent
+        // (it no longer collapses to null → a misleading "No such file"). We
+        // deliberately let that throw propagate to the outer catch, which
+        // falls through to the sandboxed VFS shell (deeplake-shell.js) whose
+        // readFileBuffer re-attempts and surfaces a real error — preserving
+        // the retry instead of short-circuiting it here.
         content = await readVirtualPathContentFn(api, table, sessionsTable, virtualPath);
       }
       if (content !== null) {
@@ -504,6 +554,8 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
     if (lsDir) {
       const dir = lsDir.replace(/\/+$/, "") || "/";
       logFn(`direct ls: ${dir}`);
+      // A backend failure throws here; like the read path, we let it propagate
+      // to the outer catch → VFS shell fallback rather than masking it.
       const rows = await listVirtualPathRowsFn(api, table, sessionsTable, dir);
       const entries = new Map<string, { isDir: boolean; size: number }>();
       const prefix = dir === "/" ? "/" : dir + "/";

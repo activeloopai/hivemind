@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ensureRulesTableMock = vi.fn();
 const queryMock = vi.fn();
+const knownTablesOrNullMock = vi.fn();
 
 vi.mock("../../src/config.js", () => ({
   loadConfig: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock("../../src/deeplake-api.js", () => ({
     ) { /* nothing */ }
     ensureRulesTable(name: string) { return ensureRulesTableMock(name); }
     query(sql: string) { return queryMock(sql); }
+    knownTablesOrNull() { return knownTablesOrNullMock(); }
   },
 }));
 
@@ -62,6 +64,10 @@ beforeEach(() => {
   erred = [];
   ensureRulesTableMock.mockReset().mockResolvedValue(undefined);
   queryMock.mockReset().mockResolvedValue([]);
+  // Default: table-existence lookup is "unknown" (null), so list falls through
+  // to the SELECT-then-catch path — the behavior the existing tests assert.
+  // Tests that exercise the skip-on-missing gate override this per-case.
+  knownTablesOrNullMock.mockReset().mockResolvedValue(null);
   loadConfigMock.mockReset().mockReturnValue(VALID_CONFIG);
   logSpy = vi.spyOn(console, "log").mockImplementation((...a: any[]) => { logged.push(a.join(" ")); });
   errSpy = vi.spyOn(console, "error").mockImplementation((...a: any[]) => { erred.push(a.join(" ")); });
@@ -220,6 +226,37 @@ describe("runRulesCommand — list", () => {
     queryMock.mockResolvedValueOnce([]);
     await runRulesCommand(["list"]);
     expect(logged.some(l => l.includes("(no rules with status=active)"))).toBe(true);
+  });
+
+  it("skips the SELECT and shows empty state when the rules table doesn't exist", async () => {
+    // Regression: an org that has only ever run `rules list` has no
+    // hivemind_rules table. The handler must NOT fire the doomed SELECT —
+    // that logs a 42P01 server-side and can surface to the user as a bare
+    // "fetch failed" through the streaming query path. A table-existence
+    // lookup that returns a list WITHOUT the rules table short-circuits.
+    knownTablesOrNullMock.mockResolvedValueOnce(["memory", "sessions"]);
+    await runRulesCommand(["list"]);
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(logged.some(l => l.includes("(no rules with status=active)"))).toBe(true);
+  });
+
+  it("still SELECTs when the table-existence lookup confirms the table exists", async () => {
+    knownTablesOrNullMock.mockResolvedValueOnce(["memory", "hivemind_rules"]);
+    queryMock.mockResolvedValueOnce([fakeRow()]);
+    await runRulesCommand(["list"]);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(logged.some(l => l.includes("[active]"))).toBe(true);
+  });
+
+  it("falls back to SELECT-then-catch when the table lookup is untrustworthy (null)", async () => {
+    // A transient lookup failure (null) must NOT be read as "no table" —
+    // otherwise a network blip would hide rules that really exist. Fall
+    // through to the SELECT, which here returns a real row.
+    knownTablesOrNullMock.mockResolvedValueOnce(null);
+    queryMock.mockResolvedValueOnce([fakeRow()]);
+    await runRulesCommand(["list"]);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(logged.some(l => l.includes("rule-aaaa-bbbb"))).toBe(true);
   });
 
   it("honors --status done", async () => {

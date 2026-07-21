@@ -1,4 +1,10 @@
-#!/usr/bin/env node
+// NOTE: intentionally no `#!/usr/bin/env node` shebang. This module is both run
+// directly (`node scripts/sync-versions.mjs` via the `prebuild` hook) AND imported
+// by tests/scripts/sync-versions.test.ts. When Vitest/Vite imports it as a dependency
+// module, esbuild's transform does not strip a leading `#!` shebang, so on a Windows
+// checkout (where the line ends in CRLF) the `#` tokenizes as an invalid token and the
+// whole suite fails to load with "Invalid or unexpected token". `node script.mjs` does
+// not require a shebang, so dropping it is safe on every platform.
 // Sync the version field across all manifests from the single source-of-truth
 // in package.json. Runs as a `prebuild` hook so esbuild's version-define
 // inlines the same value into bundles.
@@ -15,10 +21,11 @@ const SOURCE = "package.json";
 // Scalar targets: each has a single top-level `version` field tracking package.json.
 export const SCALAR_TARGETS = [
   ".claude-plugin/plugin.json",
-  "claude-code/.claude-plugin/plugin.json",
-  "openclaw/openclaw.plugin.json",
-  "openclaw/package.json",
-  "codex/package.json",
+  "harnesses/claude-code/.claude-plugin/plugin.json",
+  "harnesses/openclaw/openclaw.plugin.json",
+  "harnesses/openclaw/package.json",
+  "harnesses/codex/package.json",
+  "harnesses/codex/.codex-plugin/plugin.json",
 ];
 
 // Marketplace target: has BOTH metadata.version AND every plugins[].version.

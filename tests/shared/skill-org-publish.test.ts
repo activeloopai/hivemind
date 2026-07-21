@@ -64,6 +64,7 @@ describe("publishImprovedSkill", () => {
     localPath: ".claude/skills", install: "global", sourceSessions: ["s1"],
     sourceAgent: "claude_code", scope: "me", contributors: ["kamo"],
     description: "smoke test", trigger: "posthog", body: "## Rules\n1. mock the client", version: 3,
+    createdAt: "2026-01-01T00:00:00Z",
   };
 
   it("INSERTs the improved body as version+1, scope=team, name/author unchanged", async () => {

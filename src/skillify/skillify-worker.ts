@@ -286,6 +286,10 @@ function buildPrompt(pairs: Pair[]): string {
     `  Tags like [project, author=alice] / [global, author=bob] tell you whose skill it is.`,
     `- Skill bodies should follow the existing style: short sections (When to use, Workflow,`,
     `  Anti-patterns), concrete commands and file paths drawn from the exchanges, no marketing.`,
+    `- "trigger" is REQUIRED for KEEP and MERGE: one concrete activation condition phrased`,
+    `  'Use this skill when <situation>'. It is folded into the description the host agent`,
+    `  reads to decide whether to invoke the skill, so make it specific (name the task,`,
+    `  error, or tool), never generic restatement of the title.`,
     ``,
     `=== EXISTING SKILLS (all MERGE-eligible; [global, author=X] entries from teammate X mean`,
     `cross-author MERGE auto-promotes scope to team) ===`,
@@ -305,8 +309,8 @@ function buildPrompt(pairs: Pair[]): string {
     `{`,
     `  "verdict": "KEEP" | "SKIP" | "MERGE",`,
     `  "name": "<kebab-case skill name; for MERGE, the existing skill name>",`,
-    `  "description": "<one-line>",`,
-    `  "trigger": "<short trigger description, optional>",`,
+    `  "description": "<one-line: what the skill does>",`,
+    `  "trigger": "<REQUIRED for KEEP/MERGE: one concrete activation condition, phrased 'Use this skill when <situation>'>",`,
     `  "body": "<full SKILL.md body WITHOUT frontmatter; KEEP and MERGE only>",`,
     `  "reason": "<one-line justification>"`,
     `}`,
@@ -424,6 +428,12 @@ async function main(): Promise<void> {
     }
     wlog(`verdict source: ${source}`);
 
+    // Note: the 64-char loader-limit cap is applied by writeNewSkill (the write
+    // seam) and its canonical name is read back from the result below, so the
+    // recorded identity always matches what lands on disk. MERGE keeps the
+    // target's exact name (mergeSkill does not cap), so a legacy over-long
+    // target is found and updated rather than forked into a truncated v1.
+
     wlog(`verdict=${verdict.verdict} name=${verdict.name ?? "-"} reason=${verdict.reason ?? "-"}`);
 
     // Watermark is the OLDEST mined session date — same reasoning as the
@@ -532,6 +542,9 @@ async function main(): Promise<void> {
           author: cfg.userName,
         });
         wlog(`wrote new skill: ${result.path}`);
+        // Adopt the canonical (possibly length-capped) name writeNewSkill wrote
+        // so local state + the org row match the frontmatter/dir on disk.
+        verdict.name = result.name;
         recordSkill(cfg.projectKey, verdict.name, watermarkUuid, watermarkDate);
         await recordToDeeplake(result, verdict);
       } catch (e: any) {
@@ -570,6 +583,8 @@ async function main(): Promise<void> {
               author: cfg.userName,
             });
             wlog(`wrote new skill (merge fallback): ${result.path}`);
+            // Adopt the canonical capped name so state/org row match disk.
+            verdict.name = result.name;
             recordSkill(cfg.projectKey, verdict.name, watermarkUuid, watermarkDate);
             await recordToDeeplake(result, verdict);
           } catch (e2: any) {

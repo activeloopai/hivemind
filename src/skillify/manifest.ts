@@ -28,6 +28,15 @@ export interface PulledEntry {
   dirName: string;
   /** Skill name (without author suffix). */
   name: string;
+  /**
+   * Original (pre-cap) skills-table row name this install came from. Equals
+   * `name` unless the row name exceeded the loader's 64-char ceiling and was
+   * length-capped. Persisted so a later pull can tell whether an existing
+   * capped destination belongs to THIS row or a different one that happens to
+   * cap to the same identity (a lossy-hash collision) — and refuse to overwrite
+   * across invocations. Absent on legacy entries recorded before this field.
+   */
+  rawName?: string;
   /** Author who originally minted the skill. */
   author: string;
   /** Skills-table `project_key` of the source project. */
@@ -117,6 +126,9 @@ export function loadManifest(path: string = manifestPath()): PulledManifest {
       entries.push({
         dirName: e.dirName,
         name: e.name,
+        // Optional — preserved for cross-run cap-collision detection. Absent on
+        // legacy entries; only carry a valid string through.
+        ...(typeof e.rawName === "string" && e.rawName ? { rawName: e.rawName } : {}),
         author: e.author,
         projectKey: typeof e.projectKey === "string" ? e.projectKey : "",
         remoteVersion: typeof e.remoteVersion === "number" ? e.remoteVersion : 1,

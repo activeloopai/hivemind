@@ -22,8 +22,10 @@
  */
 
 import { createInterface } from "node:readline";
+import { deriveProjectKey } from "../utils/repo-identity.js";
 import { Bash } from "just-bash";
 import { loadConfig } from "../config.js";
+import { resolveDirConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { DeeplakeFs } from "./deeplake-fs.js";
 import { createGrepCommand } from "./grep-interceptor.js";
@@ -41,8 +43,8 @@ async function main(): Promise<void> {
     delete process.env.HIVEMIND_DEBUG;
   }
 
-  const config = loadConfig();
-  if (!config) {
+  const baseConfig = loadConfig();
+  if (!baseConfig) {
     process.stderr.write(
       "Deeplake credentials not found.\n" +
       "Set HIVEMIND_TOKEN + HIVEMIND_ORG_ID in environment, or create ~/.deeplake/credentials.json\n"
@@ -50,10 +52,15 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // The VFS resolves against the nearest `.hivemind` for the invoking cwd, so a
+  // routed directory browses ITS workspace's files rather than the global one.
+  const config = resolveDirConfig(baseConfig, process.cwd()).config;
+
   const table = process.env["HIVEMIND_TABLE"] ?? "memory";
   const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
   const goalsTable = process.env["HIVEMIND_GOALS_TABLE"] ?? config.goalsTableName;
   const kpisTable = process.env["HIVEMIND_KPIS_TABLE"] ?? config.kpisTableName;
+  const docsTable = process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName;
   const mount = process.env["HIVEMIND_MOUNT"] ?? "/";
 
   const client = new DeeplakeApi(
@@ -64,7 +71,7 @@ async function main(): Promise<void> {
     process.stderr.write(`Connecting to deeplake://${config.workspaceId}/${table} ...\n`);
   }
 
-  const fs = await DeeplakeFs.create(client, table, mount, sessionsTable, { goalsTable, kpisTable });
+  const fs = await DeeplakeFs.create(client, table, mount, sessionsTable, { goalsTable, kpisTable, docsTable, docsProject: deriveProjectKey(process.cwd()).key });
 
   if (!isOneShot) {
     const fileCount = fs.getAllPaths().filter(p => !!p).length;

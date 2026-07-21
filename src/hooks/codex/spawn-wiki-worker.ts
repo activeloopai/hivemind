@@ -3,7 +3,6 @@
  * Mirrors src/hooks/spawn-wiki-worker.ts but targets ~/.codex/ paths and codexBin.
  */
 
-import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -13,6 +12,7 @@ import { makeWikiLogger } from "../../utils/wiki-log.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
 import { spawnDetachedNodeWorker } from "../../utils/spawn-detached.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
+import { resolveCliBin } from "../../utils/resolve-cli-bin.js";
 
 const HOME = homedir();
 const wikiLogger = makeWikiLogger(join(HOME, ".codex", "hooks"));
@@ -74,11 +74,7 @@ LENGTH LIMIT: Keep the total summary under 4000 characters.`;
 export const wikiLog = wikiLogger.log;
 
 export function findCodexBin(): string {
-  try {
-    return execSync("which codex 2>/dev/null", { encoding: "utf-8" }).trim();
-  } catch {
-    return "codex";
-  }
+  return resolveCliBin("codex", "codex");
 }
 
 export interface SpawnOptions {

@@ -14,9 +14,15 @@ const FORBIDDEN = [
   /(^|\/)\.git(\/|$)/,
 ];
 
+// On Windows `npm` is the `npm.cmd` shim, which execFileSync can't launch
+// directly (ENOENT for a bare name, EINVAL for `.cmd` without a shell on
+// modern Node). Route through the shell there; the args are static, so
+// there's no injection surface. Unix stays shell-free.
+const isWin = process.platform === 'win32';
 const raw = execFileSync('npm', ['pack', '--dry-run', '--json'], {
   encoding: 'utf8',
   stdio: ['ignore', 'pipe', 'inherit'],
+  shell: isWin,
 });
 const entries = JSON.parse(raw)[0].files.map((f) => f.path);
 const hits = entries.filter((p) => FORBIDDEN.some((rx) => rx.test(p)));

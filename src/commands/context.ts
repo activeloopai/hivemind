@@ -22,7 +22,7 @@
  * maxRules / maxGoals defaults of 10 are the v1 contract).
  */
 
-import { loadConfig } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { renderContextBlock } from "../hooks/shared/context-renderer.js";
 
@@ -46,7 +46,7 @@ export async function runContextCommand(args: string[]): Promise<void> {
     return;
   }
 
-  const cfg = loadConfig();
+  const cfg = loadRoutedConfig();
   if (!cfg) {
     console.error("Not logged in. Run `hivemind login` first.");
     process.exit(2);

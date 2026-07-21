@@ -7,7 +7,7 @@ import type {
   IFileSystem, FsStat, MkdirOptions, RmOptions, CpOptions,
   FileContent, BufferEncoding,
 } from "just-bash";
-import { normalizeContent } from "./grep-core.js";
+import { normalizeContent, emptySessionBodyNotice } from "./grep-core.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
@@ -21,6 +21,8 @@ import {
   type PathKind,
 } from "./goal-paths.js";
 import { handleGraphVfs } from "../graph/vfs-handler.js";
+import { handleDocsVfs } from "../docs/vfs-handler.js";
+import { makeQueryEmbedder } from "../docs/embed.js";
 
 interface ReadFileOptions { encoding?: BufferEncoding }
 interface WriteFileOptions { encoding?: BufferEncoding }
@@ -56,7 +58,13 @@ export function guessMime(filename: string): string {
 }
 
 function normalizeSessionMessage(path: string, message: unknown): string {
+  // A NULL/undefined message column must coerce to "" — not the JS value
+  // `undefined` (JSON.stringify(undefined) === undefined) which would leak into
+  // the joined output, and not the literal "null" text (JSON.stringify(null)).
+  if (message === null || message === undefined) return "";
   const raw = typeof message === "string" ? message : JSON.stringify(message);
+  // JSON.stringify can still return undefined for non-serializable values.
+  if (typeof raw !== "string") return "";
   return normalizeContent(path, raw);
 }
 
@@ -71,7 +79,13 @@ function resolveEmbedDaemonPath(): string {
 }
 
 function joinSessionMessages(path: string, messages: unknown[]): string {
-  return messages.map((message) => normalizeSessionMessage(path, message)).join("\n");
+  // Drop empty parts so bodyless rows don't turn into phantom blank lines (and
+  // so an all-empty session reconstructs to "" — the caller's cue to emit the
+  // empty-body notice rather than a silently-empty file).
+  return messages
+    .map((message) => normalizeSessionMessage(path, message))
+    .filter((part) => part.length > 0)
+    .join("\n");
 }
 
 function fsErr(code: string, msg: string, path: string): Error {
@@ -150,6 +164,25 @@ function readGraphFile(p: string, cwd: string): string {
   throw fsErr("ENOENT", `${r.message}`, p);
 }
 
+// Per-file docs live at <memory-mount>/docs/. Same thin-bridge pattern as
+// /graph/: detect the prefix, strip it, delegate to handleDocsVfs (the same
+// dispatcher the pre-tool-use hook uses). Unlike graph, docs are backed by a
+// SQL table so the bridge is ASYNC and needs the query seam + docs table.
+const DOCS_ROOT = "/docs";
+const DOCS_PREFIX = "/docs/";
+const DOCS_DIRS = new Set([DOCS_ROOT, "/docs/find"]);
+
+function isDocsPath(p: string): boolean {
+  return p === DOCS_ROOT || p.startsWith(DOCS_PREFIX);
+}
+function isDocsDir(p: string): boolean {
+  return DOCS_DIRS.has(p);
+}
+function docsSubpathOf(p: string): string {
+  if (p === DOCS_ROOT) return "";
+  return p.slice(DOCS_PREFIX.length);
+}
+
 export class DeeplakeFs implements IFileSystem {
   // path → Buffer (content) or null (exists but not fetched yet)
   private files = new Map<string, Buffer | null>();
@@ -177,6 +210,10 @@ export class DeeplakeFs implements IFileSystem {
   // the goal/kpi routing is disabled (test or legacy configurations).
   private goalsTable: string | null = null;
   private kpisTable: string | null = null;
+  // Per-file docs table, for /docs/ VFS reads + docs/find search. Null = off.
+  private docsTable: string | null = null;
+  /** Project scope for docs reads on shared tables (legacy '' rows included). */
+  private docsProject: string | null = null;
 
   // Embedding client lazily created on first flush. Lives as long as the process.
   private embedClient: EmbedClient | null = null;
@@ -195,12 +232,14 @@ export class DeeplakeFs implements IFileSystem {
     table: string,
     mount = "/memory",
     sessionsTable?: string,
-    extra?: { goalsTable?: string; kpisTable?: string },
+    extra?: { goalsTable?: string; kpisTable?: string; docsTable?: string; docsProject?: string },
   ): Promise<DeeplakeFs> {
     const fs = new DeeplakeFs(client, table, mount);
     fs.sessionsTable = sessionsTable ?? null;
     fs.goalsTable = extra?.goalsTable ?? null;
     fs.kpisTable = extra?.kpisTable ?? null;
+    fs.docsTable = extra?.docsTable ?? null;
+    fs.docsProject = extra?.docsProject ?? null;
     // Ensure the memory table + goal/kpi tables exist before
     // bootstrapping. Each ensure call is idempotent and lazy-heals
     // any column drift from prior schema versions. Failures bubble
@@ -653,15 +692,16 @@ export class DeeplakeFs implements IFileSystem {
       const rows = await this.client.query(
         `SELECT path, message, creation_date FROM "${this.sessionsTable}" WHERE path IN (${inList}) ORDER BY path, creation_date ASC`
       );
-      const grouped = new Map<string, string[]>();
+      const grouped = new Map<string, unknown[]>();
       for (const row of rows) {
         const p = row["path"] as string;
         const current = grouped.get(p) ?? [];
-        current.push(normalizeSessionMessage(p, row["message"]));
+        current.push(row["message"]);
         grouped.set(p, current);
       }
-      for (const [p, parts] of grouped) {
-        this.files.set(p, Buffer.from(parts.join("\n"), "utf-8"));
+      for (const [p, messages] of grouped) {
+        const text = joinSessionMessages(p, messages);
+        this.files.set(p, Buffer.from(text || emptySessionBodyNotice(messages.length), "utf-8"));
       }
     }
   }
@@ -688,7 +728,7 @@ export class DeeplakeFs implements IFileSystem {
       );
       if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
       const text = joinSessionMessages(p, rows.map((row) => row["message"]));
-      const buf = Buffer.from(text, "utf-8");
+      const buf = Buffer.from(text || emptySessionBodyNotice(rows.length), "utf-8");
       this.files.set(p, buf);
       return buf;
     }
@@ -711,6 +751,15 @@ export class DeeplakeFs implements IFileSystem {
     if (isGraphPath(p)) {
       if (isGraphDir(p)) throw fsErr("EISDIR", "illegal operation on a directory", p);
       return readGraphFile(p, process.cwd());
+    }
+    // Docs VFS bridge — same as graph, but async (SQL-backed) and delegating to
+    // handleDocsVfs. Makes browse + docs/find work in the shell path (codex /
+    // cursor / hermes / interactive), not just the pre-tool-use hook (Claude).
+    if (isDocsPath(p) && this.docsTable) {
+      if (isDocsDir(p)) throw fsErr("EISDIR", "illegal operation on a directory", p);
+      const r = await handleDocsVfs(docsSubpathOf(p), (sql) => this.client.query(sql), this.docsTable, { embedQuery: makeQueryEmbedder(), project: this.docsProject ?? undefined });
+      if (r.kind === "ok") return r.body;
+      throw fsErr("ENOENT", `${r.message}`, p);
     }
     if (this.dirs.has(p) && !this.files.has(p)) throw fsErr("EISDIR", "illegal operation on a directory", p);
 
@@ -746,7 +795,7 @@ export class DeeplakeFs implements IFileSystem {
         `SELECT message FROM "${this.sessionsTable}" WHERE path = '${esc(p)}' ORDER BY creation_date ASC`
       );
       if (rows.length === 0) throw fsErr("ENOENT", "no such file or directory", p);
-      const text = joinSessionMessages(p, rows.map((row) => row["message"]));
+      const text = joinSessionMessages(p, rows.map((row) => row["message"])) || emptySessionBodyNotice(rows.length);
       const buf = Buffer.from(text, "utf-8");
       this.files.set(p, buf);
       return text;
@@ -860,6 +909,9 @@ export class DeeplakeFs implements IFileSystem {
       const r = handleGraphVfs(graphSubpathOf(p), process.cwd());
       return r.kind === "ok" || r.kind === "no-graph";
     }
+    // Docs VFS — dirs always exist; a leaf/find query is addressable (readFile
+    // renders content or a friendly "no match" body, never not-found for find).
+    if (isDocsPath(p) && this.docsTable) return true;
     return this.files.has(p) || this.dirs.has(p);
   }
 
@@ -883,6 +935,16 @@ export class DeeplakeFs implements IFileSystem {
         mode: dir ? 0o755 : 0o644,
         size: 0, // synthesized; cheaper than computing the body just to size it
         mtime: new Date(),
+      };
+    }
+    // Docs VFS — /docs and /docs/find are directories; any other /docs/ path is
+    // a (synthesized) file. Kept cheap (no SQL); readFile surfaces a real
+    // not-found as ENOENT.
+    if (isDocsPath(p) && this.docsTable) {
+      const dir = isDocsDir(p);
+      return {
+        isFile: !dir, isDirectory: dir, isSymbolicLink: false,
+        mode: dir ? 0o755 : 0o644, size: 0, mtime: new Date(),
       };
     }
     const isFile = this.files.has(p);
@@ -950,6 +1012,10 @@ export class DeeplakeFs implements IFileSystem {
     const p = normPath(path);
     // Graph VFS — directory listings synthesized from a fixed taxonomy.
     if (p === GRAPH_ROOT) return ["index.md", "find", "show"];
+    // Docs VFS — same synthesized taxonomy so `ls /docs` never ENOTDIRs.
+    if (this.docsTable && (p === "/docs" || p === "/docs/find")) {
+      return p === "/docs" ? ["index.md", "find"] : [];
+    }
     if (p === "/graph/find" || p === "/graph/show") {
       // No children to enumerate: arguments are user-supplied patterns, not
       // a finite set we could list. Return empty so `ls` shows nothing
@@ -966,6 +1032,10 @@ export class DeeplakeFs implements IFileSystem {
     // Surface the graph subtree in the root listing.
     if (p === "/" && !entries.includes("graph")) {
       entries.push("graph");
+    }
+    // Surface the docs subtree too, when the feature is configured.
+    if (p === "/" && this.docsTable && !entries.includes("docs")) {
+      entries.push("docs");
     }
     return entries;
   }
@@ -984,6 +1054,15 @@ export class DeeplakeFs implements IFileSystem {
           name,
           isFile: !isGraphDir(child),
           isDirectory: isGraphDir(child),
+          isSymbolicLink: false,
+        };
+      }
+      // Docs entries are synthesized too — classify by the docs taxonomy.
+      if (this.docsTable && isDocsPath(child)) {
+        return {
+          name,
+          isFile: !isDocsDir(child),
+          isDirectory: isDocsDir(child),
           isSymbolicLink: false,
         };
       }

@@ -114,12 +114,12 @@ jobs:
           git add -A
           git add -f \
             bundle \
-            claude-code/bundle \
-            codex/bundle \
-            cursor/bundle \
-            hermes/bundle \
+            harnesses/claude-code/bundle \
+            harnesses/codex/bundle \
+            harnesses/cursor/bundle \
+            harnesses/hermes/bundle \
             mcp/bundle \
-            pi/bundle
+            harnesses/pi/bundle
           git commit -m "release: v$VERSION"
           RELEASE_SHA=$(git rev-parse HEAD)
           echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
@@ -133,17 +133,17 @@ jobs:
           # them on disk for npm publish).
           git rm --cached -r \
             bundle \
-            claude-code/bundle \
-            codex/bundle \
-            cursor/bundle \
-            hermes/bundle \
+            harnesses/claude-code/bundle \
+            harnesses/codex/bundle \
+            harnesses/cursor/bundle \
+            harnesses/hermes/bundle \
             mcp/bundle \
-            pi/bundle
+            harnesses/pi/bundle
           # Update marketplace.json's git-subdir source.sha to the release
           # commit. Users doing `claude plugin marketplace add activeloopai/hivemind`
           # clone main (HEAD = this cleanup commit), read marketplace.json, see
           # the sha → clone activeloopai/hivemind at that sha (which DOES have
-          # bundles tracked) → extract `claude-code/` → install.
+          # bundles tracked) → extract `harnesses/claude-code/` → install.
           node -e "
             const fs = require('fs');
             const path = '.claude-plugin/marketplace.json';
@@ -263,9 +263,9 @@ jobs:
       - name: Build bundles
         # Must run BEFORE the quality gate. `npm run ci` includes vitest,
         # and the bundle-scan tests under
-        # claude-code/tests/skillify-session-start-injection.test.ts read
-        # openclaw/dist/index.js + openclaw/dist/skillify-worker.js
-        # directly. openclaw/dist/ is gitignored — it only exists after
+        # harnesses/claude-code/tests/skillify-session-start-injection.test.ts read
+        # harnesses/openclaw/dist/index.js + harnesses/openclaw/dist/skillify-worker.js
+        # directly. harnesses/openclaw/dist/ is gitignored — it only exists after
         # `npm run build`. Without this step before the gate, vitest
         # fails with ENOENT and the publish aborts. Same root cause as
         # 64cac0b in ci.yml; that fix never propagated to this job.
@@ -336,8 +336,8 @@ jobs:
         run: clawhub login --token "$CLAWHUB_TOKEN" --no-browser
 
       - name: Publish openclaw bundle to ClawHub
-        # The release job above already synced openclaw/package.json and
-        # openclaw/openclaw.plugin.json versions to the bumped root
+        # The release job above already synced harnesses/openclaw/package.json and
+        # harnesses/openclaw/openclaw.plugin.json versions to the bumped root
         # version, so this publishes the same X.Y.Z that npm just got.
         #
         # --family code-plugin: the existing `hivemind` package on ClawHub
@@ -348,7 +348,7 @@ jobs:
         # `Package already exists as a code-plugin; family changes are not
         # allowed` (convex/packages.ts:4305). Pinning the family explicitly
         # matches what's already registered and lets the publish proceed.
-        run: clawhub package publish ./openclaw --family code-plugin
+        run: clawhub package publish ./harnesses/openclaw --family code-plugin
 
       - name: Summary
         run: |

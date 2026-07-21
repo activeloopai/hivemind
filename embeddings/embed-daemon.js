@@ -34,7 +34,8 @@ async function _importFromCanonicalSharedDeps(sharedDir = join(homedir(), ".hive
   return _normalizeTransformersModule(mod);
 }
 async function _importFromBareSpecifier() {
-  const mod = await import("@huggingface/transformers");
+  const spec = "@huggingface/transformers";
+  const mod = await import(spec);
   return _normalizeTransformersModule(mod);
 }
 function _normalizeTransformersModule(mod) {

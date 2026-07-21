@@ -1,7 +1,7 @@
 import { defineConfig } from "vitest/config";
 
 // Root vitest config. `npm test` runs `vitest run` from the repo root, so
-// this is the file that actually gets picked up. The one in claude-code/
+// this is the file that actually gets picked up. The one in harnesses/claude-code/
 // is a historical leftover and is not used by the root test script.
 //
 // Coverage thresholds are enforced per-file on the files touched by each
@@ -75,6 +75,29 @@ export default defineConfig({
       // on the new code without having to first bring the whole
       // (~500-file) codebase up to 80%.
       thresholds: {
+        // PR #302 — feat: per-directory .hivemind config. The resolver is
+        // fully unit-tested; the hook gate is exercised via the capture/
+        // session-start wiring tests. Lock both at 90.
+        "src/dir-config.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/shared/dir-gate.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        // PR #307 — feat: mask secrets on capture. The redactor is fully
+        // unit-tested (recall + precision + entropy backstop); lock at 90.
+        "src/hooks/shared/redact.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
         // PR #60 — fix/grep-dual-table-and-normalize.
         // Raised to 90 to surface the red path in the PR coverage comment
         // for metrics that sit between 80 and 90 (e.g. grep-core branches
@@ -93,6 +116,15 @@ export default defineConfig({
           lines: 90,
         },
         "src/hooks/grep-direct.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        // PR #284 — fix(codex): PreToolUse allow-rewrite for memory writes (F3).
+        // Branch suite covers the read fast-path, write-redirect allow/block
+        // arms, and the graph/default-deps branches. Held at 90 to lock the gate.
+        "src/hooks/codex/pre-tool-use.ts": {
           statements: 90,
           branches: 90,
           functions: 90,
@@ -118,6 +150,17 @@ export default defineConfig({
         "src/hooks/virtual-table-query.ts": {
           statements: 90,
           branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        // PR #323 — feat: provision tree-sitter parsers into the shared
+        // embed-deps dir so the graph-on-stop auto-build hook resolves them.
+        // Pure logic + an injectable npm/heal boundary — fully unit-tested.
+        // Branches held at 85: a few defensive arms (malformed package.json,
+        // non-Error throw coerced via String(err)) aren't worth a fixture each.
+        "src/cli/graph-deps.ts": {
+          statements: 90,
+          branches: 85,
           functions: 90,
           lines: 90,
         },
@@ -197,6 +240,43 @@ export default defineConfig({
           functions: 90,
           lines: 90,
         },
+        // feat/proactive-recall — UserPromptSubmit auto-search-and-inject.
+        "src/hooks/recall.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/shared/recall-gate.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/shared/recall-format.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/shared/recall-query.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/shared/recall-events.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+        "src/hooks/shared/with-deadline.ts": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
         // fix/plugin-autoupdate-session-safety — snapshot-restore around
         // claude-plugin update + SessionEnd GC. All four files at 90+.
         "src/utils/plugin-cache.ts": {
@@ -252,6 +332,22 @@ export default defineConfig({
           statements: 90,
           branches: 80,
           functions: 80,
+          lines: 90,
+        },
+        // fix/docs-scope-existence-checks — the `docs` CLI dispatcher gained a
+        // full subcommand-surface suite in tests/claude-code/cli-docs.test.ts
+        // (set/index/show/list/archive/refresh/wiki-refresh/sync/auto/pull/
+        // reindex/wiki/generate), driven through the real store against the
+        // query spy. Actuals: statements 95, branches 87, functions 91, lines 98.
+        // Branches + functions pinned at 85 (not 90): the residual gaps are the
+        // interactive graph-build recursion (dynamic-imports native tree-sitter)
+        // and the closures handed to runWikiRefreshCycle (git runner /
+        // snapshot loader), which are dead once that cycle is stubbed — neither
+        // is deterministically reachable from a unit test.
+        "src/commands/docs.ts": {
+          statements: 90,
+          branches: 85,
+          functions: 85,
           lines: 90,
         },
         "src/deeplake-api.ts": {
@@ -334,7 +430,15 @@ export default defineConfig({
         // EXDEV/EPERM error-recovery branch is mocked via vi.doMock("node:fs")
         // and the uncaught-rethrow branch covers everything else implicitly.
         "src/skillify/legacy-migration.ts":  { statements: 90, branches: 80, functions: 90, lines: 90 },
+        // fix/skillify-legacy-cap-migration — local, remote-independent cap
+        // migration of legacy over-long installs (runs before the network in
+        // auto-pull). Branches at 85: a couple of defensive arms (installedName
+        // null, capSkillName no-op, already-canonical dir) aren't each worth a
+        // dedicated fixture; the load-bearing migrate/skip/collision/fs-error
+        // paths are all exercised.
+        "src/skillify/legacy-cap-migration.ts": { statements: 90, branches: 85, functions: 90, lines: 90 },
         "src/skillify/pull.ts":              { statements: 90, branches: 75, functions: 90, lines: 90 },
+        "src/skillify/push.ts":              { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/skillify/scope-config.ts":      { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/skillify/skill-writer.ts":      { statements: 90, branches: 80, functions: 90, lines: 90 },
         "src/skillify/skills-table.ts":      { statements: 90, branches: 70, functions: 90, lines: 90 },
@@ -364,6 +468,7 @@ export default defineConfig({
         "src/notifications/index.ts":             { statements: 90, branches: 80, functions: 90, lines: 90 },
         "src/notifications/queue.ts":             { statements: 90, branches: 70, functions: 90, lines: 90 },
         "src/notifications/state.ts":             { statements: 90, branches: 75, functions: 90, lines: 90 },
+        "src/utils/atomic-write.ts":            { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/notifications/rules/registry.ts":    { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/notifications/rules/welcome.ts":     { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/notifications/rules/referral-invite.ts": { statements: 90, branches: 90, functions: 90, lines: 90 },
@@ -399,6 +504,27 @@ export default defineConfig({
         "src/skillify/spawn-mine-local-worker.ts":    { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/commands/mine-local.ts":                 { statements: 90, branches: 90, functions: 90, lines: 90 },
         "src/notifications/rules/local-mined.ts":     { statements: 90, branches: 90, functions: 90, lines: 90 },
+        // feat/memory-backfill — install-time retro-mine of past local agent
+        // sessions (claude/codex/…) into team memory, two-phase
+        // extract(no-auth)/flush(post-login). Pure logic + real I/O wiring are
+        // both covered: the heavy constructors (DeeplakeApi, EmbedClient,
+        // child_process.spawn) are vi.mock'd in *-wiring.test.ts so the real
+        // default-dependency factories execute, and the runClaude spawn path is
+        // exercised via a fake claude executable. statements/functions/lines are
+        // ≥90 on every file (two at 100); branches sit at 88 on three files —
+        // the residual gaps are defensive `??`/`Array.isArray` fallbacks and a
+        // budget-message ternary, the same branch calibration used across this
+        // config (e.g. gate-runner 60, build-lock 55, skills-table 70).
+        "src/skillify/pending-memory-manifest.ts":    { statements: 90, branches: 85, functions: 90, lines: 90 },
+        "src/skillify/backfill-guards.ts":            { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/skillify/stage-memory.ts":               { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/skillify/spawn-backfill-memory-worker.ts": { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/commands/backfill-memory.ts":            { statements: 90, branches: 90, functions: 90, lines: 90 },
+        // branches at 85 (not 90): the residual gaps are defensive catch/??
+        // fallbacks, and v8 branch counting drifts a couple points across Node
+        // versions (CI measured 88 where local measured 92), so the floor is
+        // set with margin to stay deterministic.
+        "src/commands/flush-memory.ts":               { statements: 90, branches: 85, functions: 90, lines: 90 },
         // feat/rules-and-tasks-kpis — cross-agent rules + tasks + KPI
         // events (T1-T9). Per-file thresholds for the new modules.
         // Branches calibrated to actual coverage: rules/tasks list-*
@@ -475,6 +601,11 @@ export default defineConfig({
         // mock DeeplakeApi, bringing it to 97/91/97/99. Floor set at 90 to
         // catch regressions on these paths going forward.
         "src/shell/deeplake-fs.ts":          { statements: 90, branches: 90, functions: 90, lines: 90 },
+        // fix/wiki-worker-windows — cross-platform CLI resolution + spawn
+        // descriptor builders for the summary worker. Small, pure modules,
+        // fully exercised by tests/claude-code/wiki-worker-windows.test.ts.
+        "src/utils/resolve-cli-bin.ts":      { statements: 90, branches: 90, functions: 90, lines: 90 },
+        "src/hooks/wiki-worker-spawn.ts":    { statements: 90, branches: 90, functions: 90, lines: 90 },
         // feat(graph): multi-language support (PR #241) — 8 new language extractors
         // + shared helper module. Branches calibrated below statements: each
         // extractor has error/fallback branches (isError, isMissing, unknown node

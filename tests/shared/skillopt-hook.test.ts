@@ -32,7 +32,7 @@ describe("armSkillOptOnSkillUse", () => {
     expect(markSkillPending).toHaveBeenCalledWith("s1", "posthog--kamo", "tu2");
   });
 
-  it("arms on a SHELL command that reads SKILL.md (codex/hermes style — path in the command)", () => {
+  it("arms on a SHELL command that reads SKILL.md (harnesses/codex/hermes style — path in the command)", () => {
     armSkillOptOnSkillUse("s1", "Bash", { command: 'cat "/home/u/.agents/skills/posthog--kamo/SKILL.md"' }, "tu3");
     expect(markSkillPending).toHaveBeenCalledWith("s1", "posthog--kamo", "tu3");
   });

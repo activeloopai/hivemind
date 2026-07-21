@@ -17,6 +17,7 @@ vi.mock("../../src/notifications/sources/org-stats.js", () => ({
 
 import { loadDashboardData } from "../../src/dashboard/data.js";
 import { deriveProjectKey } from "../../src/skillify/state.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 function snapshotsDirFor(graphsHome: string, cwd: string): { repoDir: string; snapshotsDir: string } {
   const { key } = deriveProjectKey(cwd);
@@ -33,14 +34,13 @@ describe("loadDashboardData", () => {
     graphsHome = mkdtempSync(join(tmpdir(), "hm-dash-graphs-"));
     homeDir = mkdtempSync(join(tmpdir(), "hm-dash-home-"));
     originalHome = process.env.HOME;
-    process.env.HOME = homeDir;
+    setFakeHome(homeDir);
     orgStatsMock.mockReset();
     orgStatsMock.mockResolvedValue(null);
   });
 
   afterEach(() => {
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
+    clearFakeHome();
     rmSync(graphsHome, { recursive: true, force: true });
     rmSync(homeDir, { recursive: true, force: true });
   });

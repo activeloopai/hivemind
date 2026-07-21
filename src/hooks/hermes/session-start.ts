@@ -13,10 +13,10 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { loadCredentials, healDriftedOrgToken } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
+import { resolveDirConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { renderContextBlock } from "../shared/context-renderer.js";
-import { sqlStr } from "../../utils/sql.js";
-import { projectNameFromCwd } from "../../utils/project-name.js";
+import { createPlaceholderSummary } from "../shared/placeholder-summary.js";
 import { renderSkillifyCommands } from "../../cli/skillify-spec.js";
 import { countLocalManifestEntries } from "../../skillify/local-manifest.js";
 import { maybeAutoMineLocal } from "../../skillify/spawn-mine-local-worker.js";
@@ -70,6 +70,7 @@ interface HermesSessionStartInput {
   extra?: Record<string, unknown>;
 }
 
+/** Create a placeholder summary via the shared race-safe writer (see placeholder-summary.ts). */
 async function createPlaceholder(
   api: DeeplakeApi,
   table: string,
@@ -80,29 +81,9 @@ async function createPlaceholder(
   workspaceId: string,
   pluginVersion: string,
 ): Promise<void> {
-  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
-  const existing = await api.query(
-    `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`,
-  );
-  if (existing.length > 0) return;
-
-  const now = new Date().toISOString();
-  const projectName = projectNameFromCwd(cwd);
-  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
-  const content = [
-    `# Session ${sessionId}`,
-    `- **Source**: ${sessionSource}`,
-    `- **Started**: ${now}`,
-    `- **Project**: ${projectName}`,
-    `- **Status**: in-progress`,
-    "",
-  ].join("\n");
-  const filename = `${sessionId}.md`;
-
-  await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'hermes', '${sqlStr(pluginVersion)}', '${now}', '${now}')`,
+  await createPlaceholderSummary(
+    (sql) => api.query(sql),
+    { table, sessionId, cwd, userName, orgName, workspaceId, agent: "hermes", pluginVersion },
   );
 }
 
@@ -114,6 +95,12 @@ async function main(): Promise<void> {
 
   let creds = loadCredentials();
   const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
+
+  // Per-directory `.hivemind`: route / opt out for this tree. Resolved once and
+  // reused for the placeholder write and the disclosure banner below.
+  const baseConfig = loadConfig();
+  const dirRes = baseConfig ? resolveDirConfig(baseConfig, cwd) : null;
+  const collectHere = captureEnabled && (dirRes?.collect ?? true);
 
   if (!creds?.token) {
     // Auto-trigger mine-local on first SessionStart for unauthenticated
@@ -143,16 +130,18 @@ async function main(): Promise<void> {
   let rulesBlock = "";
   if (creds?.token) {
     try {
-      const config = loadConfig();
+      const config = dirRes?.config;
       if (config) {
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
-        if (captureEnabled) {
+        if (collectHere) {
           await api.ensureTable();
           await api.ensureSessionsTable(config.sessionsTableName);
           await createPlaceholder(api, config.tableName, sessionId, cwd, config.userName, config.orgName, config.workspaceId, pluginVersion);
           log("placeholder created");
         } else {
-          log("placeholder + schema ensure skipped (HIVEMIND_CAPTURE=false)");
+          log(dirRes && !dirRes.collect
+            ? `placeholder + schema ensure skipped (.hivemind collect:false ${dirRes.found?.path})`
+            : "placeholder + schema ensure skipped (HIVEMIND_CAPTURE=false)");
         }
         // Read-only renderer. Hermes's context field is invisible to
         // the user (model-only). Renderer absorbs its own errors.
@@ -198,15 +187,24 @@ async function main(): Promise<void> {
   // (pullSnapshot would early-return skipped-no-auth anyway).
   if (creds?.token) spawnGraphPullWorker(cwd, __bundleDir);
 
+  // Disclose the EFFECTIVE identity (after any `.hivemind` overlay).
+  const effConfig = dirRes?.config ?? baseConfig;
+  const routed = !!(dirRes?.found && dirRes.collect && baseConfig &&
+    (dirRes.config.orgId !== baseConfig.orgId || dirRes.config.workspaceId !== baseConfig.workspaceId));
+  const effOrg = effConfig ? (effConfig.orgName ?? effConfig.orgId) : (creds?.orgName ?? creds?.orgId);
+  const effWs = effConfig ? effConfig.workspaceId : (creds?.workspaceId ?? "default");
+  const identityLine = dirRes && !dirRes.collect
+    ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search still uses org: ${effOrg}`
+    : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`;
   const baseContext = creds?.token
-    ? `${context}\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${versionNotice}`
+    ? `${context}\n${identityLine}${versionNotice}`
     : `${context}\nNot logged in to Deeplake. Run: hivemind login${localMinedNote}${versionNotice}`;
   // Hermes' pre-tool-use intercepts only `terminal` — it cannot
   // route Write/Edit. Use the CLI variant: agent invokes
   // `hivemind goal add/list/...` via terminal. End state in tables
   // is identical to the VFS-routed path.
   const baseWithGoals = creds?.token ? `${baseContext}\n\n${GOALS_INSTRUCTIONS_CLI}` : baseContext;
-  // Code-graph inject. Unlike claude-code/cursor this is user-visible in the
+  // Code-graph inject. Unlike harnesses/claude-code/cursor this is user-visible in the
   // Hermes TUI (Hermes has no model-only SessionStart channel), but an
   // always-present structural index is worth the extra lines. graphContextLine
   // returns null — and appends nothing — when no graph exists for this repo yet.

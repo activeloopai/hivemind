@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { join } from "node:path";
 
 /**
  * Source-level tests for src/config.ts — loadConfig() merges
@@ -79,7 +80,9 @@ describe("loadConfig — no credentials file", () => {
       sessionsTableName: "sessions",
       skillsTableName: "skills",
       rulesTableName: "hivemind_rules",
-      memoryPath: "/home/tester/.deeplake/memory",
+      // Product builds this with path.join(homedir(), ...), so the expected
+      // value must use the native separator too (backslash on Windows).
+      memoryPath: join("/home/tester", ".deeplake", "memory"),
     });
   });
 

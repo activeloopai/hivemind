@@ -72,7 +72,7 @@ describe("runGc", () => {
   });
 
   it("logs and returns when bundleDir is not a versioned install", () => {
-    runGc(join(root, "claude-code", "bundle"), { log });
+    runGc(join(root, "harnesses", "claude-code", "bundle"), { log });
     expect(logs).toContain("not a versioned install, skipping");
   });
 

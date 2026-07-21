@@ -21,7 +21,7 @@
  */
 
 import { readStdin } from "../../utils/stdin.js";
-import { loadConfig } from "../../config.js";
+import { loadRoutedConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { log as _log } from "../../utils/debug.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   const grepParams = parseBashGrep(rewritten);
   if (!grepParams) return; // not grep/rg/egrep/fgrep — leave it alone
 
-  const config = loadConfig();
+  const config = loadRoutedConfig(input.cwd ?? process.cwd());
   if (!config) {
     log("no config — falling through to Hermes");
     return;

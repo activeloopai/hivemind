@@ -3,12 +3,32 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { HOME, pkgRoot, ensureDir, copyDir, writeJson, writeJsonIfChanged, symlinkForce, writeVersionStamp, log, warn } from "./util.js";
 import { getVersion } from "./version.js";
+import { upsertMarkedBlock, stripMarkedBlock, HIVEMIND_BLOCK_START, HIVEMIND_BLOCK_END } from "./agents-md.js";
 
 const CODEX_HOME = join(HOME, ".codex");
 const PLUGIN_DIR = join(CODEX_HOME, "hivemind");
 const HOOKS_PATH = join(CODEX_HOME, "hooks.json");
 const AGENTS_SKILLS_DIR = join(HOME, ".agents", "skills");
 const SKILL_LINK = join(AGENTS_SKILLS_DIR, "hivemind-memory");
+// Codex auto-loads ~/.codex/AGENTS.md into the model context every session,
+// SILENTLY (no user-visible TUI cell — verified empirically). This is the
+// proactive-memory channel Codex's user-visible `additionalContext` can't be:
+// the managed block instructs the model to consult team memory + pull rules /
+// goals before starting work, without clobbering the TUI. We own only the
+// marker-fenced block; the user's own AGENTS.md content is preserved.
+const AGENTS_MD = join(CODEX_HOME, "AGENTS.md");
+const CODEX_AGENTS_BLOCK = `${HIVEMIND_BLOCK_START}
+## Hivemind Memory
+
+You have global team memory at \`~/.deeplake/memory/\`, shared across all sessions, users, and agents in your org. Proactively consult it before starting a task — and whenever the user asks you to recall, look up, or remember anything:
+
+- Team rules: \`hivemind rules list\`
+- Your open goals: \`hivemind goal list --mine\`
+- Past sessions: start at \`~/.deeplake/memory/index.md\`, then read \`~/.deeplake/memory/summaries/<user>/<session>.md\`; only fall back to raw \`~/.deeplake/memory/sessions/<user>/*.jsonl\` when a summary lacks the detail.
+- Keyword search: \`grep -ri "keyword" ~/.deeplake/memory/summaries/\` (use \`grep\`, NOT \`rg\`/ripgrep — it may not be installed).
+
+Use only bash builtins (cat, ls, grep, jq, head, tail, sed, awk, wc, sort, find) to read this filesystem — rg/ripgrep, node, python, curl are not available there. Do not spawn subagents to read memory.
+${HIVEMIND_BLOCK_END}`;
 
 function hookCmd(bundleFile: string, timeout: number, matcher?: string): Record<string, unknown> {
   const block: Record<string, unknown> = {
@@ -31,7 +51,7 @@ function buildHooksJson(): Record<string, unknown> {
       PostToolUse: [hookCmd("capture.js", 15)],
       // One Stop matcher-block with TWO commands — stop.js (capture) +
       // graph-on-stop.js (code-graph auto-build, G3). Single block (not two)
-      // mirrors the static codex/hooks/hooks.json and keeps one entry per
+      // mirrors the static harnesses/codex/hooks/hooks.json and keeps one entry per
       // event for the merge/dedupe logic.
       Stop: [stopBlockWithGraph(30)],
     },
@@ -227,9 +247,53 @@ function stripLegacyCodexHooksKey(): void {
   }
 }
 
+/**
+ * Idempotently upsert the hivemind block into ~/.codex/AGENTS.md, the file
+ * Codex auto-loads into model context every session. Writes only when the
+ * content actually changes, preserving any user content outside the markers.
+ */
+// Read a file, returning null when it does not exist. Reads directly and
+// catches ENOENT rather than existsSync()-then-read, which is a TOCTOU race
+// (the file can vanish between the check and the read — flagged by CodeQL
+// js/file-system-race).
+function readFileOrNull(path: string): string | null {
+  try {
+    return readFileSync(path, "utf-8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
+}
+
+function writeCodexAgentsBlock(): void {
+  const prior = readFileOrNull(AGENTS_MD);
+  const next = upsertMarkedBlock(prior, CODEX_AGENTS_BLOCK);
+  if (next === prior) return;
+  writeFileSync(AGENTS_MD, next);
+  log(`  Codex          AGENTS.md memory block ${prior ? "updated" : "created"} -> ${AGENTS_MD}`);
+}
+
+/**
+ * Strip the hivemind block from ~/.codex/AGENTS.md on uninstall, deleting the
+ * file when nothing else remains and otherwise preserving the user's content.
+ */
+function removeCodexAgentsBlock(): void {
+  const prior = readFileOrNull(AGENTS_MD);
+  if (prior === null) return;
+  const stripped = stripMarkedBlock(prior);
+  if (stripped === prior) return;
+  if (stripped.trim().length === 0) {
+    rmSync(AGENTS_MD, { force: true });
+    log(`  Codex          removed empty ${AGENTS_MD}`);
+  } else {
+    writeFileSync(AGENTS_MD, stripped);
+    log(`  Codex          stripped hivemind block from ${AGENTS_MD}`);
+  }
+}
+
 export function installCodex(): void {
-  const srcBundle = join(pkgRoot(), "codex", "bundle");
-  const srcSkills = join(pkgRoot(), "codex", "skills");
+  const srcBundle = join(pkgRoot(), "harnesses", "codex", "bundle");
+  const srcSkills = join(pkgRoot(), "harnesses", "codex", "skills");
 
   if (!existsSync(srcBundle)) {
     throw new Error(`Codex bundle missing at ${srcBundle}. Run 'npm run build' first.`);
@@ -271,6 +335,8 @@ export function installCodex(): void {
     symlinkForce(embedDepsNm, pluginNm);
   }
 
+  writeCodexAgentsBlock();
+
   writeVersionStamp(PLUGIN_DIR, getVersion());
   log(`  Codex          installed -> ${PLUGIN_DIR}`);
 }
@@ -310,5 +376,6 @@ export function uninstallCodex(): void {
     unlinkSync(SKILL_LINK);
     log(`  Codex          removed ${SKILL_LINK}`);
   }
+  removeCodexAgentsBlock();
   log(`  Codex          plugin files kept at ${PLUGIN_DIR}`);
 }

@@ -2,9 +2,10 @@
  * Hivemind MCP server — exposes shared org memory as MCP tools.
  *
  * Tools:
- *   hivemind_search  — keyword/regex search across summaries + sessions
- *   hivemind_read    — read full content of a specific memory path
- *   hivemind_index   — list summaries with their dates and descriptions
+ *   hivemind_search       — keyword/regex search across summaries + sessions
+ *   hivemind_docs_search  — hybrid semantic/lexical search over per-file code docs
+ *   hivemind_read         — read full content of a specific memory path
+ *   hivemind_index        — list summaries with their dates and descriptions
  *
  * Transport: stdio. Spawned as a subprocess by the consuming MCP client
  * (Hermes today; reused by any future MCP-aware agent).
@@ -17,16 +18,21 @@ import * as z from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadCredentials } from "../commands/auth.js";
-import { loadConfig } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
+import { isMissingTableError } from "../deeplake-schema.js";
 import { sqlStr, sqlLike } from "../utils/sql.js";
-import { searchDeeplakeTables, buildGrepSearchOptions, normalizeContent, type GrepMatchParams } from "../shell/grep-core.js";
+import { searchDeeplakeTables, searchDocs, buildGrepSearchOptions, normalizeContent, TRUNCATION_NOTICE, type GrepMatchParams } from "../shell/grep-core.js";
+import { deriveProjectKey } from "../utils/repo-identity.js";
+import { makeQueryEmbedder } from "../docs/embed.js";
 import { getVersion } from "../cli/version.js";
+import { startCoworkIngestLoop, coworkDataNoticeOnce } from "./cowork-ingest.js";
 
 interface ServerContext {
   api: DeeplakeApi;
   memoryTable: string;
   sessionsTable: string;
+  docsTable: string;
 }
 
 function getContext(): ServerContext | { error: string } {
@@ -34,17 +40,35 @@ function getContext(): ServerContext | { error: string } {
   if (!creds?.token) {
     return { error: "Not authenticated. Run `hivemind login` to sign in to Deeplake." };
   }
-  const config = loadConfig();
+  const config = loadRoutedConfig();
   if (!config) {
     return { error: "Hivemind config could not be loaded — credentials present but invalid." };
   }
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
-  return { api, memoryTable: config.tableName, sessionsTable: config.sessionsTableName };
+  return { api, memoryTable: config.tableName, sessionsTable: config.sessionsTableName, docsTable: config.docsTableName };
 }
 
 function errorResult(text: string): { content: Array<{ type: "text"; text: string }> } {
   return { content: [{ type: "text", text }] };
 }
+
+/**
+ * Successful tool result. Prepends the one-time Cowork data notice when
+ * running inside a Cowork host (no-op everywhere else and after first use).
+ */
+function okResult(text: string): { content: Array<{ type: "text"; text: string }> } {
+  return { content: [{ type: "text", text: coworkDataNoticeOnce() + text }] };
+}
+
+/**
+ * On a fresh org no session has run yet, so the memory/sessions tables
+ * don't exist — provisioning happens in the per-agent SessionStart hooks,
+ * not here (the MCP server is read-only; a READ-role member couldn't
+ * CREATE TABLE anyway). Treat the backend's missing-table 400 as "memory
+ * is empty" instead of surfacing the raw error (issue #252).
+ */
+const FRESH_ORG_HINT =
+  "Hivemind memory is empty — tables are created when the first agent session starts, and entries appear after it ends.";
 
 const server = new McpServer({
   name: "hivemind",
@@ -78,16 +102,59 @@ server.registerTool(
     opts.limit = limit ?? 10;
 
     try {
-      const rows = await searchDeeplakeTables(ctx.api, ctx.memoryTable, ctx.sessionsTable, opts);
+      const meta = { truncated: false };
+      const rows = await searchDeeplakeTables(ctx.api, ctx.memoryTable, ctx.sessionsTable, opts, meta);
       if (rows.length === 0) return errorResult(`No matches for "${query}".`);
       const lines = rows.map(r => {
         const body = normalizeContent(r.path, r.content);
         return `[${r.path}]\n${body.slice(0, 600)}`;
       });
+      // Tell the caller when the row cap was hit so it doesn't treat a capped
+      // page as the complete set (consistent with the grep path).
+      if (meta.truncated) lines.push(TRUNCATION_NOTICE);
+      return okResult(lines.join("\n\n---\n\n"));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (isMissingTableError(msg)) return errorResult(`No matches for "${query}". ${FRESH_ORG_HINT}`);
+      return errorResult(`Search failed: ${msg}`);
+    }
+  },
+);
+
+server.registerTool(
+  "hivemind_docs_search",
+  {
+    description: "Search the per-file CODE documentation (kept fresh on commits) by meaning or keyword. Hybrid semantic + lexical. Use for 'where is X handled / how does Y work / which file does Z' about the current codebase — returns the most relevant source files with a one-line summary. Different from hivemind_search (that's past sessions/conversations; this is code docs).",
+    inputSchema: {
+      query: z.string().describe("Natural-language question or keywords about the codebase."),
+      limit: z.number().int().min(1).max(50).optional().describe("Maximum docs to return (default 10)."),
+    },
+  },
+  async ({ query, limit }: { query: string; limit?: number }) => {
+    const ctx = getContext();
+    if ("error" in ctx) return errorResult(ctx.error);
+
+    const params: GrepMatchParams = {
+      pattern: query, ignoreCase: true, wordMatch: false, filesOnly: false,
+      countOnly: false, lineNumber: false, invertMatch: false, fixedString: true,
+    };
+    const opts = buildGrepSearchOptions(params, "/");
+    opts.limit = limit ?? 10;
+    // Scope to the server's repo (legacy '' rows stay visible) — a shared org
+    // table must not leak another repo's docs into this one's search.
+    opts.project = deriveProjectKey(process.cwd()).key;
+    // Same rail as memory search: semantic when embeddings are on, else lexical.
+    opts.queryEmbedding = await makeQueryEmbedder()(query);
+
+    try {
+      const rows = await searchDocs((sql) => ctx.api.query(sql), ctx.docsTable, opts);
+      if (rows.length === 0) return errorResult(`No docs match "${query}".`);
+      const lines = rows.map(r => `[${r.path}]\n${r.content.slice(0, 600)}`);
       return { content: [{ type: "text", text: lines.join("\n\n---\n\n") }] };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return errorResult(`Search failed: ${msg}`);
+      if (isMissingTableError(msg)) return errorResult(`No docs match "${query}". ${FRESH_ORG_HINT}`);
+      return errorResult(`Docs search failed: ${msg}`);
     }
   },
 );
@@ -117,9 +184,10 @@ server.registerTool(
       const rows = await ctx.api.query(sql);
       if (rows.length === 0) return errorResult(`No content found at ${path}.`);
       const text = rows.map(r => normalizeContent(String(r["path"]), String(r["content"] ?? ""))).join("\n");
-      return { content: [{ type: "text", text }] };
+      return okResult(text);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (isMissingTableError(msg)) return errorResult(`No content found at ${path}. ${FRESH_ORG_HINT}`);
       return errorResult(`Read failed: ${msg}`);
     }
   },
@@ -157,9 +225,10 @@ server.registerTool(
         const date = String(r["last_update_date"] ?? "");
         return `${path}\t${date}\t${project}\t${desc}`;
       });
-      return { content: [{ type: "text", text: `path\tlast_updated\tproject\tdescription\n${lines.join("\n")}` }] };
+      return okResult(`path\tlast_updated\tproject\tdescription\n${lines.join("\n")}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (isMissingTableError(msg)) return errorResult(`No summaries found. ${FRESH_ORG_HINT}`);
       return errorResult(`Index failed: ${msg}`);
     }
   },
@@ -168,6 +237,10 @@ server.registerTool(
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // Cowork has no capture hooks — tail its local transcripts and write them
+  // to the sessions table so Cowork conversations become shared memory too.
+  // Best-effort and self-throttling; never touches the stdio channel.
+  startCoworkIngestLoop();
 }
 
 main().catch((err) => {

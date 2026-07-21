@@ -9,12 +9,13 @@
  */
 
 import {
-  readFileSync, writeFileSync, writeSync, mkdirSync, renameSync,
+  readFileSync, writeFileSync, writeSync, mkdirSync,
   existsSync, unlinkSync, openSync, closeSync, statSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log as _log } from "../utils/debug.js";
+import { renameAtomic } from "../utils/atomic-write.js";
 
 const dlog = (msg: string) => _log("summary-state", msg);
 
@@ -100,7 +101,7 @@ export function recordSessionOwner(sessionId: string, agentComms: string[] = ["c
     const p = ownerPath(sessionId);
     const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
     writeFileSync(tmp, JSON.stringify(owner));
-    renameSync(tmp, p);
+    renameAtomic(tmp, p);
   } catch (e: any) {
     dlog(`recordSessionOwner failed for ${sessionId}: ${e.message}`);
   }
@@ -215,7 +216,7 @@ export function writeState(sessionId: string, state: SummaryState): void {
   const p = statePath(sessionId);
   const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, JSON.stringify(state));
-  renameSync(tmp, p);
+  renameAtomic(tmp, p);
 }
 
 export function withRmwLock<T>(sessionId: string, fn: () => T): T {

@@ -84,7 +84,10 @@ describe("git-hook-install — install/uninstall lifecycle", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("install on fresh repo writes a hook with both markers + executable bit", () => {
+  // Unix file-mode bits: asserts the hook's executable bit (mode & 0o100).
+  // Windows has no POSIX permission bits, so the executable-bit assertion
+  // doesn't hold there — skipped on Windows.
+  it.skipIf(process.platform === "win32")("install on fresh repo writes a hook with both markers + executable bit", () => {
     const r = installPostCommitHook(dir);
     expect(r.kind).toBe("installed");
     if (r.kind !== "installed") return;

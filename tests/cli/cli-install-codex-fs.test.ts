@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, utimesSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, utimesSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
+import { HIVEMIND_BLOCK_START, HIVEMIND_BLOCK_END } from "../../src/cli/agents-md.js";
 
 /**
  * Tests for the disk-side of src/cli/install-codex.ts.
@@ -29,7 +31,9 @@ vi.mock("node:child_process", () => ({
 }));
 
 beforeEach(() => {
-  tmpRoot = join(tmpdir(), `hm-codex-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  // mkdtempSync creates a securely-unique temp dir (vs join(tmpdir(), predictable)),
+  // satisfying CodeQL js/insecure-temporary-file for the writes underneath it.
+  tmpRoot = mkdtempSync(join(tmpdir(), "hm-codex-"));
   tmpHome = join(tmpRoot, "home");
   tmpPkg = join(tmpRoot, "pkg");
 
@@ -37,15 +41,15 @@ beforeEach(() => {
   mkdirSync(join(tmpHome, ".codex"), { recursive: true });
 
   // Mock package layout: pkgRoot/codex/{bundle,skills}/<files>
-  mkdirSync(join(tmpPkg, "codex", "bundle"), { recursive: true });
-  writeFileSync(join(tmpPkg, "codex", "bundle", "session-start.js"), "// fake bundle file");
-  writeFileSync(join(tmpPkg, "codex", "bundle", "capture.js"), "// fake bundle file");
-  mkdirSync(join(tmpPkg, "codex", "skills", "deeplake-memory"), { recursive: true });
-  writeFileSync(join(tmpPkg, "codex", "skills", "deeplake-memory", "SKILL.md"), "fake skill body");
+  mkdirSync(join(tmpPkg, "harnesses", "codex", "bundle"), { recursive: true });
+  writeFileSync(join(tmpPkg, "harnesses", "codex", "bundle", "session-start.js"), "// fake bundle file");
+  writeFileSync(join(tmpPkg, "harnesses", "codex", "bundle", "capture.js"), "// fake bundle file");
+  mkdirSync(join(tmpPkg, "harnesses", "codex", "skills", "deeplake-memory"), { recursive: true });
+  writeFileSync(join(tmpPkg, "harnesses", "codex", "skills", "deeplake-memory", "SKILL.md"), "fake skill body");
   // Mock package.json so getVersion() resolves to a known value.
   writeFileSync(join(tmpPkg, "package.json"), JSON.stringify({ version: "1.2.3" }));
 
-  vi.stubEnv("HOME", tmpHome);
+  setFakeHome(tmpHome);
   execFileSyncMock.mockReset();
   // Silence stdout/stderr noise from the installer's log() calls.
   vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -54,7 +58,7 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
-  vi.unstubAllEnvs();
+  clearFakeHome();
   vi.restoreAllMocks();
   vi.resetModules();
 });
@@ -271,14 +275,14 @@ describe("installCodex — happy path", () => {
   });
 
   it("warns and skips the symlink (without throwing) when the skill source is missing", async () => {
-    rmSync(join(tmpPkg, "codex", "skills", "deeplake-memory"), { recursive: true, force: true });
+    rmSync(join(tmpPkg, "harnesses", "codex", "skills", "deeplake-memory"), { recursive: true, force: true });
     const { installCodex } = await importInstaller();
     expect(() => installCodex()).not.toThrow();
     expect(existsSync(join(tmpHome, ".agents", "skills", "hivemind-memory"))).toBe(false);
   });
 
   it("throws when the bundle source is missing (build hasn't run)", async () => {
-    rmSync(join(tmpPkg, "codex", "bundle"), { recursive: true, force: true });
+    rmSync(join(tmpPkg, "harnesses", "codex", "bundle"), { recursive: true, force: true });
     const { installCodex } = await importInstaller();
     expect(() => installCodex()).toThrow(/Codex bundle missing/);
   });
@@ -312,8 +316,11 @@ describe("installCodex — happy path", () => {
     // SessionStart has exactly one entry — the canonical one — and the
     // foreign /tmp/old-clone path is gone.
     expect(hooks.hooks.SessionStart).toHaveLength(1);
-    const cmd = hooks.hooks.SessionStart[0].hooks[0].command;
-    expect(cmd).toContain(`${tmpHome}/.codex/hivemind/bundle/session-start.js`);
+    // Normalize separators: on Windows the command is written with backslashes
+    // (join()), so compare against a join()-built path with both sides slashed.
+    const cmd = hooks.hooks.SessionStart[0].hooks[0].command.replace(/\\/g, "/");
+    const canonical = join(tmpHome, ".codex", "hivemind", "bundle", "session-start.js").replace(/\\/g, "/");
+    expect(cmd).toContain(canonical);
     expect(cmd).not.toContain("/tmp/old-clone");
 
     const warns = stderrCalls.join("");
@@ -366,10 +373,12 @@ describe("installCodex — happy path", () => {
     // Stripped from both events — only our canonical entries remain.
     expect(hooks.hooks.PostToolUse).toHaveLength(1);
     expect(hooks.hooks.PreToolUse).toHaveLength(1);
-    expect(hooks.hooks.PostToolUse[0].hooks[0].command)
-      .toContain(`${tmpHome}/.codex/hivemind/bundle/capture.js`);
-    expect(hooks.hooks.PreToolUse[0].hooks[0].command)
-      .toContain(`${tmpHome}/.codex/hivemind/bundle/pre-tool-use.js`);
+    // Normalize separators (Windows join() writes backslashes).
+    const slash = (s: string): string => s.replace(/\\/g, "/");
+    expect(slash(hooks.hooks.PostToolUse[0].hooks[0].command))
+      .toContain(slash(join(tmpHome, ".codex", "hivemind", "bundle", "capture.js")));
+    expect(slash(hooks.hooks.PreToolUse[0].hooks[0].command))
+      .toContain(slash(join(tmpHome, ".codex", "hivemind", "bundle", "pre-tool-use.js")));
 
     // And: no foreign warning, because neither entry passed isForeign (the
     // malformed siblings made `.every()` return false in both).
@@ -380,7 +389,65 @@ describe("installCodex — happy path", () => {
   });
 });
 
+// Reuse the source-of-truth markers so the test tracks any format change.
+const BEGIN = HIVEMIND_BLOCK_START;
+const END = HIVEMIND_BLOCK_END;
+
+describe("installCodex — AGENTS.md memory block", () => {
+  const agentsPath = (): string => join(tmpHome, ".codex", "AGENTS.md");
+
+  it("creates ~/.codex/AGENTS.md with exactly one hivemind block carrying the proactive instruction", async () => {
+    const { installCodex } = await importInstaller();
+    installCodex();
+    const md = readFileSync(agentsPath(), "utf-8");
+    expect((md.match(new RegExp(BEGIN, "g")) ?? []).length).toBe(1);
+    expect(md).toContain(END);
+    // The whole point: proactive memory + rules/goals guidance is injected
+    // here (silent model context), not in the user-visible session-start hook.
+    expect(md).toContain("Proactively consult");
+    expect(md).toContain("hivemind rules list");
+    expect(md).toContain("hivemind goal list --mine");
+  });
+
+  it("preserves a user's pre-existing AGENTS.md content; appends the block once", async () => {
+    writeFileSync(agentsPath(), "# My Codex notes\nUser content here.\n");
+    const { installCodex } = await importInstaller();
+    installCodex();
+    const md = readFileSync(agentsPath(), "utf-8");
+    expect(md).toContain("# My Codex notes");
+    expect(md).toContain("User content here.");
+    expect((md.match(new RegExp(BEGIN, "g")) ?? []).length).toBe(1);
+  });
+
+  it("is idempotent: re-running installCodex 5x leaves exactly one block", async () => {
+    const { installCodex } = await importInstaller();
+    for (let i = 0; i < 5; i++) installCodex();
+    const md = readFileSync(agentsPath(), "utf-8");
+    expect((md.match(new RegExp(BEGIN, "g")) ?? []).length).toBe(1);
+    expect((md.match(new RegExp(END, "g")) ?? []).length).toBe(1);
+  });
+});
+
 describe("uninstallCodex", () => {
+  it("strips the hivemind block from AGENTS.md while preserving user content", async () => {
+    const agentsPath = join(tmpHome, ".codex", "AGENTS.md");
+    writeFileSync(agentsPath, `# Header\nuser line\n\n${BEGIN}\nstale\n${END}\n\n## After\nmore user\n`);
+    const { uninstallCodex } = await importInstaller();
+    uninstallCodex();
+    const md = readFileSync(agentsPath, "utf-8");
+    expect(md).not.toContain(BEGIN);
+    expect(md).toContain("# Header");
+    expect(md).toContain("more user");
+  });
+
+  it("removes AGENTS.md entirely when only our block existed", async () => {
+    const { installCodex, uninstallCodex } = await importInstaller();
+    installCodex();
+    expect(existsSync(join(tmpHome, ".codex", "AGENTS.md"))).toBe(true);
+    uninstallCodex();
+    expect(existsSync(join(tmpHome, ".codex", "AGENTS.md"))).toBe(false);
+  });
+
   it("removes hooks.json and the agentskills symlink, but keeps the plugin payload", async () => {
     const { installCodex, uninstallCodex } = await importInstaller();
     installCodex();

@@ -13,6 +13,7 @@ import {
   searchDeeplakeTables,
   normalizeContent,
   refineGrepMatches,
+  withTruncationNotice,
   type GrepMatchParams,
   type ContentRow,
 } from "./grep-core.js";
@@ -120,6 +121,11 @@ export function createGrepCommand(
     }
 
     let rows: ContentRow[] = [];
+    // Remember a backend failure so we can distinguish "the search could not
+    // run" from "the search ran and matched nothing". Cleared as soon as any
+    // query (or the fallback) yields data.
+    let backendError: Error | null = null;
+    const meta = { truncated: false };
     try {
       const searchOptions = {
         ...buildGrepSearchOptions(matchParams, targets[0] ?? ctx.cwd),
@@ -128,11 +134,12 @@ export function createGrepCommand(
         queryEmbedding,
       };
       const queryRows = await Promise.race([
-        searchDeeplakeTables(client, table, sessionsTable ?? "sessions", searchOptions),
+        searchDeeplakeTables(client, table, sessionsTable ?? "sessions", searchOptions, meta),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
       ]);
       rows.push(...queryRows);
-    } catch {
+    } catch (e) {
+      backendError = e instanceof Error ? e : new Error(String(e));
       rows = []; // fall through to in-memory fallback
     }
 
@@ -147,11 +154,13 @@ export function createGrepCommand(
           limit: 100,
         };
         const lexicalRows = await Promise.race([
-          searchDeeplakeTables(client, table, sessionsTable ?? "sessions", lexicalOptions),
+          searchDeeplakeTables(client, table, sessionsTable ?? "sessions", lexicalOptions, meta),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
         ]);
         rows.push(...lexicalRows);
-      } catch {
+        if (lexicalRows.length > 0) backendError = null;
+      } catch (e) {
+        backendError = e instanceof Error ? e : new Error(String(e));
         // fall through to in-memory fallback below
       }
     }
@@ -173,6 +182,9 @@ export function createGrepCommand(
         const content = await fs.readFile(fp).catch(() => null);
         if (content !== null) rows.push({ path: fp, content });
       }
+      // The fallback produced data → the earlier backend error is no longer a
+      // user-visible failure.
+      if (rows.length > 0) backendError = null;
     }
 
     // Normalize session JSON blobs to per-turn lines.
@@ -195,10 +207,21 @@ export function createGrepCommand(
       output = refineGrepMatches(normalized, matchParams);
     }
 
-    return {
-      stdout: output.length > 0 ? output.join("\n") + "\n" : "",
-      stderr: "",
-      exitCode: output.length > 0 ? 0 : 1,
-    };
+    if (output.length > 0) {
+      const withNotice = withTruncationNotice(output, meta.truncated);
+      return { stdout: withNotice.join("\n") + "\n", stderr: "", exitCode: 0 };
+    }
+    // No output. Distinguish a genuine zero-match (exit 1) from a search that
+    // could not run (exit 2 + stderr, grep's error convention) so the caller
+    // never mistakes a backend failure for "nothing here".
+    if (backendError) {
+      return {
+        stdout: "",
+        stderr: `grep: hivemind search error: ${backendError.message} ` +
+          `(backend unavailable — result is NOT a confirmed empty match)\n`,
+        exitCode: 2,
+      };
+    }
+    return { stdout: "", stderr: "", exitCode: 1 };
   });
 }

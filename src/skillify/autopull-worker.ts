@@ -2,7 +2,7 @@
  * Standalone entrypoint that runs `autoPullSkills()` once and exits.
  * Bundled by esbuild for agents that can't import the shared module
  * (currently just pi, which ships its extension as raw .ts with zero
- * non-builtin runtime dependencies — see pi/extension-source/hivemind.ts).
+ * non-builtin runtime dependencies — see harnesses/pi/extension-source/hivemind.ts).
  *
  * Pi spawns this synchronously from session_start and waits for it to
  * exit before assembling the additionalContext payload. That mirrors

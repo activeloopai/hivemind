@@ -39,6 +39,7 @@
 import { createHash } from "node:crypto";
 
 import { loadConfig, type Config } from "../config.js";
+import { resolveDirConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
 import type { GraphSnapshot } from "./types.js";
@@ -47,6 +48,7 @@ export type PushOutcome =
   | { kind: "skipped-no-auth" }
   | { kind: "skipped-no-commit" }
   | { kind: "skipped-disabled" }
+  | { kind: "skipped-collect-disabled" }
   | { kind: "inserted"; commitSha: string }
   | { kind: "inserted-with-duplicate-race"; commitSha: string; rowCount: number }
   | { kind: "already-current"; commitSha: string }
@@ -58,6 +60,8 @@ export interface PushDeps {
   loadConfig?: () => Config | null;
   /** Override for tests; defaults to constructing a real DeeplakeApi. */
   makeApi?: (config: Config) => DeeplakeApi;
+  /** Working directory for `.hivemind` resolution; defaults to process.cwd(). */
+  cwd?: string;
 }
 
 /**
@@ -72,10 +76,19 @@ export async function pushSnapshot(
   if (process.env.HIVEMIND_GRAPH_PUSH === "0") {
     return { kind: "skipped-disabled" };
   }
-  const config = (deps.loadConfig ?? loadConfig)();
-  if (config === null) {
+  const base = (deps.loadConfig ?? loadConfig)();
+  if (base === null) {
     return { kind: "skipped-no-auth" };
   }
+  // Per-directory `.hivemind`: skip the graph push where the repo opts out,
+  // and route to the configured org/workspace otherwise. Use the resolved
+  // build cwd (threaded from `runBuildCommand`), NOT process.cwd(), so
+  // `hivemind graph build --cwd ../repo` resolves the right tree's `.hivemind`.
+  const dirRes = resolveDirConfig(base, deps.cwd ?? process.cwd());
+  if (!dirRes.collect) {
+    return { kind: "skipped-collect-disabled" };
+  }
+  const config = dirRes.config;
   const commitSha = snapshot.graph.commit_sha;
   if (commitSha === null) {
     // CodeRabbit Minor: distinct outcome for "no commit context" — the

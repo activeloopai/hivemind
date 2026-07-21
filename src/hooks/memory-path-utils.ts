@@ -111,3 +111,103 @@ export function rewritePaths(cmd: string): string {
     .replace(new RegExp('"' + escapeRe(HOME_VAR_PATH) + tail + '"', "g"), '"/"')
     .replace(new RegExp(escapeRe(HOME_VAR_PATH) + tail, "g"), "/");
 }
+
+// Split a bash command into pipe/chain stages, each an argv array, respecting
+// quotes and escapes. `>`/`>>` are emitted as their own tokens.
+export function parseBashTokens(cmd: string): string[][] {
+  const stages: string[][] = [];
+  let currentStage: string[] = [];
+  let currentToken = "";
+  let inSingle = false;
+  let inDouble = false;
+  let escape = false;
+
+  const pushToken = () => {
+    if (currentToken.length > 0) { currentStage.push(currentToken); currentToken = ""; }
+  };
+  const pushStage = () => {
+    pushToken();
+    if (currentStage.length > 0) { stages.push(currentStage); currentStage = []; }
+  };
+
+  for (let i = 0; i < cmd.length; i++) {
+    const char = cmd[i];
+
+    if (escape) { currentToken += char; escape = false; continue; } // prev char was `\`
+    // Backslash is literal inside single quotes (bash semantics) — treating it
+    // as an escape there would swallow the closing quote and hide a following
+    // `; cmd …` stage inside the quoted token.
+    if (char === "\\" && !inSingle) { escape = true; currentToken += char; continue; }
+    if (char === "'" && !inDouble) { inSingle = !inSingle; currentToken += char; continue; } // keep quotes
+    if (char === '"' && !inSingle) { inDouble = !inDouble; currentToken += char; continue; }
+
+    if (!inSingle && !inDouble) { // separators only act outside quotes
+      if (char === "\n" || char === ";") { pushStage(); continue; }
+      if (char === "|") { if (cmd[i + 1] === "|") i++; pushStage(); continue; } // `|` / `||`
+      if (char === "&" && cmd[i + 1] === "&") { i++; pushStage(); continue; }   // `&&`
+      if (char === ">") { // own token, so `>file` (no space) is detectable
+        pushToken();
+        if (cmd[i + 1] === ">") { currentStage.push(">>"); i++; } else currentStage.push(">");
+        continue;
+      }
+      if (char === "<") { // own token, so `<file` (no space) is detectable;
+        pushToken();      // `<<`/`<<<` (heredoc/herestring) lump into one token
+        let run = "<";    // so only a lone `<` reads a file path
+        while (cmd[i + 1] === "<" && run.length < 3) { run += "<"; i++; }
+        currentStage.push(run);
+        continue;
+      }
+      if (/\s/.test(char)) { pushToken(); continue; }
+    }
+
+    currentToken += char;
+  }
+
+  pushStage();
+  return stages;
+}
+
+// echo/printf print their args; `claude -p` takes a natural-language prompt —
+// a memory path in their arguments is inert text (the #87 false positive).
+// Interpreters (python/node/ruby/…) and fetchers (curl) are deliberately NOT
+// here: they execute/read their args, so a memory path is a real interaction.
+const PASSTHROUGH_COMMANDS = new Set(["echo", "printf", "claude"]);
+
+export function bashTouchesMemory(cmd: string): boolean {
+  // Substitutions — $(), backticks, <(…) — run on the host no matter whose
+  // argv they sit in, and isSafe() (which rejects them) only runs AFTER this
+  // function returns true. So they get no carve-out: any memory mention next
+  // to one is intercepted and lands on the guidance/deny path downstream.
+  if (/\$\(|`|<\(/.test(cmd) && touchesMemory(cmd)) return true;
+
+  const stages = parseBashTokens(stripHeredocBodies(cmd));
+
+  for (const stage of stages) {
+    if (stage.length === 0) continue;
+    const program = stage[0].replace(/^["']|["']$/g, "");
+
+    // A redirection on a memory path is a real interaction regardless of the
+    // command: `>`/`>>` writes (the documented `echo '<content>' > '<path>'`
+    // path), `<` reads (`claude -p 'summarize' < '<path>'`) — always intercept.
+    for (let i = 0; i < stage.length; i++) {
+      if ((stage[i] === ">" || stage[i] === ">>" || stage[i] === "<")
+          && i + 1 < stage.length && touchesMemory(stage[i + 1])) {
+        return true;
+      }
+    }
+
+    // echo/printf/claude with the path as inert text → skip this stage
+    // (substitution smuggling is already handled above).
+    if (PASSTHROUGH_COMMANDS.has(program)) {
+      continue;
+    }
+
+    // Default (builtins, interpreters, fetchers, anything else): a memory path
+    // in ANY token is a real interaction → intercept. getShellCommand()/isSafe()
+    // decide route-to-VFS vs retry-guidance downstream.
+    for (const token of stage) {
+      if (touchesMemory(token)) return true;
+    }
+  }
+  return false;
+}

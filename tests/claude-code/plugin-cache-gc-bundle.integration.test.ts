@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
  * Requires the bundle to be built (`npm run build`). Skipped if missing.
  */
 
-const bundlePath = resolve(process.cwd(), "claude-code", "bundle", "plugin-cache-gc.js");
+const bundlePath = resolve(process.cwd(), "harnesses", "claude-code", "bundle", "plugin-cache-gc.js");
 const bundleExists = existsSync(bundlePath);
 
 function makeFakeHome(): string {
@@ -47,7 +47,9 @@ function writeManifest(home: string, version: string): void {
 function runGcBundle(home: string, bundleInsideHome: string): { stdout: string; stderr: string } {
   try {
     const stdout = execFileSync("node", [bundleInsideHome], {
-      env: { ...process.env, HOME: home, HIVEMIND_DEBUG: "0" },
+      // homedir() reads HOME on POSIX and USERPROFILE on Windows — set both so
+      // the GC bundle resolves the fake cache root on every platform.
+      env: { ...process.env, HOME: home, USERPROFILE: home, HIVEMIND_DEBUG: "0" },
       input: "",
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -132,14 +134,14 @@ describe.skipIf(!bundleExists)("plugin-cache-gc shipped bundle", () => {
 
   it("skips silently when bundle is in a local --plugin-dir layout (not under ~/.claude/plugins/cache)", () => {
     const sandbox = join(tmpdir(), `hivemind-dev-it-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(join(sandbox, "claude-code", "bundle"), { recursive: true });
+    mkdirSync(join(sandbox, "harnesses", "claude-code", "bundle"), { recursive: true });
     try {
-      cpSync(bundlePath, join(sandbox, "claude-code", "bundle", "plugin-cache-gc.js"));
-      const { stdout, stderr } = runGcBundle(sandbox, join(sandbox, "claude-code", "bundle", "plugin-cache-gc.js"));
+      cpSync(bundlePath, join(sandbox, "harnesses", "claude-code", "bundle", "plugin-cache-gc.js"));
+      const { stdout, stderr } = runGcBundle(sandbox, join(sandbox, "harnesses", "claude-code", "bundle", "plugin-cache-gc.js"));
       // Must not crash; output is fine to be empty.
       expect(stderr).not.toMatch(/TypeError|ReferenceError|Cannot find module/);
       // The sandbox dir should be unchanged.
-      expect(statSync(join(sandbox, "claude-code")).isDirectory()).toBe(true);
+      expect(statSync(join(sandbox, "harnesses", "claude-code")).isDirectory()).toBe(true);
       expect(stdout).toBe("");
     } finally {
       rmSync(sandbox, { recursive: true, force: true });

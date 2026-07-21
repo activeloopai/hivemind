@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { SKILLIFY_COMMANDS } from "../../src/cli/skillify-spec.js";
 
 const PI_SOURCE = readFileSync(
-  join(process.cwd(), "pi", "extension-source", "hivemind.ts"),
+  join(process.cwd(), "harnesses", "pi", "extension-source", "hivemind.ts"),
   "utf-8",
 );
 
@@ -27,7 +27,7 @@ const piArrayMatch = PI_SOURCE.match(
 
 describe("pi skillify spec drift", () => {
   it("pi mirror block is present", () => {
-    expect(piArrayMatch, "PI_SKILLIFY_COMMANDS array literal not found in pi/extension-source/hivemind.ts").toBeTruthy();
+    expect(piArrayMatch, "PI_SKILLIFY_COMMANDS array literal not found in harnesses/pi/extension-source/hivemind.ts").toBeTruthy();
   });
 
   it("pi mirror has the same number of entries as the canonical spec", () => {

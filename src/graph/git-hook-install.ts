@@ -107,7 +107,7 @@ function tryGitConfig(cwd: string, key: string): string | null {
   }
 }
 
-function tryGitTopLevel(cwd: string): string | null {
+export function tryGitTopLevel(cwd: string): string | null {
   try {
     const out = execFileSync("git", ["rev-parse", "--show-toplevel"], {
       cwd,

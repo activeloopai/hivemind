@@ -125,7 +125,8 @@ describe("ensureLoggedIn", () => {
     const { ensureLoggedIn } = await importFresh();
     expect(await ensureLoggedIn()).toBe(true);
     expect(loginMock).toHaveBeenCalledTimes(1);
-    expect(loginMock).toHaveBeenCalledWith("https://api.deeplake.ai");
+    // Second arg is the affiliate --ref code, undefined when none was passed.
+    expect(loginMock).toHaveBeenCalledWith("https://api.deeplake.ai", undefined);
   });
 
   it("HIVEMIND_API_URL is used when set, otherwise default", async () => {
@@ -135,7 +136,7 @@ describe("ensureLoggedIn", () => {
     });
     const { ensureLoggedIn } = await importFresh();
     await ensureLoggedIn();
-    expect(loginMock).toHaveBeenCalledWith("https://hm.example");
+    expect(loginMock).toHaveBeenCalledWith("https://hm.example", undefined);
   });
 
   it("DEEPLAKE_API_URL env is NOT honored (legacy name removed)", async () => {
@@ -145,7 +146,16 @@ describe("ensureLoggedIn", () => {
     });
     const { ensureLoggedIn } = await importFresh();
     await ensureLoggedIn();
-    expect(loginMock).toHaveBeenCalledWith("https://api.deeplake.ai");
+    expect(loginMock).toHaveBeenCalledWith("https://api.deeplake.ai", undefined);
+  });
+
+  it("threads the affiliate --ref code through to login()", async () => {
+    loginMock.mockImplementation(async () => {
+      writeCreds({ token: "t", orgId: "o", savedAt: "" });
+    });
+    const { ensureLoggedIn } = await importFresh();
+    await ensureLoggedIn("mario");
+    expect(loginMock).toHaveBeenCalledWith("https://api.deeplake.ai", "mario");
   });
 
   it("returns false (and writes to stderr) when login() rejects", async () => {

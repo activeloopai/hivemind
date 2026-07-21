@@ -78,6 +78,13 @@ export interface MergeSkillArgs {
 
 export interface SkillWriteResult {
   path: string;
+  /**
+   * The canonical on-disk skill name: for a new skill this is the (possibly
+   * length-capped) name actually written; for a merge it's the target's name.
+   * Callers must record THIS in local state and the org row so the recorded
+   * identity matches the frontmatter/dir — never the raw pre-cap input.
+   */
+  name: string;
   action: "created" | "merged";
   version: number;
   /** ISO timestamp of the v=1 row's creation, preserved across merges. */
@@ -91,14 +98,76 @@ export interface SkillWriteResult {
 }
 
 /**
+ * Hard ceiling on a skill's frontmatter `name`. The codex skill loader
+ * rejects any skill whose `name` exceeds 64 chars ("invalid name: exceeds
+ * maximum length of 64 characters") and silently drops it. Verified
+ * empirically: a 64-char name loads, 66+ is rejected. The directory name is
+ * NOT the constraint — codex loads `<name>--<author>` dirs well over 64 chars
+ * as long as the frontmatter `name` fits — so only the `name` is capped.
+ */
+export const MAX_SKILL_NAME_LEN = 64;
+
+/** Length of the disambiguating suffix (`-` + {@link CAP_HASH_LEN} chars). */
+const CAP_HASH_LEN = 5;
+/** 36^CAP_HASH_LEN — modulus that keeps exactly CAP_HASH_LEN base-36 digits. */
+const CAP_HASH_MOD = 36 ** CAP_HASH_LEN;
+
+/**
+ * Deterministic short hash (djb2 → base36) used to disambiguate truncated
+ * names. Deterministic so the same input always caps to the same output —
+ * required for pull re-runs and for the on-disk dir to match the org row.
+ *
+ * Uses `% CAP_HASH_MOD` (the LOW-order base-36 digits), not the leading
+ * digits: djb2 changes the low bits most for small input deltas (e.g. names
+ * ending `-0` vs `-1` differ by 1 in the final hash), so slicing the high
+ * digits would collapse them onto the same suffix. Modulo keeps the digits
+ * that actually differ.
+ */
+function shortHash(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return (h % CAP_HASH_MOD).toString(36).padStart(CAP_HASH_LEN, "0");
+}
+
+/**
+ * Truncate a kebab-case skill name to {@link MAX_SKILL_NAME_LEN}. The model
+ * that names skills does not reliably respect a length limit, so we enforce it
+ * deterministically here rather than rejecting (and losing) an otherwise-good
+ * skill.
+ *
+ * Truncation appends a short hash of the FULL name so two distinct long names
+ * that share a prefix through the chosen hyphen boundary don't collapse onto
+ * the same identity (which would overwrite one skill with the other on pull,
+ * or version-confuse them in the org table). The cut lands on a hyphen
+ * boundary when possible and trailing hyphens are stripped, so the result is
+ * still a valid kebab-case slug. Idempotent: a name already <= the ceiling is
+ * returned unchanged, so re-capping a capped name is a no-op.
+ */
+export function capSkillName(name: string): string {
+  if (name.length <= MAX_SKILL_NAME_LEN) return name;
+  const suffix = `-${shortHash(name)}`;
+  const budget = MAX_SKILL_NAME_LEN - suffix.length;
+  let cut = name.slice(0, budget);
+  const lastHyphen = cut.lastIndexOf("-");
+  if (lastHyphen > 0) cut = cut.slice(0, lastHyphen);
+  cut = cut.replace(/-+$/, "");
+  // Degenerate fallback: a hyphenless prefix. Keep the first `budget` chars.
+  if (cut.length === 0) cut = name.slice(0, budget).replace(/-+$/, "");
+  return `${cut}${suffix}`;
+}
+
+/**
  * Reject any name that isn't a strict kebab-case slug. The name comes from
  * model output (the gate verdict) or from a remote `skills` row pulled over
  * the network — both untrusted. Without this check, a verdict like
  * `../../etc/passwd` or `/abs/path` would escape `skillsRoot` when joined.
  *
- * Additionally guards against paths longer than 100 chars (defensive — no
- * legitimate kebab-case skill name needs more) and rejects any name
- * containing path separators even if the regex passed (belt + suspenders).
+ * This is a PATH-SAFETY validator, not the skill-loader length limit: it keeps
+ * a generous 100-char ceiling (defensive — no legitimate kebab-case name needs
+ * more) so it can validate a long remote name's characters BEFORE the length
+ * is capped. The 64-char loader ceiling is owned by {@link capSkillName}, which
+ * write sites apply. It also rejects any name containing path separators even
+ * if the regex passed (belt + suspenders).
  */
 export function assertValidSkillName(name: string): void {
   if (typeof name !== "string" || name.length === 0) {
@@ -123,11 +192,34 @@ function skillPath(skillsRoot: string, name: string): string {
   return join(skillDir(skillsRoot, name), "SKILL.md");
 }
 
+/**
+ * Fold the activation condition into the description the host agent actually
+ * reads. Claude Code / Codex surface only `name` + `description` when deciding
+ * whether to invoke a skill — the `trigger` frontmatter field is custom and
+ * never reaches the model. So a well-written trigger is invisible to skill
+ * selection unless it also lives in `description`. Idempotent: composing an
+ * already-composed description is a no-op, so it survives the
+ * parse → merge → re-render roundtrip without stacking duplicate clauses.
+ */
+export function composeDescription(description: string, trigger?: string): string {
+  const desc = (description ?? "").trim();
+  const trig = (trigger ?? "").trim();
+  if (!trig) return desc;
+  // Already composed, or the description is itself phrased as a trigger.
+  if (desc.includes(trig) || /use this skill when/i.test(desc)) return desc;
+  // Normalize common trigger phrasings ("Use when X" / "When X") to one clause.
+  const condition = trig.replace(/^(use this skill when|use when|when)\s+/i, "");
+  const tail = `Use this skill when ${condition}`;
+  if (!desc) return tail;
+  const lead = /[.!?]$/.test(desc) ? desc : `${desc}.`;
+  return `${lead} ${tail}`;
+}
+
 /** Render YAML-ish frontmatter. Conservative quoting — no embedded newlines. */
 function renderFrontmatter(fm: SkillFrontmatter): string {
   const lines: string[] = ["---"];
   lines.push(`name: ${fm.name}`);
-  lines.push(`description: ${JSON.stringify(fm.description)}`);
+  lines.push(`description: ${JSON.stringify(composeDescription(fm.description, fm.trigger))}`);
   if (fm.trigger) lines.push(`trigger: ${JSON.stringify(fm.trigger)}`);
   if (fm.author) lines.push(`author: ${fm.author}`);
   lines.push(`source_sessions:`);
@@ -192,9 +284,17 @@ export function parseFrontmatter(text: string): { fm: Partial<SkillFrontmatter>;
 
 /** Write a new skill file. Errors if it already exists. */
 export function writeNewSkill(args: WriteSkillArgs): SkillWriteResult {
+  // Validate the RAW name's characters/path BEFORE capping its length, so an
+  // invalid tail (traversal / bad chars) beyond the retained prefix is
+  // rejected rather than silently truncated away. Then cap at this write seam
+  // so every caller (gate worker KEEP, mine-local, …) is loader-safe without
+  // each remembering to cap. Idempotent for already-capped names. mergeSkill
+  // deliberately does NOT cap — it must match an existing (possibly legacy
+  // over-long) target by its exact name.
   assertValidSkillName(args.name);
-  const dir = skillDir(args.skillsRoot, args.name);
-  const path = skillPath(args.skillsRoot, args.name);
+  const name = capSkillName(args.name);
+  const dir = skillDir(args.skillsRoot, name);
+  const path = skillPath(args.skillsRoot, name);
   if (existsSync(path)) {
     throw new Error(`skill already exists at ${path}; use mergeSkill`);
   }
@@ -205,7 +305,7 @@ export function writeNewSkill(args: WriteSkillArgs): SkillWriteResult {
   const author = args.author && args.author.length > 0 ? args.author : undefined;
   const contributors = author ? [author] : [];
   const fm: SkillFrontmatter = {
-    name: args.name,
+    name,
     description: args.description,
     trigger: args.trigger,
     author,
@@ -219,7 +319,7 @@ export function writeNewSkill(args: WriteSkillArgs): SkillWriteResult {
   const text = `${renderFrontmatter(fm)}\n\n${args.body.trim()}\n`;
   writeFileSync(path, text);
   return {
-    path, action: "created", version: 1,
+    path, name, action: "created", version: 1,
     createdAt: now, updatedAt: now,
     author, contributors,
   };
@@ -270,7 +370,7 @@ export function mergeSkill(args: MergeSkillArgs): SkillWriteResult {
   const text = `${renderFrontmatter(fm)}\n\n${args.body.trim()}\n`;
   writeFileSync(path, text);
   return {
-    path, action: "merged", version: fm.version,
+    path, name: args.name, action: "merged", version: fm.version,
     createdAt: fm.created_at, updatedAt: fm.updated_at,
     author, contributors,
   };

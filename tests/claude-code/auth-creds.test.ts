@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   configDir,
   credsPath,
 } from "../../src/commands/auth-creds.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
  * Source-level tests for src/commands/auth-creds.ts — credential file IO.
@@ -36,11 +37,11 @@ let ORIGINAL_HOME: string | undefined;
 beforeEach(() => {
   TEMP_HOME = mkdtempSync(join(tmpdir(), "hivemind-creds-test-"));
   ORIGINAL_HOME = process.env.HOME;
-  process.env.HOME = TEMP_HOME;
+  setFakeHome(TEMP_HOME);
 });
 
 afterEach(() => {
-  process.env.HOME = ORIGINAL_HOME;
+  clearFakeHome();
   rmSync(TEMP_HOME, { recursive: true, force: true });
 });
 
@@ -81,7 +82,38 @@ describe("loadCredentials", () => {
     mkdirSync(configDir(), { recursive: true, mode: 0o700 });
     writeFileSync(credsPath(), "not json {");
     expect(() => loadCredentials()).not.toThrow();
+    // Persistently-malformed file: the read is retried once, then gives up and
+    // returns null (exercises the attempt===0 → continue → attempt===1 path).
     expect(loadCredentials()).toBeNull();
+  });
+
+  it("ignores a stray *.tmp staging file left by a crashed writer", () => {
+    saveCredentials({ token: "tok", orgId: "org", savedAt: "" });
+    // Simulate a previous writer that died after writing the temp but before
+    // rename — a half-written staging file in the same dir must not affect the
+    // real credentials.json read.
+    writeFileSync(`${credsPath()}.999999.deadbeef.tmp`, "{ partial");
+    expect(loadCredentials()).toMatchObject({ token: "tok", orgId: "org" });
+  });
+
+  it("recovers a transient torn read by re-reading once (retry path)", () => {
+    saveCredentials({ token: "tok", orgId: "org", savedAt: "" });
+    let calls = 0;
+    // First read sees a half-written file (mid-rewrite by another process);
+    // the immediate re-read sees the complete file. Inject the reader so the
+    // race is deterministic without mocking node:fs.
+    const flaky = (p: string) => {
+      calls += 1;
+      if (calls === 1) return "{ truncated";          // torn read → JSON.parse throws
+      return readFileSync(p, "utf-8");                  // settled file
+    };
+    expect(loadCredentials(flaky)).toMatchObject({ token: "tok", orgId: "org" });
+    expect(calls).toBe(2);
+  });
+
+  it("returns null when both reads fail (persistent malformed)", () => {
+    const alwaysBad = () => "{ still broken";
+    expect(loadCredentials(alwaysBad)).toBeNull();
   });
 });
 
@@ -92,7 +124,10 @@ describe("saveCredentials", () => {
     savedAt: "ignored-by-save",
   };
 
-  it("creates ~/.deeplake with mode 0o700 when missing, then writes creds 0o600", () => {
+  // Unix file-mode bits: asserts the dir is 0o700 and the creds file 0o600.
+  // Windows has no POSIX permission bits (statSync().mode reflects the FAT/NTFS
+  // model), so the mode assertions don't hold there — skipped on Windows.
+  it.skipIf(process.platform === "win32")("creates ~/.deeplake with mode 0o700 when missing, then writes creds 0o600", () => {
     expect(existsSync(configDir())).toBe(false);
     saveCredentials(baseCreds);
 
@@ -118,6 +153,37 @@ describe("saveCredentials", () => {
     writeFileSync(join(configDir(), "sentinel"), "x");
     saveCredentials(baseCreds);
     expect(existsSync(join(configDir(), "sentinel"))).toBe(true);
+  });
+
+  it("writes atomically: leaves no *.tmp staging file behind", () => {
+    saveCredentials(baseCreds);
+    const leftovers = readdirSync(configDir()).filter(f => f.endsWith(".tmp"));
+    expect(leftovers).toEqual([]);
+    // and the committed file is complete, valid JSON
+    expect(() => JSON.parse(readFileSync(credsPath(), "utf-8"))).not.toThrow();
+  });
+
+  it.skipIf(process.platform === "win32")("cleans up the temp file and rethrows when the commit fails", () => {
+    // Force renameSync to fail by making credentials.json an existing
+    // directory (rename of a file onto a dir → EISDIR). The staging temp must
+    // be unlinked and the error rethrown — no partial state, no leaked tmp.
+    mkdirSync(credsPath(), { recursive: true, mode: 0o700 });
+    expect(() => saveCredentials(baseCreds)).toThrow();
+    const leftovers = readdirSync(configDir()).filter(f => f.endsWith(".tmp"));
+    expect(leftovers).toEqual([]);
+  });
+
+  it("repeated rewrites never leave a partial/unreadable credentials.json", () => {
+    // Each SessionStart can rewrite creds; a heavy concurrent user triggers
+    // many of these. Every committed state must be a complete, loadable file —
+    // and no staging files may accumulate.
+    for (let i = 0; i < 100; i++) {
+      saveCredentials({ token: `tok-${i}`, orgId: "org", savedAt: "" });
+      const got = loadCredentials();
+      expect(got).not.toBeNull();
+      expect(got?.token).toBe(`tok-${i}`);
+    }
+    expect(readdirSync(configDir()).filter(f => f.endsWith(".tmp"))).toEqual([]);
   });
 });
 

@@ -1,6 +1,6 @@
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { sqlLike, sqlStr } from "../utils/sql.js";
-import { normalizeContent } from "../shell/grep-core.js";
+import { normalizeContent, emptySessionBodyNotice } from "../shell/grep-core.js";
 
 type Row = Record<string, unknown>;
 
@@ -128,12 +128,21 @@ async function queryUnionRows(
   const unionQuery = buildUnionQuery(memoryQuery, sessionsQuery);
   try {
     return await api.query(unionQuery);
-  } catch {
-    const [memoryRows, sessionRows] = await Promise.all([
-      api.query(memoryQuery).catch(() => []),
-      api.query(sessionsQuery).catch(() => []),
+  } catch (unionErr) {
+    // The dual-table UNION can fail on SQL-compat grounds while the simpler
+    // single-table queries succeed — that is a legitimate fallback. But if
+    // BOTH fallbacks also fail, the backend genuinely could not be queried;
+    // swallowing that to [] would make a backend error look like an empty
+    // result (and "No such file or directory" to the agent). Surface it.
+    const settled = await Promise.allSettled([
+      api.query(memoryQuery),
+      api.query(sessionsQuery),
     ]);
-    return [...memoryRows, ...sessionRows];
+    const fulfilled = settled.filter(
+      (r): r is PromiseFulfilledResult<Row[]> => r.status === "fulfilled",
+    );
+    if (fulfilled.length === 0) throw unionErr;
+    return fulfilled.flatMap((r) => r.value);
   }
 }
 
@@ -156,16 +165,28 @@ export async function readVirtualPathContents(
 
   const memoryHits = new Map<string, string>();
   const sessionHits = new Map<string, string[]>();
+  // Count session rows per path regardless of body content, so a path whose
+  // rows all carry NULL/empty `message` (dropped by the typeof guard below) is
+  // still distinguishable from a path with no rows at all. The former is a
+  // corrupt/bodyless session (size>0 but nothing to read) and must NOT collapse
+  // to a silently-empty file or a misleading "No such file".
+  const sessionRowCounts = new Map<string, number>();
   for (const row of rows) {
     const path = row["path"];
-    const content = row["content"];
     const sourceOrder = Number(row["source_order"] ?? 0);
-    if (typeof path !== "string" || typeof content !== "string") continue;
+    if (typeof path !== "string") continue;
+    if (sourceOrder !== 0) {
+      sessionRowCounts.set(path, (sessionRowCounts.get(path) ?? 0) + 1);
+    }
+    const content = row["content"];
+    if (typeof content !== "string") continue;
     if (sourceOrder === 0) {
       memoryHits.set(path, content);
     } else {
+      const normalized = normalizeSessionPart(path, content);
+      if (!normalized) continue;
       const current = sessionHits.get(path) ?? [];
-      current.push(normalizeSessionPart(path, content));
+      current.push(normalized);
       sessionHits.set(path, current);
     }
   }
@@ -178,6 +199,14 @@ export async function readVirtualPathContents(
     const sessionParts = sessionHits.get(path) ?? [];
     if (sessionParts.length > 0) {
       result.set(path, sessionParts.join("\n"));
+      continue;
+    }
+    // Rows exist for this session but every body was empty/NULL — surface an
+    // honest diagnostic instead of an empty file (silent 0 bytes) or leaving
+    // it null (which the caller renders as "No such file" though `ls` lists it).
+    const rowCount = sessionRowCounts.get(path) ?? 0;
+    if (rowCount > 0) {
+      result.set(path, emptySessionBodyNotice(rowCount));
     }
   }
 

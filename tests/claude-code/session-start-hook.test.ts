@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -197,12 +197,64 @@ describe("session-start hook — guards", () => {
   });
 
   it("falls back to orgId when orgName is missing", async () => {
+    // The banner reflects the effective (resolved) config; real loadConfig
+    // sets orgName = orgId when creds lack an orgName, so drive that here.
     loadCredsMock.mockReturnValue({
       token: "t", orgId: "org-uuid", userName: "u", workspaceId: "default",
     });
+    loadConfigMock.mockReturnValue({ ...validConfig, orgId: "org-uuid", orgName: undefined });
     const out = await runHook();
     const parsed = JSON.parse(out!);
     expect(parsed.hookSpecificOutput.additionalContext).toContain("Logged in to Deeplake as org: org-uuid");
+  });
+
+  describe("per-directory .hivemind wiring", () => {
+    let hmDir: string;
+
+    afterEach(() => {
+      if (hmDir) rmSync(hmDir, { recursive: true, force: true });
+    });
+
+    function withHivemind(body: Record<string, unknown>): void {
+      hmDir = mkdtempSync(join(tmpdir(), "session-start-hivemind-"));
+      writeFileSync(join(hmDir, ".hivemind"), JSON.stringify(body));
+      stdinMock.mockResolvedValue({ session_id: "sid-1", cwd: hmDir });
+    }
+
+    it("a routing .hivemind sends the placeholder to the routed org and discloses it in the banner", async () => {
+      withHivemind({ orgId: "routed-org", workspaceId: "routed-ws" });
+      const out = await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
+      const ctx = JSON.parse(out!).hookSpecificOutput.additionalContext;
+      expect(ctx).toContain("org: routed-org (workspace: routed-ws)");
+      expect(ctx).toContain("routed by");
+      // Capture still happens (routed, not opted out) → tables ensured.
+      expect(ensureTableMock).toHaveBeenCalled();
+    });
+
+    it("collect:false skips the placeholder/table setup and says capture is disabled", async () => {
+      withHivemind({ collect: false });
+      const out = await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
+      const ctx = JSON.parse(out!).hookSpecificOutput.additionalContext;
+      expect(ctx).toContain("capture is disabled for this directory");
+      // No capture → no DDL and no placeholder INSERT for this directory.
+      expect(ensureTableMock).not.toHaveBeenCalled();
+      expect(ensureSessionsTableMock).not.toHaveBeenCalled();
+    });
+
+    it("env HIVEMIND_ORG_ID overrides a routing .hivemind (env > file)", async () => {
+      withHivemind({ orgId: "routed-org", workspaceId: "routed-ws" });
+      // base already reflects the env-pinned org (loadConfig folds it in).
+      loadConfigMock.mockReturnValue({ ...validConfig, orgId: "env-org", orgName: "env-org" });
+      loadCredsMock.mockReturnValue({
+        token: "tok", orgId: "env-org", orgName: "env-org", userName: "alice", workspaceId: "default",
+      });
+      const out = await runHook({ HIVEMIND_ORG_ID: "env-org", HIVEMIND_WORKSPACE_ID: undefined });
+      const ctx = JSON.parse(out!).hookSpecificOutput.additionalContext;
+      expect(ctx).toContain("org: env-org");
+      expect(ctx).not.toContain("routed-org");
+      // workspace isn't env-pinned, so the file still routes it.
+      expect(ctx).toContain("workspace: routed-ws");
+    });
   });
 
   it("backfills userName via node:os when credentials lack one", async () => {

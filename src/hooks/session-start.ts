@@ -7,13 +7,15 @@
  */
 
 import { fileURLToPath } from "node:url";
+import { maybeSpawnDocsRefresh } from "../docs/auto-refresh-trigger.js";
+import { docsWikiContextNote } from "../docs/docs-context.js";
+import { deriveProjectKey } from "../utils/repo-identity.js";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials, healDriftedOrgToken } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
+import { resolveDirConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlStr } from "../utils/sql.js";
-import { projectNameFromCwd } from "../utils/project-name.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
 import { getInstalledVersion } from "../utils/version-check.js";
@@ -29,6 +31,7 @@ import { graphContextLine } from "../graph/session-context.js";
 import { spawnGraphPullWorker } from "../graph/spawn-pull-worker.js";
 import { entrypointPassesOnlyCliGate } from "./shared/capture-gate.js";
 import { clearSessionEnded, recordSessionOwner, touchSessionActivity } from "./summary-state.js";
+import { createPlaceholderSummary } from "./shared/placeholder-summary.js";
 const log = (msg: string) => _log("session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -94,38 +97,18 @@ Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-de
 const HOME = homedir();
 const { log: wikiLog } = makeWikiLogger(join(HOME, ".claude", "hooks"));
 
-/** Create a placeholder summary via direct SQL INSERT (no DeeplakeFs bootstrap needed). */
+/**
+ * Create a placeholder summary via the shared race-safe writer. The atomic
+ * `INSERT ... WHERE NOT EXISTS` inside createPlaceholderSummary guarantees a
+ * finalized+embedded row is never reverted to an 'in progress' stub by a
+ * resumed/concurrent SessionStart (the production clobber).
+ */
 async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string, pluginVersion: string): Promise<void> {
-  const summaryPath = `/summaries/${userName}/${sessionId}.md`;
-
-  const existing = await api.query(
-    `SELECT path FROM "${table}" WHERE path = '${sqlStr(summaryPath)}' LIMIT 1`
+  await createPlaceholderSummary(
+    (sql) => api.query(sql),
+    { table, sessionId, cwd, userName, orgName, workspaceId, agent: "claude_code", pluginVersion },
+    wikiLog,
   );
-  if (existing.length > 0) {
-    wikiLog(`SessionStart: summary exists for ${sessionId} (resumed)`);
-    return;
-  }
-
-  const now = new Date().toISOString();
-  const projectName = projectNameFromCwd(cwd);
-  const sessionSource = `/sessions/${userName}/${userName}_${orgName}_${workspaceId}_${sessionId}.jsonl`;
-  const content = [
-    `# Session ${sessionId}`,
-    `- **Source**: ${sessionSource}`,
-    `- **Started**: ${now}`,
-    `- **Project**: ${projectName}`,
-    `- **Status**: in-progress`,
-    "",
-  ].join("\n");
-  const filename = `${sessionId}.md`;
-
-  await api.query(
-    `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ('${crypto.randomUUID()}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
-    `${Buffer.byteLength(content, "utf-8")}, '${sqlStr(projectName)}', 'in progress', 'claude_code', '${sqlStr(pluginVersion)}', '${now}', '${now}')`
-  );
-
-  wikiLog(`SessionStart: created placeholder for ${sessionId} (${cwd})`);
 }
 
 interface SessionStartInput {
@@ -213,6 +196,15 @@ async function main(): Promise<void> {
   // CLI write path (`hivemind rules add`).
   const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false" && entrypointPassesOnlyCliGate();
 
+  // Per-directory `.hivemind`: route this tree's traces to a configured
+  // org/workspace, or opt out entirely (`collect: false`). Resolved once and
+  // reused for the placeholder write below and the disclosure banner. Falls
+  // back to the global identity when no `.hivemind` applies.
+  const sessionCwd = input.cwd ?? process.cwd();
+  const baseConfig = loadConfig();
+  const dirRes = baseConfig ? resolveDirConfig(baseConfig, sessionCwd) : null;
+  const collectHere = captureEnabled && (dirRes?.collect ?? true);
+
   // Auto-pull skills from all org users into ~/.claude/skills/ on every
   // SessionStart. File writes inside runPull are idempotent (skipped
   // when local version is at-or-newer than remote), so re-running each
@@ -227,21 +219,38 @@ async function main(): Promise<void> {
   let rulesBlock = "";
   if (input.session_id && creds?.token) {
     try {
-      const config = loadConfig();
+      const config = dirRes?.config;
       if (config) {
         const table = config.tableName;
         const sessionsTable = config.sessionsTableName;
         const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
-        if (captureEnabled) {
+        if (collectHere) {
           await api.ensureTable();
           await api.ensureSessionsTable(sessionsTable);
-          await createPlaceholder(api, table, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId, pluginVersion);
+          await createPlaceholder(api, table, input.session_id, sessionCwd, config.userName, config.orgName, config.workspaceId, pluginVersion);
           log("placeholder created");
         } else {
-          const reason = process.env.HIVEMIND_CAPTURE === "false"
-            ? "HIVEMIND_CAPTURE=false"
-            : "HIVEMIND_CAPTURE_ONLY_CLI gate";
+          const reason = dirRes && !dirRes.collect
+            ? `.hivemind collect:false (${dirRes.found?.path})`
+            : process.env.HIVEMIND_CAPTURE === "false"
+              ? "HIVEMIND_CAPTURE=false"
+              : "HIVEMIND_CAPTURE_ONLY_CLI gate";
           log(`placeholder + schema ensure skipped (${reason})`);
+        }
+        // Docs auto sync check — the "every so often" the summary worker has.
+        // Post-commit alone misses pulled commits and long-idle repos; a
+        // session start is the natural cheap tick. `full` widens the per-file
+        // scan past the one-commit git window, exactly to cover those gaps.
+        // Independent of captureEnabled: docs consent lives in its own
+        // registry (explicit per-(org, repo) opt-in), and the cycle's guards
+        // (sha match, 6h quiet period, lease) make most spawns a no-op.
+        try {
+          const cwd = input.cwd ?? process.cwd();
+          if (maybeSpawnDocsRefresh(cwd, { orgId: config.orgId, project: deriveProjectKey(cwd).key, full: true })) {
+            log("docs auto sync spawned (session-start tick)");
+          }
+        } catch {
+          // best-effort: a docs tick must never break SessionStart
         }
         // Renderer is read-only and runs regardless of captureEnabled.
         // It absorbs its own errors (missing table, network, etc.)
@@ -314,8 +323,31 @@ async function main(): Promise<void> {
   const graphLine = graphContextLine(input.cwd ?? process.cwd());
   const graphNote = graphLine ?? "";
 
+  // Docs wiki note — the agent has no other way to learn the wiki exists.
+  // Gated on the same local consent registry as auto sync (no network),
+  // and worded on-demand, never wiki-first (see docs-context.ts).
+  const docsNote = creds?.token
+    ? docsWikiContextNote(creds.orgId ?? "", deriveProjectKey(input.cwd ?? process.cwd()).key)
+    : "";
+
+  // Disclose the EFFECTIVE identity (after any `.hivemind` overlay), so a
+  // directory that routes elsewhere (or opts out) is never silent.
+  const effConfig = dirRes?.config ?? baseConfig;
+  // NOT gated on `dirRes.collect`: the identity overlay now applies to reads
+  // whether or not capture is on, so a `collect:false` directory can still be
+  // routed — and must say so.
+  const routed = !!(dirRes?.found && baseConfig &&
+    (dirRes.config.orgId !== baseConfig.orgId || dirRes.config.workspaceId !== baseConfig.workspaceId));
+  const effOrg = effConfig ? (effConfig.orgName ?? effConfig.orgId) : (creds?.orgName ?? creds?.orgId);
+  const effWs = effConfig ? effConfig.workspaceId : (creds?.workspaceId ?? "default");
+  // `routed` covers reads AND capture — both resolve through the same overlay —
+  // so the disclosure must never imply one moved without the other.
+  const routedNote = routed ? ` · routed by ${dirRes?.found?.path}` : "";
+  const identityLine = dirRes && !dirRes.collect
+    ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search uses org: ${effOrg} (workspace: ${effWs})${routedNote}`
+    : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routedNote}`;
   const baseContext = creds?.token
-    ? `${resolvedContext}\n\nLogged in to Deeplake as org: ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"})${updateNotice}`
+    ? `${resolvedContext}\n\n${identityLine}${updateNotice}`
     : `${resolvedContext}\n\nNot logged in to Deeplake; memory search is unavailable this session.${localMinedNote}${updateNotice}`;
   // Append the rules block when there's something to show, then
   // append the graph note (single line, may be empty). The renderer
@@ -323,7 +355,7 @@ async function main(): Promise<void> {
   const withRules = rulesBlock
     ? `${baseContext}\n\n${rulesBlock}`
     : baseContext;
-  const additionalContext = `${withRules}${graphNote}`;
+  const additionalContext = `${withRules}${graphNote}${docsNote}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {

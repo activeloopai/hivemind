@@ -1,8 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { homedir } from "node:os";
 
-const bundleDir = join(process.cwd(), "claude-code", "bundle");
+// Absolute memory path as the product builds it (src/hooks/memory-path-utils.ts
+// uses join(homedir(), ".deeplake", "memory")). String-concatenating with "/"
+// would not match the native-separator MEMORY_PATH on Windows.
+const ABS_MEMORY = join(homedir(), ".deeplake", "memory");
+
+const bundleDir = join(process.cwd(), "harnesses", "claude-code", "bundle");
 
 /**
  * Pipe JSON into the CC pre-tool-use hook and return parsed output.
@@ -253,11 +259,10 @@ describe("pre-tool-use: interpreter reads on memory paths return guidance (never
   // a host `cat` — that decision runs on the real filesystem and would let
   // `python3 ~/.deeplake/memory/../../etc/passwd` read a real file. The agent is
   // told to retry with a supported builtin (which IS routed through the VFS).
-  const { homedir } = require("node:os");
   const interpreterReads = [
     "python3 ~/.deeplake/memory/data.json",
     "python3 $HOME/.deeplake/memory/foo.json",
-    `python3 ${homedir()}/.deeplake/memory/session.json`,
+    `python3 ${join(ABS_MEMORY, "session.json")}`,
     "node ~/.deeplake/memory/locomo_bench/conv_0_session_1.json",
     "perl ~/.deeplake/memory/notes.txt",
     "python3 ~/.deeplake/memory/file.json | head",
@@ -411,8 +416,7 @@ describe("pre-tool-use: path variant handling", () => {
   });
 
   it("handles absolute home path", () => {
-    const home = process.env.HOME || "/home/user";
-    const r = runPreToolUse("Bash", { command: `ls ${home}/.deeplake/memory/` });
+    const r = runPreToolUse("Bash", { command: `ls ${ABS_MEMORY}${sep}` });
     expect(r.empty).toBe(false);
     if (!r.empty) {
       expect(r.decision).toBe("allow");
@@ -436,9 +440,8 @@ describe("pre-tool-use: path variant handling", () => {
 
 describe("pre-tool-use: Write / Edit on memory paths are denied with Bash guidance", () => {
   it("denies Write to an absolute memory path", () => {
-    const { homedir } = require("node:os");
     const r = runPreToolUse("Write", {
-      file_path: `${homedir()}/.deeplake/memory/goal/u/opened/x.md`,
+      file_path: join(ABS_MEMORY, "goal", "u", "opened", "x.md"),
       content: "hello",
     });
     expect(r.empty).toBe(false);
@@ -483,5 +486,88 @@ describe("pre-tool-use: Write / Edit on memory paths are denied with Bash guidan
     });
     // Outside memory: hook should pass through (no decision emitted)
     expect(r.empty).toBe(true);
+  });
+});
+
+
+describe("pre-tool-use: incidental memory mentions pass through", () => {
+  it("passes through `claude -p` with a memory path in the prompt", () => {
+    const r = runPreToolUse("Bash", {
+      command: "claude -p 'use the memory at ~/.deeplake/memory/'",
+    });
+    expect(r.empty).toBe(true);
+  });
+
+  it("passes through `echo` of a memory path", () => {
+    const r = runPreToolUse("Bash", { command: "echo '~/.deeplake/memory/'" });
+    expect(r.empty).toBe(true);
+  });
+
+  // ── boundaries: the carve-out must NOT swallow real interactions ──
+
+  it("still intercepts `echo` redirecting INTO memory (documented write path)", () => {
+    const r = runPreToolUse("Bash", { command: "echo 'hi' > ~/.deeplake/memory/note.md" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toContain("RETRY REQUIRED");
+    }
+  });
+
+  it("still intercepts `echo` with a substitution touching memory", () => {
+    const r = runPreToolUse("Bash", { command: "echo $(cat ~/.deeplake/memory/index.md)" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toContain("RETRY REQUIRED");
+    }
+  });
+
+  it("intercepts a quoted reader path", () => {
+    const r = runPreToolUse("Bash", { command: 'cat "~/.deeplake/memory/index.md"' });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toContain("RETRY REQUIRED");
+    }
+  });
+
+  it("still intercepts `echo` with a process substitution reading memory", () => {
+    const r = runPreToolUse("Bash", { command: "echo <(cat ~/.deeplake/memory/secrets.md)" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toContain("RETRY REQUIRED");
+    }
+  });
+
+  it("still intercepts a reader stage hidden behind a backslash in single quotes", () => {
+    // In bash, `\` is literal inside single quotes, so the quote closes and
+    // `cat …` is a second stage — a parser that escapes through the quote
+    // would swallow it into the echo passthrough.
+    const r = runPreToolUse("Bash", { command: "echo 'a\\' ; cat ~/.deeplake/memory/index.md" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toContain("RETRY REQUIRED");
+    }
+  });
+
+  it("still intercepts `claude` reading memory via input redirect", () => {
+    const r = runPreToolUse("Bash", { command: "claude -p 'summarize this' < ~/.deeplake/memory/index.md" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toContain("RETRY REQUIRED");
+    }
+  });
+
+  it("still intercepts `printf` reading memory via input redirect", () => {
+    const r = runPreToolUse("Bash", { command: "printf '%s' < ~/.deeplake/memory/index.md" });
+    expect(r.empty).toBe(false);
+    if (!r.empty) {
+      expect(r.decision).toBe("allow");
+      expect(r.updatedCommand).toContain("RETRY REQUIRED");
+    }
   });
 });

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 /**
  * Tests for the disk-side of src/cli/install-cursor.ts.
@@ -21,21 +22,21 @@ beforeEach(() => {
   tmpHome = join(tmpRoot, "home");
   tmpPkg = join(tmpRoot, "pkg");
   mkdirSync(join(tmpHome, ".cursor"), { recursive: true });
-  mkdirSync(join(tmpPkg, "cursor", "bundle"), { recursive: true });
-  writeFileSync(join(tmpPkg, "cursor", "bundle", "session-start.js"), "// fake bundle");
-  writeFileSync(join(tmpPkg, "cursor", "bundle", "capture.js"), "// fake bundle");
-  writeFileSync(join(tmpPkg, "cursor", "bundle", "pre-tool-use.js"), "// fake bundle");
-  writeFileSync(join(tmpPkg, "cursor", "bundle", "session-end.js"), "// fake bundle");
+  mkdirSync(join(tmpPkg, "harnesses", "cursor", "bundle"), { recursive: true });
+  writeFileSync(join(tmpPkg, "harnesses", "cursor", "bundle", "session-start.js"), "// fake bundle");
+  writeFileSync(join(tmpPkg, "harnesses", "cursor", "bundle", "capture.js"), "// fake bundle");
+  writeFileSync(join(tmpPkg, "harnesses", "cursor", "bundle", "pre-tool-use.js"), "// fake bundle");
+  writeFileSync(join(tmpPkg, "harnesses", "cursor", "bundle", "session-end.js"), "// fake bundle");
   writeFileSync(join(tmpPkg, "package.json"), JSON.stringify({ version: "9.9.9" }));
 
-  vi.stubEnv("HOME", tmpHome);
+  setFakeHome(tmpHome);
   vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 });
 
 afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
-  vi.unstubAllEnvs();
+  clearFakeHome();
   vi.restoreAllMocks();
   vi.resetModules();
 });
@@ -112,7 +113,7 @@ describe("installCursor", () => {
   });
 
   it("throws when the bundle source is missing (build hasn't run)", async () => {
-    rmSync(join(tmpPkg, "cursor", "bundle"), { recursive: true, force: true });
+    rmSync(join(tmpPkg, "harnesses", "cursor", "bundle"), { recursive: true, force: true });
     const { installCursor } = await importInstaller();
     expect(() => installCursor()).toThrow(/Cursor bundle missing/);
   });

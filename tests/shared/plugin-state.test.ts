@@ -3,6 +3,7 @@ import { writeFileSync, mkdirSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { isHivemindPluginEnabled } from "../../src/utils/plugin-state.js";
+import { setFakeHome, clearFakeHome } from "./fake-home.js";
 
 // isHivemindPluginEnabled reads homedir() at call time, so patching
 // process.env.HOME redirects it to a temp directory on each invocation.
@@ -20,11 +21,11 @@ describe("isHivemindPluginEnabled", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "plugin-state-test-"));
     originalHome = process.env.HOME;
-    process.env.HOME = tmpDir;
+    setFakeHome(tmpDir);
   });
 
   afterEach(() => {
-    process.env.HOME = originalHome;
+    clearFakeHome();
     rmSync(tmpDir, { recursive: true, force: true });
   });
 

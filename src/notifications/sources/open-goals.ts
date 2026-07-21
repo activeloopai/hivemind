@@ -52,6 +52,18 @@ export async function fetchOpenGoals(
       creds.workspaceId ?? "default",
       goalsTableName,
     );
+    // Pre-flight existence guard (mirrors the SessionStart context block's
+    // `tableExists` skip): on a fresh org that never created hivemind_goals,
+    // sending the SELECT logs a 42P01 server-side on EVERY SessionStart even
+    // though the catch below hides it from the user. knownTablesOrNull returns
+    // the trusted table list (skip the read when goals is absent) and null when
+    // the lookup couldn't be trusted (fall back to SELECT-then-catch so a
+    // transient blip doesn't suppress a table that really exists).
+    const known = await api.knownTablesOrNull();
+    if (known && !known.includes(goalsTableName)) {
+      log(`fetchOpenGoals: table "${goalsTableName}" not present — skipping read`);
+      return null;
+    }
     // Reuse the canonical goal reader: it matches the owner by exact
     // full form, exact short form, and `short@%` alias (never a
     // `'%user%'` substring scan, which collides — e.g. 'ali' matching

@@ -17,6 +17,10 @@ export interface UserConfig {
   embeddings?: {
     enabled?: boolean;
   };
+  docs?: {
+    /** Which host CLI authors the docs (claude | codex | pi | cursor). */
+    llmAgent?: string;
+  };
 }
 
 let _configPath: () => string = () =>
@@ -103,6 +107,20 @@ function migrationValueFromEnv(): boolean {
 
 export function setEmbeddingsEnabled(enabled: boolean): void {
   writeUserConfig({ embeddings: { enabled } });
+}
+
+/**
+ * The persisted host agent for doc generation, or undefined when unset (the
+ * resolver then falls back to auto-detection). No env-var migration: the env
+ * override `HIVEMIND_DOCS_LLM_AGENT` stays a separate, higher-priority knob.
+ */
+export function getDocsLlmAgent(): string | undefined {
+  const v = readUserConfig().docs?.llmAgent;
+  return typeof v === "string" && v.trim() !== "" ? v : undefined;
+}
+
+export function setDocsLlmAgent(agent: string): void {
+  writeUserConfig({ docs: { llmAgent: agent } });
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

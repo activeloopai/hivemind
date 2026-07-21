@@ -34,6 +34,7 @@ import {
   _setLockTimingForTesting,
   _resetLockTimingForTesting,
 } from "../../src/notifications/queue.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 let tmpHome = "";
 let origHome: string | undefined;
@@ -41,7 +42,7 @@ let origHome: string | undefined;
 beforeEach(() => {
   tmpHome = mkdtempSync(join(tmpdir(), "queue-lock-test-"));
   origHome = process.env.HOME;
-  process.env.HOME = tmpHome;
+  setFakeHome(tmpHome);
   // Short retries + short stale window so the synthetic branches resolve
   // in milliseconds, not the production 6 s.
   _setLockTimingForTesting({ retryMax: 5, retryBaseMs: 1, staleMs: 50 });
@@ -49,7 +50,7 @@ beforeEach(() => {
 
 afterEach(() => {
   _resetLockTimingForTesting();
-  if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
+  clearFakeHome();
   rmSync(tmpHome, { recursive: true, force: true });
 });
 

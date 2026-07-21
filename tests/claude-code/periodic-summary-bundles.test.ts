@@ -28,22 +28,22 @@ import { resolve } from "node:path";
 const BUNDLE_ROOT = resolve(process.cwd());
 
 const SESSION_END_HOOKS: Array<[string, string]> = [
-  ["claude-code session-end", resolve(BUNDLE_ROOT, "claude-code", "bundle", "session-end.js")],
-  ["codex stop", resolve(BUNDLE_ROOT, "codex", "bundle", "stop.js")],
+  ["claude-code session-end", resolve(BUNDLE_ROOT, "harnesses", "claude-code", "bundle", "session-end.js")],
+  ["codex stop", resolve(BUNDLE_ROOT, "harnesses", "codex", "bundle", "stop.js")],
 ];
 
 const CAPTURE_HOOKS: Array<[string, string]> = [
-  ["claude-code capture", resolve(BUNDLE_ROOT, "claude-code", "bundle", "capture.js")],
-  ["codex capture", resolve(BUNDLE_ROOT, "codex", "bundle", "capture.js")],
+  ["claude-code capture", resolve(BUNDLE_ROOT, "harnesses", "claude-code", "bundle", "capture.js")],
+  ["codex capture", resolve(BUNDLE_ROOT, "harnesses", "codex", "bundle", "capture.js")],
 ];
 
 const ALL_BUNDLES: Array<[string, string]> = [
   ...SESSION_END_HOOKS,
   ...CAPTURE_HOOKS,
-  ["claude-code session-start", resolve(BUNDLE_ROOT, "claude-code", "bundle", "session-start.js")],
-  ["claude-code session-start-setup", resolve(BUNDLE_ROOT, "claude-code", "bundle", "session-start-setup.js")],
-  ["codex session-start", resolve(BUNDLE_ROOT, "codex", "bundle", "session-start.js")],
-  ["codex session-start-setup", resolve(BUNDLE_ROOT, "codex", "bundle", "session-start-setup.js")],
+  ["claude-code session-start", resolve(BUNDLE_ROOT, "harnesses", "claude-code", "bundle", "session-start.js")],
+  ["claude-code session-start-setup", resolve(BUNDLE_ROOT, "harnesses", "claude-code", "bundle", "session-start-setup.js")],
+  ["codex session-start", resolve(BUNDLE_ROOT, "harnesses", "codex", "bundle", "session-start.js")],
+  ["codex session-start-setup", resolve(BUNDLE_ROOT, "harnesses", "codex", "bundle", "session-start-setup.js")],
 ];
 
 describe("bundles exist", () => {

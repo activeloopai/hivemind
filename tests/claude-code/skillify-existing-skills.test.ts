@@ -7,6 +7,7 @@ import {
   listAllExistingSkills,
   renderExistingSkillsBlock,
 } from "../../src/skillify/existing-skills.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 // existing-skills.ts uses `~/.claude/skills` as the global root via
 // `homedir()`. We override $HOME per test so homedir() returns a tmpdir
@@ -33,12 +34,11 @@ beforeEach(() => {
   projectCwd = mkdtempSync(join(tmpdir(), "skilify-existing-project-"));
   fakeHome = mkdtempSync(join(tmpdir(), "skilify-existing-home-"));
   originalHome = process.env.HOME;
-  process.env.HOME = fakeHome;
+  setFakeHome(fakeHome);
 });
 
 afterEach(() => {
-  if (originalHome === undefined) delete process.env.HOME;
-  else process.env.HOME = originalHome;
+  clearFakeHome();
   try { rmSync(projectCwd, { recursive: true, force: true }); } catch { /* nothing */ }
   try { rmSync(fakeHome, { recursive: true, force: true }); } catch { /* nothing */ }
 });

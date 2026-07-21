@@ -105,7 +105,7 @@ function envModel(agent: Agent, role: ScorerRole, env: NodeJS.ProcessEnv): strin
   return env[specific] ?? env[fallback];
 }
 
-/** Per-agent provider override (hermes/pi): HIVEMIND_SKILLOPT_<AGENT>_PROVIDER. The
+/** Per-agent provider override (harnesses/hermes/pi): HIVEMIND_SKILLOPT_<AGENT>_PROVIDER. The
  *  openrouter default is wrong for a user on a different provider (e.g. AWS Bedrock),
  *  so the provider must be overridable per install. */
 function envProvider(agent: Agent, env: NodeJS.ProcessEnv): string | undefined {
@@ -132,7 +132,7 @@ export function agentModel(opts: {
   const spawnFn = opts.spawnImpl ?? (nodeSpawn as unknown as SpawnFn);
   const bin = opts.bin ?? findAgentBin(opts.agent);
   return (system, user) => new Promise<string>((resolve, reject) => {
-    // Fail fast on a provider override without a matching model (hermes/pi): the default
+    // Fail fast on a provider override without a matching model (harnesses/hermes/pi): the default
     // model is provider-specific (openrouter-style ids), so a bare ..._PROVIDER=bedrock
     // with no ..._MODEL would silently send a wrong model id. Surface it loudly.
     if (providerOverride && !modelOverride && (opts.agent === "hermes" || opts.agent === "pi")) {

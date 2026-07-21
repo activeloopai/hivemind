@@ -15,10 +15,20 @@ import { join } from "node:path";
 
 import type { GraphEdge, GraphNode, GraphSnapshot } from "./types.js";
 
+/** A node present in both snapshots whose declared signature changed. */
+export interface ModifiedNode {
+  before: GraphNode;
+  after: GraphNode;
+}
+
 export interface SnapshotDiff {
   nodes: {
     added: GraphNode[];
     removed: GraphNode[];
+    /** Same id on both sides, different `signature` — the "public contract
+     *  changed" signal the wiki refresh uses for escalation. Optional so
+     *  hand-built diffs in existing callers/tests stay valid. */
+    modified?: ModifiedNode[];
   };
   edges: {
     added: GraphEdge[];
@@ -28,6 +38,8 @@ export interface SnapshotDiff {
   counts: {
     nodes_added: number;
     nodes_removed: number;
+    /** Optional — see nodes.modified. */
+    nodes_modified?: number;
     edges_added: number;
     edges_removed: number;
   };
@@ -48,10 +60,20 @@ function edgeKey(e: GraphEdge): string {
  * as "removed".
  */
 export function diffSnapshots(from: GraphSnapshot, to: GraphSnapshot): SnapshotDiff {
-  const fromNodeIds = new Set(from.nodes.map((n) => n.id));
+  const fromById = new Map(from.nodes.map((n) => [n.id, n]));
   const toNodeIds = new Set(to.nodes.map((n) => n.id));
-  const nodesAdded = to.nodes.filter((n) => !fromNodeIds.has(n.id));
+  const nodesAdded = to.nodes.filter((n) => !fromById.has(n.id));
   const nodesRemoved = from.nodes.filter((n) => !toNodeIds.has(n.id));
+
+  // Surviving nodes whose declared signature changed. `source_location` is
+  // deliberately NOT compared — any unrelated line shift would flag it.
+  const nodesModified: ModifiedNode[] = [];
+  for (const after of to.nodes) {
+    const before = fromById.get(after.id);
+    if (before && (before.signature ?? "") !== (after.signature ?? "")) {
+      nodesModified.push({ before, after });
+    }
+  }
 
   const fromEdgeKeys = new Set(from.links.map(edgeKey));
   const toEdgeKeys = new Set(to.links.map(edgeKey));
@@ -59,11 +81,12 @@ export function diffSnapshots(from: GraphSnapshot, to: GraphSnapshot): SnapshotD
   const edgesRemoved = from.links.filter((e) => !toEdgeKeys.has(edgeKey(e)));
 
   return {
-    nodes: { added: nodesAdded, removed: nodesRemoved },
+    nodes: { added: nodesAdded, removed: nodesRemoved, modified: nodesModified },
     edges: { added: edgesAdded, removed: edgesRemoved },
     counts: {
       nodes_added: nodesAdded.length,
       nodes_removed: nodesRemoved.length,
+      nodes_modified: nodesModified.length,
       edges_added: edgesAdded.length,
       edges_removed: edgesRemoved.length,
     },

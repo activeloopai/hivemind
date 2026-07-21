@@ -55,7 +55,10 @@ function sendLine(socketPath: string, req: object): Promise<any> {
   });
 }
 
-describe("EmbedDaemon", () => {
+// Unix-domain-socket IPC: EmbedDaemon.start() binds a node:net server on a
+// /tmp socket path. Windows can't listen on a Unix-domain socket (needs named
+// pipes) and these fail with "listen EACCES", so the daemon suite is skipped.
+describe.skipIf(process.platform === "win32")("EmbedDaemon", () => {
   let dir: string;
   let daemon: EmbedDaemon | null = null;
 

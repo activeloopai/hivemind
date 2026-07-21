@@ -22,28 +22,28 @@ const BUNDLE_ROOT = resolve(process.cwd());
 // AGENT_CHANNELS.md → Codex), so the skillify command list lives in the
 // auto-loaded `hivemind-memory` skill instead of the hook context.
 const SESSION_START_BUNDLES: Array<[string, string]> = [
-  ["claude-code", resolve(BUNDLE_ROOT, "claude-code", "bundle", "session-start.js")],
-  ["cursor",      resolve(BUNDLE_ROOT, "cursor",      "bundle", "session-start.js")],
-  ["hermes",      resolve(BUNDLE_ROOT, "hermes",      "bundle", "session-start.js")],
+  ["claude-code", resolve(BUNDLE_ROOT, "harnesses", "claude-code", "bundle", "session-start.js")],
+  ["cursor",      resolve(BUNDLE_ROOT, "harnesses", "cursor", "bundle", "session-start.js")],
+  ["hermes",      resolve(BUNDLE_ROOT, "harnesses", "hermes",      "bundle", "session-start.js")],
 ];
 
 // Pi and OpenClaw don't go through the same esbuild bundle pipeline:
-//   - Pi ships pi/extension-source/hivemind.ts as raw .ts (pi compiles it)
-//   - OpenClaw exposes its surface via openclaw/skills/SKILL.md (loaded by
+//   - Pi ships harnesses/pi/extension-source/hivemind.ts as raw .ts (pi compiles it)
+//   - OpenClaw exposes its surface via harnesses/openclaw/skills/SKILL.md (loaded by
 //     the openclaw runtime's skill index, not bundled JS)
 // Codex sits here too: its skillify discoverability lives in
-// codex/skills/deeplake-memory/SKILL.md (auto-loaded), not in the hook bundle.
+// harnesses/codex/skills/deeplake-memory/SKILL.md (auto-loaded), not in the hook bundle.
 const NON_BUNDLE_SURFACES: Array<[string, string]> = [
-  ["pi-extension-source", resolve(BUNDLE_ROOT, "pi", "extension-source", "hivemind.ts")],
-  ["openclaw-skill",      resolve(BUNDLE_ROOT, "openclaw", "skills", "SKILL.md")],
-  ["codex-skill",         resolve(BUNDLE_ROOT, "codex", "skills", "deeplake-memory", "SKILL.md")],
+  ["pi-extension-source", resolve(BUNDLE_ROOT, "harnesses", "pi", "extension-source", "hivemind.ts")],
+  ["openclaw-skill",      resolve(BUNDLE_ROOT, "harnesses", "openclaw", "skills", "SKILL.md")],
+  ["codex-skill",         resolve(BUNDLE_ROOT, "harnesses", "codex", "skills", "deeplake-memory", "SKILL.md")],
 ];
 
 // Codex bundle — separate matrix because it asserts a NEGATIVE: the slim
 // invariant says the bundle MUST NOT inline the verbose skillify command list
 // (every byte there is shown to the user as `hook context: ...`).
 const CODEX_BUNDLE: [string, string] = [
-  "codex", resolve(BUNDLE_ROOT, "codex", "bundle", "session-start.js"),
+  "codex", resolve(BUNDLE_ROOT, "harnesses", "codex", "bundle", "session-start.js"),
 ];
 
 describe("skillify SessionStart injection (per-agent bundles)", () => {
@@ -119,7 +119,7 @@ describe("Codex bundle slim invariant + skill-as-source-of-truth", () => {
 
   it("Codex bundle does NOT inline the skillify command list (it lives in the skill)", () => {
     const text = readFileSync(CODEX_BUNDLE[1], "utf-8");
-    // The skillify list belongs in codex/skills/deeplake-memory/SKILL.md
+    // The skillify list belongs in harnesses/codex/skills/deeplake-memory/SKILL.md
     // (auto-loaded by codex's skill loader) — emitting it via stdout would
     // dump ~50 lines into the user's `hook context: ...` history cell.
     expect(text).not.toMatch(/skillify pull --user/);
@@ -183,7 +183,7 @@ describe("skillify discoverability on non-bundle agent surfaces (Pi + OpenClaw +
     // npm-bin unification) and now propagated. OpenClaw uses /hivemind_*
     // plugin-native commands which are a different surface — covered by
     // openclaw.plugin.json contracts.commands, not by this assertion.
-    const text = readFileSync(resolve(BUNDLE_ROOT, "pi", "extension-source", "hivemind.ts"), "utf-8");
+    const text = readFileSync(resolve(BUNDLE_ROOT, "harnesses", "pi", "extension-source", "hivemind.ts"), "utf-8");
     expect(text).toMatch(/Organization management/);
     expect(text).toMatch(/hivemind whoami\b/);
     expect(text).toMatch(/hivemind org list\b/);
@@ -197,8 +197,8 @@ describe("Pi skillify worker (mining) wiring", () => {
   // assertions catch any regression that drops the bundle entry, removes
   // the install copy, or unwires the spawn call.
 
-  it("ships pi/bundle/skillify-worker.js after build", () => {
-    const p = resolve(BUNDLE_ROOT, "pi", "bundle", "skillify-worker.js");
+  it("ships harnesses/pi/bundle/skillify-worker.js after build", () => {
+    const p = resolve(BUNDLE_ROOT, "harnesses", "pi", "bundle", "skillify-worker.js");
     expect(existsSync(p)).toBe(true);
   });
 
@@ -208,17 +208,17 @@ describe("Pi skillify worker (mining) wiring", () => {
     expect(cfg).toMatch(/dist\/src\/skillify\/skillify-worker\.js[^"]*"\s*,\s*out:\s*"skillify-worker"/);
   });
 
-  it("install-pi.ts copies pi/bundle/skillify-worker.js to ~/.pi/agent/hivemind/", () => {
+  it("install-pi.ts copies harnesses/pi/bundle/skillify-worker.js to ~/.pi/agent/hivemind/", () => {
     const src = readFileSync(resolve(BUNDLE_ROOT, "src", "cli", "install-pi.ts"), "utf-8");
     expect(src).toMatch(/SKILLIFY_WORKER_PATH\s*=/);
-    // join(pkgRoot(), "pi", "bundle", "skillify-worker.js") — the source path
+    // join(pkgRoot(), "harnesses", "pi", "bundle", "skillify-worker.js") — the source path
     expect(src).toMatch(/"pi",\s*"bundle",\s*"skillify-worker\.js"/);
     // copyFileSync(srcSkillifyWorker, SKILLIFY_WORKER_PATH) — the install step
     expect(src).toMatch(/copyFileSync\(srcSkillifyWorker,\s*SKILLIFY_WORKER_PATH\)/);
   });
 
   it("pi extension defines spawnPiSkillifyWorker and wires it into session_shutdown", () => {
-    const ext = readFileSync(resolve(BUNDLE_ROOT, "pi", "extension-source", "hivemind.ts"), "utf-8");
+    const ext = readFileSync(resolve(BUNDLE_ROOT, "harnesses", "pi", "extension-source", "hivemind.ts"), "utf-8");
     // Function exists
     expect(ext).toMatch(/function spawnPiSkillifyWorker\b/);
     // Path const points at the right install location
@@ -232,7 +232,7 @@ describe("Pi skillify worker (mining) wiring", () => {
   it("pi skillify worker bundle embeds the same worker code as the other agents", () => {
     // Same shared module — guard against an accidental empty bundle by
     // checking the canonical entry-point + module markers are present.
-    const text = readFileSync(resolve(BUNDLE_ROOT, "pi", "bundle", "skillify-worker.js"), "utf-8");
+    const text = readFileSync(resolve(BUNDLE_ROOT, "harnesses", "pi", "bundle", "skillify-worker.js"), "utf-8");
     // The worker reads its config from process.argv[2]
     expect(text).toMatch(/process\.argv\[2\]/);
     // The worker writes to the skills table via INSERT (append-only design)
@@ -247,12 +247,12 @@ describe("Pi skillify worker (mining) wiring", () => {
 describe("OpenClaw skillify worker (mining) wiring", () => {
   // OpenClaw mines via a separate bundled worker spawned from the agent_end
   // hook. The worker bundle is built as a second openclaw esbuild entry
-  // landing at openclaw/dist/skillify-worker.js (sibling of index.js).
+  // landing at harnesses/openclaw/dist/skillify-worker.js (sibling of index.js).
   // install-openclaw.ts already copies the entire dist/ recursively, so
   // no install step change is required.
 
-  it("ships openclaw/dist/skillify-worker.js after build", () => {
-    const p = resolve(BUNDLE_ROOT, "openclaw", "dist", "skillify-worker.js");
+  it("ships harnesses/openclaw/dist/skillify-worker.js after build", () => {
+    const p = resolve(BUNDLE_ROOT, "harnesses", "openclaw", "dist", "skillify-worker.js");
     expect(existsSync(p)).toBe(true);
   });
 
@@ -264,11 +264,11 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     expect(cfg).toMatch(/"skillify-worker":\s*"dist\/src\/skillify\/skillify-worker\.js"/);
     // Window is generous to leave room for the bundle's comments + the
     // env-var → globalThis.__hivemind_tuning__ define dispatch table.
-    expect(cfg).toMatch(/outdir:\s*"openclaw\/dist"[\s\S]{0,2000}skillify-worker/);
+    expect(cfg).toMatch(/outdir:\s*"harnesses\/openclaw\/dist"[\s\S]{0,2000}skillify-worker/);
   });
 
-  it("openclaw/src/index.ts bypasses the child_process stub via createRequire", () => {
-    const src = readFileSync(resolve(BUNDLE_ROOT, "openclaw", "src", "index.ts"), "utf-8");
+  it("harnesses/openclaw/src/index.ts bypasses the child_process stub via createRequire", () => {
+    const src = readFileSync(resolve(BUNDLE_ROOT, "harnesses", "openclaw", "src", "index.ts"), "utf-8");
     // The main openclaw bundle stubs out node:child_process to drop CC dead
     // code. createRequire(import.meta.url) is the runtime escape hatch — it
     // is NOT intercepted by esbuild's static analysis.
@@ -276,8 +276,8 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     expect(src).toMatch(/requireFromOpenclaw\("node:child_process"\)/);
   });
 
-  it("openclaw/src/index.ts defines spawnOpenclawSkillifyWorker and wires it into agent_end", () => {
-    const src = readFileSync(resolve(BUNDLE_ROOT, "openclaw", "src", "index.ts"), "utf-8");
+  it("harnesses/openclaw/src/index.ts defines spawnOpenclawSkillifyWorker and wires it into agent_end", () => {
+    const src = readFileSync(resolve(BUNDLE_ROOT, "harnesses", "openclaw", "src", "index.ts"), "utf-8");
     expect(src).toMatch(/function spawnOpenclawSkillifyWorker\b/);
     // OPENCLAW_SKILLIFY_WORKER_PATH must be a sibling of import.meta.url
     expect(src).toMatch(/OPENCLAW_SKILLIFY_WORKER_PATH\s*=\s*joinPath\(__openclaw_dirname,\s*"skillify-worker\.js"\)/);
@@ -289,18 +289,23 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     expect(src).toMatch(/const skillifySpawnedFor = new Set<string>\(\)/);
     expect(src).toMatch(/if \(!skillifySpawnedFor\.has\(sid\)\)/);
     expect(src).toMatch(/skillifySpawnedFor\.add\(sid\)/);
-    // agent_end hook calls it after the capture loop. Distance bumped
-    // from 500→1500 to accommodate the per-runtime spawn-dedup comment
-    // block landed for #100 between `Auto-captured` and the spawn site.
-    // 3500→4000 for the embed-on-capture wiring landed for #178 between
-    // `agent_end` and `Auto-captured` (tryEmbedStandalone + comment block).
-    expect(src).toMatch(/agent_end[\s\S]{0,4000}Auto-captured[\s\S]{0,1500}spawnOpenclawSkillifyWorker/);
+    // The skillify worker is spawned from the agent_end capture hook, after
+    // the "Auto-captured" log. Anchor on the real constructs and assert their
+    // source order — robust to unrelated code landing between them, unlike a
+    // magic character-count gap (CodeRabbit on #320).
+    const iAgentEnd = src.search(/hook\(\s*["']agent_end["']/);
+    const iAutoCaptured = src.indexOf("Auto-captured", iAgentEnd);
+    // The CALL site, after the log — not the earlier function definition.
+    const iSpawnCall = src.indexOf("spawnOpenclawSkillifyWorker(", iAutoCaptured);
+    expect(iAgentEnd).toBeGreaterThanOrEqual(0);
+    expect(iAutoCaptured).toBeGreaterThan(iAgentEnd);
+    expect(iSpawnCall).toBeGreaterThan(iAutoCaptured);
     // install: "global" — no per-project cwd, skills land under ~/.claude/skills/
     expect(src).toMatch(/install:\s*"global"/);
   });
 
   it("openclaw bundle preserves the createRequire spawn (not stubbed by esbuild)", () => {
-    const text = readFileSync(resolve(BUNDLE_ROOT, "openclaw", "dist", "index.js"), "utf-8");
+    const text = readFileSync(resolve(BUNDLE_ROOT, "harnesses", "openclaw", "dist", "index.js"), "utf-8");
     // After bundling, the createRequire + dynamic require call must still be there
     expect(text).toMatch(/createRequire\(import\.meta\.url\)/);
     expect(text).toMatch(/requireFromOpenclaw\("node:child_process"\)/);
@@ -310,8 +315,11 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     expect(text).toMatch(/var\s*\{\s*spawn:\s*realSpawn[\s\S]{0,200}\}\s*=\s*requireFromOpenclaw/);
     // spawnOpenclawSkillifyWorker function present in bundle
     expect(text).toMatch(/spawnOpenclawSkillifyWorker/);
-    // realSpawn(process.execPath, [path, configPath], ...) — the actual spawn site
-    expect(text).toMatch(/realSpawn\(process\.execPath/);
+    // realSpawn(process.execPath, [path, configPath], ...) — the actual spawn site.
+    // esbuild appends a numeric suffix (realSpawn2) when another bundled module
+    // (the graph lifecycle) also destructures `spawn` from a dynamic require, so
+    // allow the optional dedup suffix.
+    expect(text).toMatch(/realSpawn\d*\(process\.execPath/);
   });
 
   it("openclaw spawn helper detects a delegate gate CLI and threads gateAgent into the worker config", () => {
@@ -321,7 +329,7 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     // and pass it as `gateAgent`; the worker dispatches `runGate` against
     // that delegate while keeping `agent: "openclaw"` for source_agent
     // provenance in the skills table. Regression guard.
-    const src = readFileSync(resolve(BUNDLE_ROOT, "openclaw", "src", "index.ts"), "utf-8");
+    const src = readFileSync(resolve(BUNDLE_ROOT, "harnesses", "openclaw", "src", "index.ts"), "utf-8");
     expect(src).toMatch(/function detectOpenclawGateAgent\b/);
     // The candidate list: the five CLIs the worker's gate-runner knows about.
     expect(src).toMatch(/"claude_code",\s*"claude"/);
@@ -334,14 +342,14 @@ describe("OpenClaw skillify worker (mining) wiring", () => {
     // gateAgent threaded into the worker config — same key the worker reads.
     expect(src).toMatch(/gateAgent,/);
     // Bundled output must preserve the detection + threading.
-    const text = readFileSync(resolve(BUNDLE_ROOT, "openclaw", "dist", "index.js"), "utf-8");
+    const text = readFileSync(resolve(BUNDLE_ROOT, "harnesses", "openclaw", "dist", "index.js"), "utf-8");
     expect(text).toMatch(/detectOpenclawGateAgent/);
     expect(text).toMatch(/gateAgent/);
     expect(text).toMatch(/no delegate gate CLI found/);
   });
 
   it("openclaw worker bundle embeds the same shared worker code as other agents", () => {
-    const text = readFileSync(resolve(BUNDLE_ROOT, "openclaw", "dist", "skillify-worker.js"), "utf-8");
+    const text = readFileSync(resolve(BUNDLE_ROOT, "harnesses", "openclaw", "dist", "skillify-worker.js"), "utf-8");
     expect(text).toMatch(/process\.argv\[2\]/);
     expect(text).toMatch(/INSERT INTO/);
     expect(text).toMatch(/gate-runner|runGate/);

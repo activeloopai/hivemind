@@ -7,6 +7,7 @@ import { referralInviteRule } from "../../src/notifications/rules/referral-invit
 import { bumpSessionCount, readState, writeState, markShown } from "../../src/notifications/state.js";
 import type { NotificationContext, Notification } from "../../src/notifications/types.js";
 import type { Credentials } from "../../src/commands/auth-creds.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 const signedIn = { token: "tok" } as unknown as Credentials;
 
@@ -51,11 +52,10 @@ describe("bumpSessionCount", () => {
   beforeEach(() => {
     prevHome = process.env.HOME;
     home = mkdtempSync(join(tmpdir(), "hm-sess-"));
-    process.env.HOME = home;
+    setFakeHome(home);
   });
   afterEach(() => {
-    if (prevHome === undefined) delete process.env.HOME;
-    else process.env.HOME = prevHome;
+    clearFakeHome();
     rmSync(home, { recursive: true, force: true });
   });
 

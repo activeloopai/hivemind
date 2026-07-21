@@ -25,17 +25,25 @@ describe("entrypointPassesOnlyCliGate", () => {
     })).toBe(true);
   });
 
-  it("passes with gate active and entrypoint contains 'cli' as substring", () => {
-    // Substring match (not equality) is intentional — covers future variants
-    // like cli-interactive, claude-cli, etc. without code changes.
+  it("blocks `claude -p` print mode (entrypoint='sdk-cli')", () => {
+    // Regression: `claude -p` reports CLAUDE_CODE_ENTRYPOINT="sdk-cli", which
+    // CONTAINS "cli". A substring check let print-mode sessions through and
+    // created stray capture rows despite the gate being on. Exact equality
+    // must exclude it.
     expect(entrypointPassesOnlyCliGate({
       HIVEMIND_CAPTURE_ONLY_CLI: "true",
-      CLAUDE_CODE_ENTRYPOINT: "cli-interactive",
-    })).toBe(true);
-    expect(entrypointPassesOnlyCliGate({
-      HIVEMIND_CAPTURE_ONLY_CLI: "true",
-      CLAUDE_CODE_ENTRYPOINT: "claude-cli",
-    })).toBe(true);
+      CLAUDE_CODE_ENTRYPOINT: "sdk-cli",
+    })).toBe(false);
+  });
+
+  it("blocks entrypoints that merely contain 'cli' but aren't exactly 'cli'", () => {
+    // Exact-match semantics: only a bare "cli" (interactive terminal) passes.
+    for (const ep of ["sdk-cli", "cli-interactive", "claude-cli", "clip"]) {
+      expect(entrypointPassesOnlyCliGate({
+        HIVEMIND_CAPTURE_ONLY_CLI: "true",
+        CLAUDE_CODE_ENTRYPOINT: ep,
+      })).toBe(false);
+    }
   });
 
   it("blocks with gate active and entrypoint='sdk-py'", () => {
@@ -53,8 +61,8 @@ describe("entrypointPassesOnlyCliGate", () => {
   });
 
   it("blocks with gate active and entrypoint undefined", () => {
-    // Strict: missing entrypoint is treated as non-cli. An empty string
-    // doesn't contain the "cli" substring so the gate filters it out.
+    // Strict: missing entrypoint is treated as non-cli. It isn't exactly
+    // "cli" so the gate filters it out.
     expect(entrypointPassesOnlyCliGate({
       HIVEMIND_CAPTURE_ONLY_CLI: "true",
     })).toBe(false);

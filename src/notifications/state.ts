@@ -13,12 +13,13 @@
  * accidental absolute-path injection cannot reach the real ~/.deeplake/.
  */
 
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { NotificationsState, Notification } from "./types.js";
 import { log as _log } from "../utils/debug.js";
+import { isPathInsideHome, renameAtomic } from "../utils/atomic-write.js";
 
 const log = (msg: string) => _log("notifications-state", msg);
 
@@ -64,14 +65,14 @@ export function bumpSessionCount(sessionId?: string): number {
 export function writeState(state: NotificationsState): void {
   const path = statePath();
   const home = resolve(homedir());
-  if (!resolve(path).startsWith(home + "/") && resolve(path) !== home) {
+  if (!isPathInsideHome(path, home)) {
     // Sandbox guard — never write outside the user's HOME.
     throw new Error(`notifications-state write blocked: ${path} is outside ${home}`);
   }
   mkdirSync(join(home, ".deeplake"), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
-  renameSync(tmp, path);
+  renameAtomic(tmp, path);
 }
 
 export function markShown(state: NotificationsState, n: Notification, now: Date = new Date()): NotificationsState {
@@ -158,6 +159,9 @@ export function releaseClaim(n: Notification): void {
 
 function claimPathFor(claimsDir: string, n: Notification): string {
   const keyHash = createHash("sha256").update(JSON.stringify(n.dedupKey)).digest("hex").slice(0, 12);
-  const safeId = n.id.replace(/[^a-zA-Z0-9_.:-]/g, "_");
+  // Exclude ':' — it's a valid POSIX filename char but illegal on Windows
+  // (drive separator), so a claim file with ':' in the name can't be created
+  // there and tryClaim would fail open on every call.
+  const safeId = n.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
   return join(claimsDir, `${safeId}-${keyHash}`);
 }

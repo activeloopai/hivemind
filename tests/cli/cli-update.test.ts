@@ -379,7 +379,14 @@ describe("detectInstallKind — heuristics", () => {
   // realpathSync throws on a non-existent path → catch falls back to the
   // raw argv1. Covers the catch branch in the realpath wrapper.
   it("falls back to raw argv1 when realpath throws (path doesn't exist)", () => {
-    const fakePath = "/this/path/does/not/exist/_npx/x/node_modules/@deeplake/hivemind/bundle/cli.js";
+    // Build the path with the platform separator so the `${sep}_npx${sep}`
+    // pattern match in detectInstallKind fires on Windows too — a hardcoded
+    // forward-slash string never contains `\_npx\` on win32, mis-classifying
+    // it as "unknown".
+    const fakePath = join(
+      tmpdir(), "this", "path", "does", "not", "exist",
+      "_npx", "x", "node_modules", "@deeplake", "hivemind", "bundle", "cli.js",
+    );
     const got = detectInstallKind(fakePath);
     // Path-pattern checks still work against the raw string — should land
     // in npx (the path contains `_npx`).

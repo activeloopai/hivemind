@@ -77,9 +77,9 @@ describe("findHivemindInstalls", () => {
     expect(installs.map(i => i.id).sort()).toEqual(["claude (0.7.0)", "claude (0.7.1)"]);
   });
 
-  it("supports the alternate <version>/claude-code/bundle layout", () => {
+  it("supports the alternate <version>/harnesses/claude-code/bundle layout", () => {
     const cache = join(tmpHome, ".claude", "plugins", "cache", "hivemind", "hivemind");
-    fakeBundleAt(join(cache, "0.7.0", "claude-code"));
+    fakeBundleAt(join(cache, "0.7.0", "harnesses", "claude-code"));
     const installs = findHivemindInstalls(tmpHome);
     expect(installs).toHaveLength(1);
     expect(installs[0].id).toBe("claude (0.7.0)");
@@ -113,7 +113,10 @@ describe("isSharedDepsInstalled", () => {
 
 describe("SHARED_DAEMON_PATH", () => {
   it("points at embed-daemon.js inside the shared-deps dir (canonical location agents use)", () => {
-    expect(SHARED_DAEMON_PATH.endsWith("/embed-deps/embed-daemon.js")).toBe(true);
+    // Normalize separators: SHARED_DAEMON_PATH is built with join(), so it ends
+    // in `\embed-deps\embed-daemon.js` on Windows. Compare against a join()-built
+    // suffix with both sides slashed rather than a hard-coded POSIX literal.
+    expect(SHARED_DAEMON_PATH.replace(/\\/g, "/").endsWith(join("embed-deps", "embed-daemon.js").replace(/\\/g, "/"))).toBe(true);
   });
 });
 
@@ -219,7 +222,13 @@ describe("killEmbedDaemon — verifies socket before SIGTERM (#2)", () => {
   // fix gates the SIGTERM on `_isDaemonAliveOnSocket` — if the UDS path
   // doesn't accept a connect within a short timeout, the daemon is dead
   // and the PID in the file is stale, so we only clean up sock+pid.
-  it("skips SIGTERM when the socket is dead (stale pidfile path)", async () => {
+  // Windows-skip (approved): the embed daemon is a Unix-domain-socket +
+  // uid-keyed pidfile model. killEmbedDaemon derives its paths from
+  // process.getuid()/userInfo().uid (uid is -1 / meaningless on Windows),
+  // and the liveness probe connects to a UDS path — neither maps to the
+  // Windows daemon (named-pipe) world. The product's socket-dead → skip-
+  // SIGTERM behaviour is fully covered on POSIX.
+  it.skipIf(process.platform === "win32")("skips SIGTERM when the socket is dead (stale pidfile path)", async () => {
     const { killEmbedDaemon: kill, _isDaemonAliveOnSocket } = await import(
       "../../src/cli/embeddings.js"
     );

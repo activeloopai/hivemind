@@ -16,7 +16,11 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmS
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { finalizeSummary, releaseLock } from "../summary-state.js";
+import { finalizeSummary, releaseLock, readState } from "../summary-state.js";
+import { readSessionEventCache } from "../session-event-cache.js";
+import { buildSessionPath } from "../../utils/session-path.js";
+import { capLinesByBytes, stampOffset, WIKI_JSONL_MAX_BYTES } from "../wiki-offset.js";
+import { redactSecrets } from "../shared/redact.js";
 import { uploadSummary } from "../upload-summary.js";
 import { log as _log } from "../../utils/debug.js";
 import { EmbedClient } from "../../embeddings/client.js";
@@ -34,6 +38,7 @@ interface WorkerConfig {
   sessionsTable: string;
   sessionId: string;
   userName: string;
+  orgName: string;
   project: string;
   pluginVersion?: string;
   tmpDir: string;
@@ -113,36 +118,64 @@ function cleanup(): void {
 
 async function main(): Promise<void> {
   try {
-    // 1. Fetch session events from sessions table
-    wlog("fetching session events");
-    const rows = await query(
+    // 1. Load session events. Prefer the local per-session event cache the
+    // capture hook appends to as the session runs — it is row-for-row
+    // identical to the sessions-table `message` column but avoids re-scanning
+    // the entire fat `message` column on the backend for THIS session on every
+    // periodic / session-end trigger (the dominant cold-start cost on long
+    // mega-sessions). Falls back to the DB whenever the cache is absent
+    // (session resumed on another machine), empty, or — once the offset is
+    // known — shorter than the offset already summarized.
+    const dbFetch = () => query(
       `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
       `WHERE path LIKE E'${esc(`/sessions/%${cfg.sessionId}%`)}' ORDER BY creation_date ASC`
     );
+
+    let usedLocalCache = false;
+    let rows: Record<string, unknown>[];
+    const cachedLines = readSessionEventCache(cfg.sessionId);
+    if (cachedLines && cachedLines.length > 0) {
+      rows = cachedLines.map(message => ({ message }));
+      usedLocalCache = true;
+      wlog(`loaded ${rows.length} events from local cache`);
+    } else {
+      wlog("fetching session events");
+      rows = await dbFetch();
+    }
 
     if (rows.length === 0) {
       wlog("no session events found — exiting");
       return;
     }
 
-    const jsonlContent = rows
-      .map(r => typeof r.message === "string" ? r.message : JSON.stringify(r.message))
-      .join("\n");
-    const jsonlLines = rows.length;
+    let jsonlLines = rows.length;
 
-    const pathRows = await query(
-      `SELECT DISTINCT path FROM "${cfg.sessionsTable}" ` +
-      `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`
-    );
-    const jsonlServerPath = pathRows.length > 0
-      ? pathRows[0].path as string
-      : `/sessions/unknown/${cfg.sessionId}.jsonl`;
+    // Derive the server path locally when using the cache (avoids a second
+    // self-session `SELECT DISTINCT path` scan); the DB branch keeps its lookup.
+    let jsonlServerPath: string;
+    if (usedLocalCache) {
+      jsonlServerPath = buildSessionPath(
+        { userName: cfg.userName, orgName: cfg.orgName, workspaceId: cfg.workspaceId },
+        cfg.sessionId,
+      );
+    } else {
+      const pathRows = await query(
+        `SELECT DISTINCT path FROM "${cfg.sessionsTable}" ` +
+        `WHERE path LIKE '${esc(`/sessions/%${cfg.sessionId}%`)}' LIMIT 1`
+      );
+      jsonlServerPath = pathRows.length > 0
+        ? pathRows[0].path as string
+        : `/sessions/unknown/${cfg.sessionId}.jsonl`;
+    }
 
-    writeFileSync(tmpJsonl, jsonlContent);
-    wlog(`found ${jsonlLines} events at ${jsonlServerPath}`);
-
-    // 2. Check for existing summary (resumed session)
+    // 2. Determine how many rows were already summarized (resumed session).
+    // The sidecar count is authoritative: finalizeSummary writes it after every
+    // successful run and it never depends on the LLM echoing a bookkeeping line
+    // back into the summary. The regex over the stored summary is only a
+    // fallback for a session first summarized on another machine (the sidecar
+    // lives under ~/.claude/hooks and does not travel).
     let prevOffset = 0;
+    let hasExistingSummary = false;
     try {
       const sumRows = await query(
         `SELECT summary FROM "${cfg.memoryTable}" ` +
@@ -153,9 +186,57 @@ async function main(): Promise<void> {
         const match = existing.match(/\*\*JSONL offset\*\*:\s*(\d+)/);
         if (match) prevOffset = parseInt(match[1], 10);
         writeFileSync(tmpSummary, existing);
-        wlog(`existing summary found, offset=${prevOffset}`);
+        hasExistingSummary = true;
       }
-    } catch { /* no existing summary */ }
+    } catch (e: any) {
+      // A genuine lookup failure (query() throws only after its own retries) is
+      // NOT the same as "no summary". Treating it as absent would slice to the
+      // newest rows and overwrite the canonical summary with a base-less one, so
+      // bail and retry on the next run instead.
+      wlog(`existing summary lookup failed: ${e.message}; skipping to avoid overwriting the base summary`);
+      return;
+    }
+    // The offset only means something if we actually loaded the summary it
+    // refers to. If the summary row is gone (or the read failed), slicing by a
+    // stale sidecar count would drop old rows with no base summary to extend,
+    // then overwrite the canonical summary with tail-only content. No base ⇒
+    // regenerate from scratch.
+    if (!hasExistingSummary) {
+      prevOffset = 0;
+    } else {
+      const sidecarCount = readState(cfg.sessionId)?.lastSummaryCount ?? 0;
+      if (sidecarCount > prevOffset) prevOffset = sidecarCount;
+    }
+
+    // Safety net: a local cache shorter than the summarized offset is an
+    // incomplete copy (session resumed on another machine) — re-load the full
+    // session from the DB so no genuinely-new rows get sliced to nothing.
+    if (usedLocalCache && rows.length < prevOffset) {
+      wlog(`local cache (${rows.length}) < summarized offset (${prevOffset}) — refetching from DB`);
+      rows = await dbFetch();
+      jsonlLines = rows.length;
+    }
+
+    // Feed the agent only the rows added since the last summary. Reprocessing
+    // the full session on every run is what drives ENOBUFS / 120s-timeout
+    // failures on long (4000+ event) sessions — a stuck offset re-summarizes
+    // everything from scratch.
+    const newRows = prevOffset > 0 ? rows.slice(prevOffset) : rows;
+    if (prevOffset > 0 && newRows.length === 0) {
+      wlog(`no new events since last summary (offset=${prevOffset}, total=${jsonlLines}) — skipping`);
+      return;
+    }
+    const newLines = newRows.map(r => typeof r.message === "string" ? r.message : JSON.stringify(r.message));
+    const { kept, dropped, truncated } = capLinesByBytes(newLines, WIKI_JSONL_MAX_BYTES);
+    if (dropped > 0) {
+      wlog(`new rows exceed ${WIKI_JSONL_MAX_BYTES}B — summarizing newest ${kept.length}, permanently skipping ${dropped} older rows`);
+    }
+    if (truncated) {
+      wlog(`a single event exceeded ${WIKI_JSONL_MAX_BYTES}B — truncated it to stay within the buffer`);
+    }
+
+    writeFileSync(tmpJsonl, kept.join("\n"));
+    wlog(`found ${jsonlLines} events (${kept.length} new since offset ${prevOffset}) at ${jsonlServerPath}`);
 
     // 3. Build prompt and run codex exec
     const prompt = cfg.promptTemplate
@@ -168,9 +249,18 @@ async function main(): Promise<void> {
       .replace(/__JSONL_SERVER_PATH__/g, jsonlServerPath);
 
     wlog(`running hermes -z (provider=${cfg.hermesProvider}, model=${cfg.hermesModel})`);
+    let execSucceeded = false;
+    const summaryBeforeExec = existsSync(tmpSummary) ? readFileSync(tmpSummary, "utf-8") : null;
     try {
       // hermes -z (--oneshot) is the non-interactive mode. --yolo
       // auto-approves tool use within the spawned hermes process.
+      // TODO(windows): unlike claude/codex/cursor/pi this spawn is NOT yet
+      // cross-platform. The prompt rides as the value of `-z`, so the stdin
+      // workaround used by buildTrailingPromptInvocation can't be applied
+      // verbatim (dropping `-z`'s value would consume the next flag), and we
+      // haven't confirmed hermes reads the prompt from stdin. On Windows a
+      // `.cmd` hermes shim still can't be spawned here. Fix once hermes' stdin
+      // behavior is verified on a Windows box.
       execFileSync(cfg.hermesBin, [
         "-z", prompt,
         "--provider", cfg.hermesProvider,
@@ -180,17 +270,36 @@ async function main(): Promise<void> {
       ], {
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 120_000,
+        // hermes streams to stdout, which execFileSync buffers. The Node
+        // default (1 MB) overflows to ENOBUFS on a verbose run, killing the
+        // summary. The summary is written to a file, not read from stdout, so
+        // we only need headroom to drain it.
+        maxBuffer: 64 * 1024 * 1024,
         env: { ...process.env, HIVEMIND_WIKI_WORKER: "1", HIVEMIND_CAPTURE: "false" },
       });
+      execSucceeded = true;
       wlog("hermes -z exited (code 0)");
     } catch (e: any) {
       wlog(`hermes -z failed: ${e.status ?? e.message}`);
     }
 
-    // 4. Upload summary to memory table
+    // 4. Upload summary to memory table. Only advance the offset (stamp +
+    // finalize) when the agent actually produced a summary — otherwise a failed
+    // run on a resumed session would re-upload the pre-seeded old summary and
+    // slice away the new rows forever.
     if (existsSync(tmpSummary)) {
-      const text = readFileSync(tmpSummary, "utf-8");
-      if (text.trim()) {
+      const raw = readFileSync(tmpSummary, "utf-8");
+      const summaryChanged = summaryBeforeExec === null ? raw.trim().length > 0 : raw !== summaryBeforeExec;
+      if (!execSucceeded) {
+        wlog(summaryChanged
+          ? "hermes -z failed after a partial summary write; skipping upload to avoid advancing the offset"
+          : "hermes -z failed without producing a new summary; skipping upload");
+        return;
+      }
+      if (raw.trim()) {
+        // Stamp the offset ourselves so the persisted summary is authoritative
+        // and never depends on the LLM echoing the bookkeeping line.
+        const text = redactSecrets(stampOffset(raw, jsonlLines));
         const fname = `${cfg.sessionId}.md`;
         const vpath = `/summaries/${cfg.userName}/${fname}`;
         // Embed the summary so it ranks in the semantic retrieval branch.

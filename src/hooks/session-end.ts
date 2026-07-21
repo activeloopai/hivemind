@@ -10,9 +10,11 @@
 
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig, type Config } from "../config.js";
+import { resolveDirConfig } from "../dir-config.js";
 import { log as _log } from "../utils/debug.js";
 import { bundleDirFromImportMeta, spawnWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
 import { tryAcquireLock, releaseLock, markSessionEnded } from "./summary-state.js";
+import { pruneStaleSessionEventCaches } from "./session-event-cache.js";
 import { forceSessionEndTrigger } from "../skillify/triggers.js";
 import { parseTranscript } from "../notifications/transcript-parser.js";
 import { appendUsageRecord } from "../notifications/usage-tracker.js";
@@ -66,8 +68,22 @@ async function main(): Promise<void> {
   // the activity window to lapse). Independent of the wiki-worker lock below.
   markSessionEnded(sessionId);
 
-  const config = loadConfig();
-  if (!config) { log("no config"); return; }
+  // Housekeeping: drop long-dead per-session event caches (14-day TTL). This
+  // session's own cache has a fresh mtime and is left intact for the worker.
+  try { pruneStaleSessionEventCaches(); } catch { /* best-effort */ }
+
+  const base = loadConfig();
+  if (!base) { log("no config"); return; }
+
+  // Per-directory `.hivemind`: honor opt-out and trusted org/workspace routing,
+  // matching the capture hook so the end-of-session summary lands (or doesn't)
+  // in the same place its events did.
+  const resolved = resolveDirConfig(base, cwd || process.cwd());
+  if (!resolved.collect) {
+    log(`session-end capture disabled for cwd=${cwd || "?"} via ${resolved.found?.path}`);
+    return;
+  }
+  const config = resolved.config;
 
   // Record memory-search activity for the savings recap. Independent of the
   // wiki-worker lock below: even sessions where the wiki worker can't run

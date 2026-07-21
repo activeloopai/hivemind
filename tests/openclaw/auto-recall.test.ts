@@ -54,7 +54,7 @@ async function loadPluginWithHooks(): Promise<{
   mockApi: ReturnType<typeof buildMockApi>;
 }> {
   vi.resetModules();
-  const mod = await import("../../openclaw/src/index.js");
+  const mod = await import("../../harnesses/openclaw/src/index.js");
   const plugin = mod.default as { register: (api: ReturnType<typeof buildMockApi>) => void };
   const hooks = new Map<string, HookHandler>();
   const mockApi = buildMockApi(hooks);

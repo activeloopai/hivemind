@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-const ccRoot = join(process.cwd(), "claude-code");
+const ccRoot = join(process.cwd(), "harnesses", "claude-code");
 const bundleDir = join(ccRoot, "bundle");
 
 // ── hooks.json structure tests ──────────────────────────────────────────────

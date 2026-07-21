@@ -31,10 +31,10 @@ function listBundleFiles(dir: string): string[] {
 }
 
 const BUNDLE_DIRS = [
-  ["claude-code", resolve(ROOT, "claude-code", "bundle")],
-  ["codex", resolve(ROOT, "codex", "bundle")],
-  ["cursor", resolve(ROOT, "cursor", "bundle")],
-  ["hermes", resolve(ROOT, "hermes", "bundle")],
+  ["claude-code", resolve(ROOT, "harnesses", "claude-code", "bundle")],
+  ["codex", resolve(ROOT, "harnesses", "codex", "bundle")],
+  ["cursor", resolve(ROOT, "harnesses", "cursor", "bundle")],
+  ["hermes", resolve(ROOT, "harnesses", "hermes", "bundle")],
 ];
 
 for (const [label, dir] of BUNDLE_DIRS) {

@@ -101,7 +101,17 @@ describe("codex session-start hook — guards", () => {
   it("emits not-logged-in context when creds are missing (no token)", async () => {
     loadCredsMock.mockReturnValue(null);
     const out = await runHook();
-    expect(spawnMock).not.toHaveBeenCalled();
+    // The setup worker now spawns UNCONDITIONALLY (it provisions graph-deps
+    // before its own creds gate). But the graph-pull-worker stays creds-gated,
+    // so exactly one spawn (session-start-setup.js) fires here.
+    const setupCall = spawnMock.mock.calls.find(
+      ([_cmd, args]) => Array.isArray(args) && args[0]?.includes?.("session-start-setup.js"),
+    );
+    expect(setupCall).toBeDefined();
+    const pullCall = spawnMock.mock.calls.find(
+      ([_cmd, args]) => Array.isArray(args) && args[0]?.includes?.("graph-pull-worker"),
+    );
+    expect(pullCall).toBeUndefined();
     // Codex hook now emits JSON, not plain text. Parse + assert on
     // additionalContext (single-line status). See AGENT_CHANNELS.md → Codex
     // for why we kept this minimal.
@@ -120,6 +130,20 @@ describe("codex session-start hook — guards", () => {
     const parsed = JSON.parse(out!.trim());
     expect(parsed.hookSpecificOutput.additionalContext).toContain("Hivemind: logged in as org acme");
     expect(parsed.hookSpecificOutput.additionalContext).toContain("workspace: default");
+  });
+
+  it("keeps additionalContext minimal — login line only, no rules/goals block (that lives in AGENTS.md)", async () => {
+    const out = await runHook();
+    const parsed = JSON.parse(out!.trim());
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    // Codex has no model-only channel: additionalContext is user-visible, so
+    // the proactive memory instruction lives in the silent ~/.codex/AGENTS.md
+    // block (install-codex.ts), not here. Assert the EXACT logged-in context
+    // (login line + optional version notice) so any leaked block — or extra
+    // line that would clobber the TUI — fails the test.
+    expect(ctx).toMatch(
+      /^Hivemind: logged in as org acme \(workspace: default\)\.(\nHivemind v.+)?$/,
+    );
   });
 
   it("falls back to orgId when orgName is missing", async () => {
@@ -167,10 +191,22 @@ describe("codex session-start hook — spawn async setup", () => {
     expect(debugLogMock).toHaveBeenCalledWith("spawned async setup process");
   });
 
-  it("does not spawn when creds are missing", async () => {
+  it("spawns the setup worker even when creds are missing (graph-deps is login-independent)", async () => {
     loadCredsMock.mockReturnValue({ token: "" });
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
     await runHook();
-    expect(spawnMock).not.toHaveBeenCalled();
+    // session-start-setup.js MUST spawn (it provisions graph-deps before its
+    // own creds gate). The graph-pull-worker MUST NOT (still creds-gated).
+    const setupCall = spawnMock.mock.calls.find(
+      ([_cmd, args]) => Array.isArray(args) && args[0]?.includes?.("session-start-setup.js"),
+    );
+    expect(setupCall).toBeDefined();
+    expect(debugLogMock).toHaveBeenCalledWith("spawned async setup process");
+    const pullCall = spawnMock.mock.calls.find(
+      ([_cmd, args]) => Array.isArray(args) && args[0]?.includes?.("graph-pull-worker"),
+    );
+    expect(pullCall).toBeUndefined();
   });
 
   it("logs 'triggered (background)' on the auto-mine path when creds are missing and worker actually fires", async () => {

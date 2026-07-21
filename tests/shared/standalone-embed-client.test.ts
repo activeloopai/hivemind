@@ -85,7 +85,12 @@ async function startFakeDaemon(
   return srv;
 }
 
-describe("tryEmbedStandalone", () => {
+// Unix-domain-socket IPC + POSIX path semantics: every test connects to (or
+// spawns) the embed daemon over a /tmp Unix-domain socket, and the
+// SHARED_DAEMON_PATH assertion expects forward-slash separators. Windows can't
+// bind/connect a Unix-domain socket (needs named pipes) and uses backslash
+// paths, so the suite is skipped.
+describe.skipIf(process.platform === "win32")("tryEmbedStandalone", () => {
   it("exports SHARED_DAEMON_PATH under the canonical install location", () => {
     expect(SHARED_DAEMON_PATH).toMatch(/\.hivemind\/embed-deps\/embed-daemon\.js$/);
   });

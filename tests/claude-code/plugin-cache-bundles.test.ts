@@ -18,7 +18,7 @@ import { join } from "node:path";
  * versioned dirs at SessionEnd) and that's still asserted below.
  */
 
-const claudeCodeRoot = join(process.cwd(), "claude-code");
+const claudeCodeRoot = join(process.cwd(), "harnesses", "claude-code");
 const claudeCodeBundleDir = join(claudeCodeRoot, "bundle");
 
 describe("shipped bundles contain plugin-cache safety", () => {

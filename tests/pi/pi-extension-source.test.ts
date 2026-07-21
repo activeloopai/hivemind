@@ -19,7 +19,7 @@ import { join } from "node:path";
  */
 
 const PI_SRC = readFileSync(
-  join(process.cwd(), "pi", "extension-source", "hivemind.ts"),
+  join(process.cwd(), "harnesses", "pi", "extension-source", "hivemind.ts"),
   "utf-8",
 );
 
@@ -30,6 +30,74 @@ describe("pi extension — embedding wiring", () => {
     );
     expect(insertLine).not.toBeNull();
     expect(insertLine![0]).toContain("message_embedding");
+  });
+
+  // Regression for C1 (duplicate session rows). The sessions table has no
+  // UNIQUE constraint on id, so a plain `INSERT ... VALUES` that gets re-sent
+  // (retry after a transient error) creates a duplicate. pi must build the row
+  // idempotently — `INSERT ... SELECT ... WHERE NOT EXISTS (id = ...)` — matching
+  // the shared buildDirectSessionInsertSql helper the bundled agents use.
+  it("builds the sessions INSERT idempotently (no bare VALUES insert)", () => {
+    expect(PI_SRC).toMatch(
+      /INSERT INTO "\$\{SESSIONS_TABLE\}"[\s\S]*?WHERE NOT EXISTS \(SELECT 1 FROM "\$\{SESSIONS_TABLE\}" WHERE id = '\$\{rowId\}'\)/,
+    );
+    // ...and never the duplicate-prone bare VALUES form for the sessions row.
+    expect(PI_SRC).not.toMatch(
+      /INSERT INTO "\$\{SESSIONS_TABLE\}" \([^)]*message_embedding[^)]*\)\s*VALUES/,
+    );
+  });
+
+  // Regression for the pi `plugin_version` 42703 incident (org c2d29f27 et al.):
+  // the pi extension hard-codes its sessions CREATE TABLE inline (it does NOT go
+  // through DeeplakeApi.ensureSessionsTable / healMissingColumns like the other
+  // agents). When `plugin_version` was added to the canonical SESSIONS_COLUMNS
+  // (2026-05-18) the pi INSERT picked it up but the inline CREATE did not, so
+  // every pi-created sessions table was one column short from birth and every
+  // INSERT failed with `column "plugin_version" ... does not exist` — with no
+  // heal to recover. This invariant locks INSERT ⊆ CREATE so the schemas can
+  // never silently drift again.
+  function sessionsInsertColumns(): string[] {
+    const m = PI_SRC.match(/INSERT INTO "\$\{SESSIONS_TABLE\}"\s*\(([^)]+)\)/);
+    expect(m).not.toBeNull();
+    return m![1].split(",").map(c => c.trim().toLowerCase());
+  }
+  function sessionsCreateColumns(): string[] {
+    const block = PI_SRC.match(/const sessCreate =([\s\S]*?)USING deeplake/);
+    expect(block).not.toBeNull();
+    const cols = new Set<string>();
+    for (const m of block![1].matchAll(
+      /[(,`]\s*([a-z_][a-z0-9_]*)\s+(?:TEXT|JSONB|FLOAT4|BIGINT|INT|BOOLEAN|DOUBLE)/gi,
+    )) {
+      cols.add(m[1].toLowerCase());
+    }
+    return [...cols];
+  }
+
+  it("every column the sessions INSERT writes exists in the sessions CREATE TABLE", () => {
+    const created = new Set(sessionsCreateColumns());
+    const missing = sessionsInsertColumns().filter(c => !created.has(c));
+    expect(missing).toEqual([]);
+  });
+
+  it("plugin_version is in both the sessions CREATE and INSERT", () => {
+    expect(sessionsCreateColumns()).toContain("plugin_version");
+    expect(sessionsInsertColumns()).toContain("plugin_version");
+  });
+
+  // The CREATE/INSERT invariants above only protect FRESH tables. Existing
+  // 13-column pi tables (the actual prod incident — org c2d29f27) are recovered
+  // by the session_start SCHEMA_HEAL pass. Guard that contract too: dropping
+  // plugin_version from the heal, or no longer healing MEMORY_TABLE, would
+  // silently re-break pre-existing tables while the suite stayed green.
+  it("session_start SCHEMA_HEAL heals sessions + memory tables for plugin_version", () => {
+    const block = PI_SRC.match(/const SCHEMA_HEAL[^=]*=\s*\[([\s\S]*?)\];/);
+    expect(block).not.toBeNull();
+    const heal = block![1];
+    expect(heal).toContain("SESSIONS_TABLE");
+    expect(heal).toContain("MEMORY_TABLE");
+    const pluginVersionHeals =
+      heal.match(/\["plugin_version",\s*"TEXT NOT NULL DEFAULT ''"\]/g) ?? [];
+    expect(pluginVersionHeals.length).toBeGreaterThanOrEqual(2);
   });
 
   it("auto-spawn target is the canonical shared-deps daemon path", () => {
@@ -226,5 +294,37 @@ describe("pi extension — SkillOpt wiring", () => {
   it("only arms org-shaped refs (name--author), not bare/plugin skills", () => {
     expect(PI_SRC).toContain('ref.includes(":")');      // reject plugin-namespaced
     expect(PI_SRC).toContain('ref.lastIndexOf("--")');  // require name--author
+  });
+});
+
+// Pi is a standalone extension (no shared-module imports), so it carries an
+// inline mirror of src/dir-config.ts. These guard that the per-directory
+// `.hivemind` wiring (opt-out + routing) is present and applied on every
+// capture path — the gap Emanuele flagged on PR #302.
+describe("pi extension — per-directory .hivemind wiring", () => {
+  it("defines the inline resolver over both filenames", () => {
+    expect(PI_SRC).toContain("function findHivemindDir");
+    expect(PI_SRC).toContain("function applyDirConfig");
+    expect(PI_SRC).toContain('".hivemind.local", ".hivemind"');
+  });
+
+  it("honors env precedence (env > file) in the overlay", () => {
+    expect(PI_SRC).toContain("process.env.HIVEMIND_ORG_ID");
+    expect(PI_SRC).toContain("process.env.HIVEMIND_WORKSPACE_ID");
+  });
+
+  it("gates every capture path on the resolved collect flag", () => {
+    // input / tool_result / message_end / session_shutdown each skip on opt-out.
+    const skips = PI_SRC.match(/capture disabled for cwd=\$\{cwd\} via \.hivemind/g) ?? [];
+    expect(skips.length).toBe(4);
+    // and each reassigns creds to the routed identity after the gate.
+    const reassigns = PI_SRC.match(/creds = dirRes\.creds;/g) ?? [];
+    expect(reassigns.length).toBe(4);
+  });
+
+  it("gates session_start table setup on collect and discloses routing", () => {
+    expect(PI_SRC).toContain("creds && captureEnabled && dirCollect");
+    expect(PI_SRC).toContain("routed by .hivemind");
+    expect(PI_SRC).toContain("capture is disabled for this directory");
   });
 });

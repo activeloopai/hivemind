@@ -22,6 +22,7 @@ import {
   runDashboardCommand,
 } from "../../src/commands/dashboard.js";
 import { deriveProjectKey } from "../../src/skillify/state.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 describe("parseDashboardArgs", () => {
   it("returns help for --help / -h", () => {
@@ -125,7 +126,7 @@ describe("runDashboardCommand", () => {
   beforeEach(() => {
     homeDir = mkdtempSync(join(tmpdir(), "hm-dash-cli-"));
     originalHome = process.env.HOME;
-    process.env.HOME = homeDir;
+    setFakeHome(homeDir);
     stdout = "";
     stderr = "";
     orgStatsMock.mockReset();
@@ -133,8 +134,7 @@ describe("runDashboardCommand", () => {
   });
 
   afterEach(() => {
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
+    clearFakeHome();
     rmSync(homeDir, { recursive: true, force: true });
   });
 

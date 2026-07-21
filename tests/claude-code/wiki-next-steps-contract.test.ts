@@ -25,10 +25,13 @@ import { WIKI_PROMPT_TEMPLATE as HERMES_TEMPLATE } from "../../src/hooks/hermes/
 // pi ships its prompt inline in a raw-TS extension that can't be imported and
 // executed here, so lift the template literal from source — same approach as
 // tests/pi/pi-extension-source.test.ts.
+// Normalize CRLF → LF: the four imported templates are compiled JS strings
+// (always LF), but this one is read raw from disk, so a Windows checkout could
+// give it \r\n and break the LF-anchored nextStepsSection() parser below.
 const PI_TEMPLATE = readFileSync(
-  join(process.cwd(), "pi", "extension-source", "hivemind.ts"),
+  join(process.cwd(), "harnesses", "pi", "extension-source", "hivemind.ts"),
   "utf-8",
-);
+).replace(/\r\n/g, "\n");
 
 const TEMPLATES = {
   claude: CLAUDE_TEMPLATE,

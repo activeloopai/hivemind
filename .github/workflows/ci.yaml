@@ -58,14 +58,17 @@ jobs:
     #   2. re-install duplicated the PostToolUse hook because hook-dedup
     #      matched forward-slash paths while Windows writes backslash paths —
     #      fixed in src/cli/install-codex.ts + install-cursor.ts.
+    #   3. wiki-worker summary generation failed on Windows because the
+    #      prompt was passed as a CLI arg (crashes with E2BIG / quoting
+    #      issues) — fixed by writing to a temp file and passing the path
+    #      instead (codex/cursor/pi/hermes workers, PR #250).
     #
-    # Scoped to the two suites that cover those fixes rather than the full
-    # vitest run: the bulk of the suite assumes POSIX paths / chmod / symlinks
-    # and would fail on a Windows runner for reasons unrelated to this fix.
-    # Running these two on a REAL windows-latest proves the path-separator and
-    # detached-spawn behavior on win32, on top of the Linux-side
-    # missing-binary + backslash-string reproductions in the same suites.
-    name: Windows smoke (spawn + hook dedup)
+    # Scoped to suites that cover those fixes rather than the full vitest run:
+    # the bulk of the suite assumes POSIX paths / chmod / symlinks and would
+    # fail on a Windows runner for reasons unrelated to these fixes.
+    # The wiki-worker suites mock execFileSync entirely (no real spawning,
+    # no POSIX-only paths), so they run cleanly on windows-latest.
+    name: Windows smoke (spawn + hook dedup + wiki-worker)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6.0.2
@@ -85,7 +88,7 @@ jobs:
         run: npm install
 
       - name: Run Windows-relevant suites
-        run: npx vitest run tests/shared/spawn-detached.test.ts tests/cli/install-helpers.test.ts
+        run: npx vitest run tests/shared/spawn-detached.test.ts tests/cli/install-helpers.test.ts tests/codex/codex-wiki-worker.test.ts tests/cursor/cursor-wiki-worker.test.ts tests/pi/pi-wiki-worker.test.ts tests/hermes/hermes-wiki-worker.test.ts
 
   test:
     name: Typecheck and Test
@@ -113,11 +116,11 @@ jobs:
       - name: Build (typecheck + emit bundle artefacts)
         # `build` runs `tsc && esbuild`, which is a strict superset of
         # `typecheck` (the bare `tsc --noEmit` we used to run here). It
-        # ALSO produces the per-agent bundles AND `openclaw/dist/`. The
+        # ALSO produces the per-agent bundles AND `harnesses/openclaw/dist/`. The
         # latter is gitignored, so it doesn't exist after a fresh
         # `actions/checkout` — and several bundle-scan tests under
-        # `claude-code/tests/skillify-session-start-injection.test.ts` read
-        # `openclaw/dist/index.js` and `openclaw/dist/skillify-worker.js`
+        # `harnesses/claude-code/tests/skillify-session-start-injection.test.ts` read
+        # `harnesses/openclaw/dist/index.js` and `harnesses/openclaw/dist/skillify-worker.js`
         # directly. Without this rebuild they fail with ENOENT (see PR #98
         # — first CI run after the openclaw skillify wiring landed).
         run: npm run build
@@ -263,7 +266,11 @@ jobs:
           echo "body-file=/tmp/pr-coverage.md" >> "$GITHUB_OUTPUT"
 
       - name: Post coverage comment on PR
-        if: github.event_name == 'pull_request' && always() && steps.pr-coverage.outputs.body-file != ''
+        # Fork PRs get a read-only GITHUB_TOKEN: the comment API returns
+        # "Resource not accessible by integration", failing the job and
+        # skipping the bundle build/smoke steps below. Skip the comment
+        # there — the coverage gate itself already ran above.
+        if: github.event_name == 'pull_request' && always() && steps.pr-coverage.outputs.body-file != '' && github.event.pull_request.head.repo.full_name == github.repository
         uses: marocchino/sticky-pull-request-comment@v3.0.4
         with:
           header: pr-coverage-report
@@ -287,19 +294,19 @@ jobs:
           set -e
           for f in \
             bundle/cli.js \
-            claude-code/bundle/capture.js \
-            claude-code/bundle/session-start.js \
-            claude-code/bundle/session-end.js \
-            claude-code/bundle/plugin-cache-gc.js \
-            claude-code/bundle/skillify-worker.js \
-            codex/bundle/capture.js \
-            codex/bundle/session-start.js \
-            cursor/bundle/capture.js \
-            cursor/bundle/session-start.js \
-            hermes/bundle/capture.js \
-            hermes/bundle/session-start.js \
+            harnesses/claude-code/bundle/capture.js \
+            harnesses/claude-code/bundle/session-start.js \
+            harnesses/claude-code/bundle/session-end.js \
+            harnesses/claude-code/bundle/plugin-cache-gc.js \
+            harnesses/claude-code/bundle/skillify-worker.js \
+            harnesses/codex/bundle/capture.js \
+            harnesses/codex/bundle/session-start.js \
+            harnesses/cursor/bundle/capture.js \
+            harnesses/cursor/bundle/session-start.js \
+            harnesses/hermes/bundle/capture.js \
+            harnesses/hermes/bundle/session-start.js \
             mcp/bundle/server.js \
-            pi/bundle/skillify-worker.js; do
+            harnesses/pi/bundle/skillify-worker.js; do
             if [ ! -f "$f" ]; then
               echo "::error::expected bundle entrypoint missing: $f"
               exit 1
@@ -318,6 +325,130 @@ jobs:
         # Mirrors the same gate inside release.yml's publish job, so a
         # broken `files` array trips on the PR — never on a release run
         # where tokens are reachable.
+        run: npm run pack:check
+
+  windows-test:
+    # Full typecheck + test suite on a real Windows runner, gated to push
+    # events only (not PRs) to keep PR feedback fast. Catches the class of
+    # Windows-only failures that mocked unit tests and Linux CI miss:
+    # path-separator bugs, CRLF handling, missing POSIX binaries, and
+    # node:fs behaviour differences (no chmod/symlinks). Mirrors the `test`
+    # job exactly except:
+    #   - `defaults: run: shell: bash` — forces all `run:` steps through
+    #     Git Bash (pre-installed on windows-latest) so the existing bash
+    #     scripts (coverage summary, bundle smoke-test) work unchanged.
+    #   - `npm install` instead of `npm ci` — if tree-sitter's native
+    #     prebuild doesn't match the runner's ABI, npm continues rather
+    #     than aborting (same pattern as the windows-smoke job).
+    #   - PR-only steps omitted (coverage comment posting requires a PR
+    #     context and a writable GITHUB_TOKEN the push job doesn't need).
+    name: Typecheck and Test (Windows)
+    runs-on: windows-latest
+    if: github.event_name == 'push'
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build (typecheck + emit bundle artefacts)
+        run: npm run build
+
+      - name: Audit openclaw bundle against ClawHub static-scan rules
+        run: npm run audit:openclaw -- --criticals-only
+
+      - name: Run tests
+        # No --coverage here: this job exists to catch Windows-only test
+        # FAILURES, and per-file coverage thresholds are enforced on the Linux
+        # `test` job. Several suites are platform-skipped on Windows
+        # (skipIf(win32) for the Unix-socket embed daemon, /bin/sh safe-echo,
+        # Unix file-mode bits, etc.), so their src files can't meet the
+        # thresholds here by design — enforcing coverage on Windows would fail
+        # on those skips, not on any real regression.
+        run: npx vitest run
+
+      - name: Write coverage summary to job page
+        if: always()
+        run: |
+          if [ -f coverage/coverage-summary.json ]; then
+            echo "### Test Coverage (overall)" >> $GITHUB_STEP_SUMMARY
+            node -e "
+              const c = require('./coverage/coverage-summary.json').total;
+              const fmt = (v) => v.pct.toFixed(1) + '%';
+              console.log('| Metric | Coverage |');
+              console.log('|--------|----------|');
+              console.log('| Statements | ' + fmt(c.statements) + ' |');
+              console.log('| Branches | ' + fmt(c.branches) + ' |');
+              console.log('| Functions | ' + fmt(c.functions) + ' |');
+              console.log('| Lines | ' + fmt(c.lines) + ' |');
+            " >> $GITHUB_STEP_SUMMARY
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### PR-tracked files (must stay ≥ 80 %)" >> $GITHUB_STEP_SUMMARY
+            node -e "
+              const summary = require('./coverage/coverage-summary.json');
+              const tracked = [
+                'src/shell/grep-core.ts',
+                'src/shell/grep-interceptor.ts',
+                'src/hooks/grep-direct.ts',
+              ];
+              console.log('| File | Stmts | Branch | Funcs | Lines |');
+              console.log('|------|------:|-------:|------:|------:|');
+              const fmt = v => v == null ? '—' : v.toFixed(1) + '%';
+              for (const rel of tracked) {
+                const key = Object.keys(summary).find(k => k.endsWith(rel));
+                const c = key ? summary[key] : null;
+                if (!c) { console.log('| \`' + rel + '\` | — | — | — | — |'); continue; }
+                console.log('| \`' + rel + '\` | ' + fmt(c.statements.pct) + ' | ' + fmt(c.branches.pct) + ' | ' + fmt(c.functions.pct) + ' | ' + fmt(c.lines.pct) + ' |');
+              }
+            " >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Build bundles
+        run: npm run build
+
+      - name: Smoke-test built bundles parse cleanly
+        run: |
+          set -e
+          for f in \
+            bundle/cli.js \
+            harnesses/claude-code/bundle/capture.js \
+            harnesses/claude-code/bundle/session-start.js \
+            harnesses/claude-code/bundle/session-end.js \
+            harnesses/claude-code/bundle/plugin-cache-gc.js \
+            harnesses/claude-code/bundle/skillify-worker.js \
+            harnesses/codex/bundle/capture.js \
+            harnesses/codex/bundle/session-start.js \
+            harnesses/cursor/bundle/capture.js \
+            harnesses/cursor/bundle/session-start.js \
+            harnesses/hermes/bundle/capture.js \
+            harnesses/hermes/bundle/session-start.js \
+            mcp/bundle/server.js \
+            harnesses/pi/bundle/skillify-worker.js; do
+            if [ ! -f "$f" ]; then
+              echo "::error::expected bundle entrypoint missing: $f"
+              exit 1
+            fi
+            node --check "$f" || {
+              echo "::error::bundle failed to parse: $f"
+              exit 1
+            }
+          done
+          echo "All bundle entrypoints parse cleanly."
+
+      - name: Pack-check (refuse forbidden filenames in tarball)
         run: npm run pack:check
 
   cross-node-install:

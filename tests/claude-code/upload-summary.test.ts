@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { uploadSummary, extractDescription, esc, type QueryFn } from "../../src/hooks/upload-summary.js";
+import {
+  uploadSummary,
+  extractDescription,
+  esc,
+  isFinalizedRow,
+  isFinalizedDescription,
+  isFinalizedSummaryText,
+  PLACEHOLDER_DESCRIPTION,
+  type QueryFn,
+} from "../../src/hooks/upload-summary.js";
 
 /**
  * Functional tests against the real uploadSummary helper. The query
@@ -51,7 +60,8 @@ describe("uploadSummary — Deeplake single-UPDATE invariant", () => {
     await uploadSummary(fn, { ...BASE, text: TEXT_WITH_WHAT_HAPPENED });
 
     expect(calls, "expected SELECT then one UPDATE").toHaveLength(2);
-    expect(calls[0]).toMatch(/^SELECT\s+path\s+FROM/i);
+    // SELECT now also fetches summary + description for the finalize-wins guard.
+    expect(calls[0]).toMatch(/^SELECT\s+path,\s*summary,\s*description\s+FROM/i);
 
     const update = calls[1];
     expect(update).toMatch(/^UPDATE\s/i);
@@ -253,6 +263,103 @@ describe("uploadSummary — plugin_version column", () => {
     // Must still update the other columns (summary + description).
     expect(update).toMatch(/summary\s*=\s*E'/);
     expect(update).toMatch(/description\s*=\s*E'/);
+  });
+});
+
+describe("uploadSummary — finalize-wins (placeholder must not clobber a real summary)", () => {
+  const FINALIZED_ROW = {
+    path: BASE.vpath,
+    summary: TEXT_WITH_WHAT_HAPPENED,
+    description: "User ran diagnostic commands to verify the development environment.",
+  };
+
+  // Reproduces the production clobber: 56% of summaries stuck at
+  // 'in progress' because a stale/duplicate writer overwrote a finalized
+  // summary with a placeholder/stub, hiding it from proactive recall.
+  it("does NOT overwrite a finalized row when the incoming text is a placeholder stub", async () => {
+    const { fn, calls } = makeSpyQuery([[FINALIZED_ROW]]);
+    const placeholderText = [
+      "# Session sess-1",
+      "- **Status**: in-progress",
+      "",
+    ].join("\n");
+    const result = await uploadSummary(fn, { ...BASE, text: placeholderText });
+
+    expect(result.path, "placeholder must be skipped, not written").toBe("skip");
+    // Only the SELECT ran — no UPDATE, no INSERT.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/^SELECT/i);
+    expect(calls.some(s => /^UPDATE/i.test(s) || /^INSERT/i.test(s))).toBe(false);
+  });
+
+  it("does NOT overwrite a finalized row when the incoming text is empty", async () => {
+    const { fn, calls } = makeSpyQuery([[FINALIZED_ROW]]);
+    const result = await uploadSummary(fn, { ...BASE, text: "   " });
+    expect(result.path).toBe("skip");
+    expect(calls.some(s => /^UPDATE/i.test(s))).toBe(false);
+  });
+
+  it("does NOT overwrite a finalized row with a content-free '## What Happened' stub", async () => {
+    // A summary with the heading but an EMPTY body must not count as finalized.
+    const { fn, calls } = makeSpyQuery([[FINALIZED_ROW]]);
+    const emptyBody = "# Session sess-1\n\n## What Happened\n\n## People\n";
+    const result = await uploadSummary(fn, { ...BASE, text: emptyBody });
+    expect(result.path).toBe("skip");
+    expect(calls.some(s => /^UPDATE/i.test(s))).toBe(false);
+  });
+
+  it("DOES overwrite a finalized row with a NEWER finalized summary (resumed-session refresh)", async () => {
+    const { fn, calls } = makeSpyQuery([[FINALIZED_ROW]]);
+    const newer = TEXT_WITH_WHAT_HAPPENED + "\n\n## Extra\nmore work done\n";
+    const result = await uploadSummary(fn, { ...BASE, text: newer });
+    expect(result.path).toBe("update");
+    expect(calls.some(s => /^UPDATE/i.test(s))).toBe(true);
+  });
+
+  it("DOES finalize a placeholder-only row (real summary replaces 'in progress' stub)", async () => {
+    const placeholderRow = { path: BASE.vpath, summary: "# Session sess-1\n", description: PLACEHOLDER_DESCRIPTION };
+    const { fn, calls } = makeSpyQuery([[placeholderRow]]);
+    const result = await uploadSummary(fn, { ...BASE, text: TEXT_WITH_WHAT_HAPPENED });
+    expect(result.path).toBe("update");
+    const update = calls.find(s => /^UPDATE/i.test(s))!;
+    expect(update).toMatch(/description\s*=\s*E'/);
+    expect(update).not.toContain(`description = E'${PLACEHOLDER_DESCRIPTION}'`);
+  });
+
+  it("INSERTs a finalized summary when no row exists yet", async () => {
+    const { fn, calls } = makeSpyQuery([[]]);
+    const result = await uploadSummary(fn, { ...BASE, text: TEXT_WITH_WHAT_HAPPENED });
+    expect(result.path).toBe("insert");
+    expect(calls.some(s => /^INSERT/i.test(s))).toBe(true);
+  });
+});
+
+describe("isFinalized* predicates", () => {
+  it("isFinalizedDescription: placeholder sentinel is not finalized", () => {
+    expect(isFinalizedDescription(PLACEHOLDER_DESCRIPTION)).toBe(false);
+    expect(isFinalizedDescription("in progress")).toBe(false);
+  });
+  it("isFinalizedDescription: empty / non-string are not finalized", () => {
+    expect(isFinalizedDescription("")).toBe(false);
+    expect(isFinalizedDescription("   ")).toBe(false);
+    expect(isFinalizedDescription(null)).toBe(false);
+    expect(isFinalizedDescription(undefined)).toBe(false);
+  });
+  it("isFinalizedDescription: a real description is finalized", () => {
+    expect(isFinalizedDescription("Implemented the upsert guard")).toBe(true);
+  });
+  it("isFinalizedRow needs BOTH a real summary and a real description", () => {
+    expect(isFinalizedRow("real summary body", "real desc")).toBe(true);
+    expect(isFinalizedRow("", "real desc")).toBe(false);
+    expect(isFinalizedRow("real summary body", PLACEHOLDER_DESCRIPTION)).toBe(false);
+    expect(isFinalizedRow("real summary body", "")).toBe(false);
+  });
+  it("isFinalizedSummaryText requires a populated '## What Happened' section", () => {
+    expect(isFinalizedSummaryText(TEXT_WITH_WHAT_HAPPENED)).toBe(true);
+    expect(isFinalizedSummaryText("")).toBe(false);
+    expect(isFinalizedSummaryText("# Session\n- **Status**: in-progress\n")).toBe(false);
+    expect(isFinalizedSummaryText("# Session\n\n## What Happened\n\n## People\n")).toBe(false);
+    expect(isFinalizedSummaryText(null)).toBe(false);
   });
 });
 

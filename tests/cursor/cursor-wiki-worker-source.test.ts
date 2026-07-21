@@ -16,11 +16,12 @@ const SPAWN_SRC = readFileSync(join(REPO_ROOT, "src/hooks/cursor/spawn-wiki-work
 
 describe("cursor wiki-worker source", () => {
   it("shells `cursor-agent --print --model X --force` (NOT codex exec)", () => {
-    expect(WORKER_SRC).toMatch(/execFileSync\(\s*cfg\.cursorBin/);
+    // Cross-platform spawn goes through buildTrailingPromptInvocation(cfg.cursorBin, …).
+    expect(WORKER_SRC).toMatch(/buildTrailingPromptInvocation\(\s*cfg\.cursorBin/);
     expect(WORKER_SRC).toContain('"--print"');
     expect(WORKER_SRC).toContain('"--model"');
     expect(WORKER_SRC).toContain('"--force"');
-    expect(WORKER_SRC).not.toMatch(/execFileSync\(\s*cfg\.codexBin/);
+    expect(WORKER_SRC).not.toMatch(/buildTrailingPromptInvocation\(\s*cfg\.codexBin/);
     expect(WORKER_SRC).not.toMatch(/"--dangerously-bypass-approvals-and-sandbox"/);
   });
 
@@ -42,10 +43,9 @@ describe("cursor wiki-worker source", () => {
 });
 
 describe("cursor spawn-wiki-worker source", () => {
-  it("findCursorBin probes `which cursor-agent` and falls back to the literal name", () => {
-    expect(SPAWN_SRC).toMatch(/which cursor-agent/);
-    expect(SPAWN_SRC).toContain('return "cursor-agent"');
-    expect(SPAWN_SRC).not.toContain("which codex");
+  it("findCursorBin resolves `cursor-agent` cross-platform and falls back to the literal name", () => {
+    expect(SPAWN_SRC).toMatch(/resolveCliBin\("cursor-agent",\s*"cursor-agent"\)/);
+    expect(SPAWN_SRC).not.toContain('resolveCliBin("codex"');
   });
 
   it("config builder includes cursorModel from HIVEMIND_CURSOR_MODEL with `auto` default", () => {

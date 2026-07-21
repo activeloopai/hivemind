@@ -219,7 +219,8 @@ export function cleanupBrokenSettingsHooks(): { removed: number; events: string[
 export function installClaude(): void {
   requireClaudeCli();
 
-  if (!marketplaceAlreadyAdded()) {
+  const marketplacePreexisting = marketplaceAlreadyAdded();
+  if (!marketplacePreexisting) {
     const add = runClaude(["plugin", "marketplace", "add", MARKETPLACE_SOURCE]);
     if (!add.ok) {
       throw new Error(
@@ -229,8 +230,18 @@ export function installClaude(): void {
   }
 
   if (!pluginAlreadyInstalled()) {
-    // First-time install path: just install. The marketplace fetch is
-    // implicit in `claude plugin install`.
+    // First-time install path. If the marketplace was already on disk we
+    // must refresh its cache first: a `marketplace add` that finds the
+    // marketplace already present is a no-op and leaves the STALE cached
+    // marketplace.json in place, so `plugin install` would resolve the old
+    // pinned sha/path. This bit users whose earlier attempt added the
+    // marketplace but failed to install (e.g. the harnesses/claude-code
+    // path regression) — a plain `hivemind install` re-run kept hitting the
+    // stale catalog. A fresh `marketplace add` already fetched the latest,
+    // so only refresh when the marketplace pre-existed.
+    if (marketplacePreexisting) {
+      runClaude(["plugin", "marketplace", "update", MARKETPLACE_NAME]);
+    }
     const inst = runClaude(["plugin", "install", "hivemind"]);
     if (!inst.ok) {
       throw new Error(

@@ -58,9 +58,16 @@ async function loadModule() {
  * so each test can stage exactly the files it needs.
  */
 function stageExists(map: Record<string, boolean>): void {
+  // Match on forward-slash-normalized paths so the substring keys
+  // (e.g. "bundle/cli.js", "/projects") work regardless of the platform
+  // separator. On Windows the production code builds these paths with
+  // `path.join` → backslashes, which a literal "bundle/cli.js" substring
+  // would never match.
+  const norm = (s: string) => s.replace(/\\/g, "/");
   existsSyncMock.mockImplementation((p: string) => {
+    const np = norm(p);
     for (const [substr, exists] of Object.entries(map)) {
-      if (p.includes(substr)) return exists;
+      if (np.includes(norm(substr))) return exists;
     }
     return false;
   });
@@ -243,7 +250,45 @@ describe("maybeAutoMineLocal — guard branches", () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [cmd, args] = spawnMock.mock.calls[0];
     expect(cmd).toBe(process.execPath);
-    expect(args[0]).toContain("bundle/cli.js");
+    // Normalize separators: the production path is built with `path.join`,
+    // so on Windows args[0] ends with `bundle\cli.js`.
+    expect((args[0] as string).replace(/\\/g, "/")).toContain("bundle/cli.js");
+    expect(args.slice(1)).toEqual(["skillify", "mine-local"]);
+  });
+
+  it("appends --n/--only/--advise flags when scan options are passed (install path)", async () => {
+    stageExists({
+      "local-mined.json": false,
+      "local-mined.lock": false,
+      "/projects": true,
+      "bundle/cli.js": true,
+    });
+    readdirSyncMock.mockReturnValueOnce(["sub"]).mockReturnValueOnce(["a.jsonl"]);
+    openSyncMock.mockReturnValue(42);
+    const { maybeAutoMineLocal } = await loadModule();
+    const r = maybeAutoMineLocal({ sessionCount: 10, onlyAgent: "claude_code", advise: true });
+    expect(r).toEqual({ triggered: true });
+    const [, args] = spawnMock.mock.calls[0];
+    expect(args.slice(1)).toEqual([
+      "skillify", "mine-local",
+      "--n", "10",
+      "--only", "claude_code",
+      "--advise",
+    ]);
+  });
+
+  it("omits scan-option flags when called with no options (SessionStart path)", async () => {
+    stageExists({
+      "local-mined.json": false,
+      "local-mined.lock": false,
+      "/projects": true,
+      "bundle/cli.js": true,
+    });
+    readdirSyncMock.mockReturnValueOnce(["sub"]).mockReturnValueOnce(["a.jsonl"]);
+    openSyncMock.mockReturnValue(42);
+    const { maybeAutoMineLocal } = await loadModule();
+    expect(maybeAutoMineLocal().triggered).toBe(true);
+    const [, args] = spawnMock.mock.calls[0];
     expect(args.slice(1)).toEqual(["skillify", "mine-local"]);
   });
 

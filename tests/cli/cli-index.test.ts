@@ -94,6 +94,18 @@ const enableEmbeddingsMock = vi.fn();
 const disableEmbeddingsMock = vi.fn();
 const uninstallEmbeddingsMock = vi.fn();
 const statusEmbeddingsMock = vi.fn();
+const runBackfillMemoryMock = vi.fn();
+const runFlushMemoryMock = vi.fn();
+const maybeAutoBackfillMemoryMock = vi.fn();
+vi.mock("../../src/commands/backfill-memory.js", () => ({
+  runBackfillMemory: (...a: unknown[]) => runBackfillMemoryMock(...a),
+}));
+vi.mock("../../src/commands/flush-memory.js", () => ({
+  runFlushMemory: (...a: unknown[]) => runFlushMemoryMock(...a),
+}));
+vi.mock("../../src/skillify/spawn-backfill-memory-worker.js", () => ({
+  maybeAutoBackfillMemory: (...a: unknown[]) => maybeAutoBackfillMemoryMock(...a),
+}));
 vi.mock("../../src/cli/embeddings.js", () => ({
   installEmbeddings: (...a: unknown[]) => installEmbeddingsMock(...a),
   enableEmbeddings: (...a: unknown[]) => enableEmbeddingsMock(...a),
@@ -126,6 +138,9 @@ beforeEach(() => {
   disableEmbeddingsMock.mockReset();
   uninstallEmbeddingsMock.mockReset();
   statusEmbeddingsMock.mockReset();
+  runBackfillMemoryMock.mockReset().mockResolvedValue(0);
+  runFlushMemoryMock.mockReset().mockResolvedValue({ pending: 0, uploaded: 0, failed: 0 });
+  maybeAutoBackfillMemoryMock.mockReset().mockReturnValue({ triggered: false });
   stdoutMock.mockReset();
   stderrMock.mockReset();
   exitSpy.mockReset();
@@ -444,6 +459,16 @@ describe("hivemind login / status", () => {
     expect(ensureLoggedInMock).toHaveBeenCalledTimes(1);
   });
 
+  it("'login --ref <code>' passes the affiliate code to ensureLoggedIn", async () => {
+    await runCli(["login", "--ref", "mario"]);
+    expect(ensureLoggedInMock).toHaveBeenCalledWith("mario");
+  });
+
+  it("'login --ref' does not swallow a following flag as the code", async () => {
+    await runCli(["login", "--ref", "--skip-auth"]);
+    expect(ensureLoggedInMock).toHaveBeenCalledWith(undefined);
+  });
+
   it("'status' prints version, login state, and detected platforms", async () => {
     detectPlatformsMock.mockReturnValue([{ id: "claude", markerDir: "/x/.claude" }]);
     isLoggedInMock.mockReturnValue(true);
@@ -480,5 +505,46 @@ describe("unknown command", () => {
     expect(stderrText()).toContain("Unknown command: bogus");
     expect(stdoutText()).toContain("Usage:");
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("hivemind memory", () => {
+  it("backfill delegates to runBackfillMemory (args after subcommand) and exits with its code", async () => {
+    runBackfillMemoryMock.mockResolvedValue(0);
+    await runCli(["memory", "backfill", "--dry-run", "--n", "5"]);
+    expect(runBackfillMemoryMock).toHaveBeenCalledTimes(1);
+    expect(runBackfillMemoryMock.mock.calls[0][0]).toEqual(["--dry-run", "--n", "5"]);
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("flush delegates to runFlushMemory and reports the uploaded count", async () => {
+    runFlushMemoryMock.mockResolvedValue({ pending: 3, uploaded: 3, failed: 0 });
+    await runCli(["memory", "flush"]);
+    expect(runFlushMemoryMock).toHaveBeenCalledTimes(1);
+    expect(stdoutText()).toContain("memory flush: uploaded 3/3 staged summary(ies).");
+  });
+
+  it("flush warns + exits 1 when not logged in", async () => {
+    runFlushMemoryMock.mockResolvedValue({ pending: 0, uploaded: 0, failed: 0, reason: "not-logged-in" });
+    await runCli(["memory", "flush"]);
+    expect(stderrText()).toContain("Not logged in — run `hivemind login` before flushing staged memory.");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("unknown memory subcommand prints usage and exits 1", async () => {
+    await runCli(["memory", "wat"]);
+    expect(stderrText()).toContain("Usage: hivemind memory backfill [--dry-run] [--force] [--n <num|all>] [--window-days N] [--project-only] [--verbose] | flush");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("install fires the background memory backfill", () => {
+  it("logs the mining note when maybeAutoBackfillMemory triggers", async () => {
+    detectPlatformsMock.mockReturnValue([{ id: "claude", label: "Claude Code" }]);
+    isLoggedInMock.mockReturnValue(true);
+    maybeAutoBackfillMemoryMock.mockReturnValue({ triggered: true });
+    await runCli(["install"]);
+    expect(maybeAutoBackfillMemoryMock).toHaveBeenCalledTimes(1);
+    expect(stdoutText()).toContain("Mining your past sessions for team memory in the background — sign in, then run `hivemind memory flush` to push.");
   });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { spawn as nodeSpawn, ChildProcess } from "node:child_process";
+import { join } from "node:path";
 import { spawnGraphPullWorker } from "../../../src/graph/spawn-pull-worker.js";
 
 describe("spawnGraphPullWorker", () => {
@@ -46,7 +47,7 @@ describe("spawnGraphPullWorker", () => {
     expect(cmd).toBe("nohup");
     expect(args).toEqual([
       "node",
-      "/bundle/dir/graph-pull-worker.js",
+      join("/bundle/dir", "graph-pull-worker.js"),
       "--cwd",
       "/some/project",
     ]);
@@ -112,6 +113,6 @@ describe("spawnGraphPullWorker", () => {
     const { calls, spy } = fakeSpawn();
     spawnGraphPullWorker("/cwd", "/bundle/dir/", { spawn: spy });
     // join() normalizes the trailing slash; the worker path is well-formed.
-    expect(calls[0]!.args[1]).toBe("/bundle/dir/graph-pull-worker.js");
+    expect(calls[0]!.args[1]).toBe(join("/bundle/dir", "graph-pull-worker.js"));
   });
 });

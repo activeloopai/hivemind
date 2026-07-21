@@ -119,7 +119,7 @@ export function acquireBuildLock(baseDir: string): LockResult {
  * will fall through to the stale-recovery path after STALE_LOCK_MS.
  */
 export function releaseBuildLock(baseDir: string): void {
-  // Owner-gated release (codex/CodeRabbit P1): if stale-recovery happened
+  // Owner-gated release (harnesses/codex/CodeRabbit P1): if stale-recovery happened
   // while an older build was still running, the older process must NOT
   // unlink the NEWER process's lock when it eventually exits. Read the
   // lock's `pid` field and only unlink when it matches ours.

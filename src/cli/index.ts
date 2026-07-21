@@ -3,6 +3,7 @@ import { installCodex, uninstallCodex } from "./install-codex.js";
 import { installOpenclaw, uninstallOpenclaw } from "./install-openclaw.js";
 import { installCursor, uninstallCursor } from "./install-cursor.js";
 import { installHermes, uninstallHermes } from "./install-hermes.js";
+import { installCowork, uninstallCowork } from "./install-cowork.js";
 import { installPi, uninstallPi } from "./install-pi.js";
 import {
   disableEmbeddings,
@@ -11,19 +12,32 @@ import {
   statusEmbeddings,
   uninstallEmbeddings,
 } from "./embeddings.js";
+import { ensureGraphDeps } from "./graph-deps.js";
 import { ensureLoggedIn, isLoggedIn, loginWithProvidedToken, maybeShowOrgChoice } from "./auth.js";
 import { runAuthCommand } from "../commands/auth-login.js";
-import { runGraphCommand } from "../commands/graph.js";
+// NOTE: ../commands/graph.js is intentionally NOT imported statically. It pulls
+// in the tree-sitter native addon (an optionalDependency), which fails to build
+// on some platforms (e.g. Node 24 / arm64, where tree-sitter@0.21 needs C++20).
+// A static import would hoist `import "tree-sitter"` to the top of the bundle
+// and crash EVERY `hivemind` command — including `install` — with
+// ERR_MODULE_NOT_FOUND when the addon is absent. It is loaded lazily below
+// (with `splitting` enabled in esbuild, the tree-sitter chunk is split out and
+// only loaded when `hivemind graph` actually runs).
 import { runDashboardCommand } from "../commands/dashboard.js";
 import { runSkillifyCommand } from "../commands/skillify.js";
 import { runRulesCommand } from "../commands/rules.js";
 import { runGoalCommand, runKpiCommand } from "../commands/goal.js";
+import { runDocsCommand } from "../commands/docs.js";
 import { runContextCommand } from "../commands/context.js";
+import { runBackfillMemory } from "../commands/backfill-memory.js";
+import { runFlushMemory } from "../commands/flush-memory.js";
+import { maybeAutoBackfillMemory } from "../skillify/spawn-backfill-memory-worker.js";
 import { confirm, detectPlatforms, allPlatformIds, log, promptLine, warn, type PlatformId } from "./util.js";
 import { getVersion } from "./version.js";
+import { docsInstallLines, docsHintShown, markDocsHintShown } from "../docs/install-hint.js";
 import { runUpdate } from "./update.js";
 import { renderCliHelpBlock } from "./skillify-spec.js";
-import { canOfferInstallScan, runInstallScan, formatScanResult } from "./install-scan.js";
+import { maybeAutoMineLocal } from "../skillify/spawn-mine-local-worker.js";
 
 const AUTH_SUBCOMMANDS = new Set([
   "whoami",
@@ -43,12 +57,18 @@ hivemind — one brain for every agent on your team
 
 Usage:
   hivemind install   [--only <platforms>] [--skip-auth] [--token <value>]
+                     [--ref <code>] [--no-scan]
       Auto-detect assistants on this machine and install hivemind into each.
       --only takes a comma-separated list: ${allPlatformIds().join(",")}
       --token, or env HIVEMIND_TOKEN, signs in non-interactively (useful
       for CI / scripted installs). Without it, a TTY install shows a
       consent prompt; a headless install skips auth and prints a hint
       for 'hivemind login'.
+      --ref <code> attributes a NEW signup to an affiliate/referrer code
+      (e.g. --ref mario). Ignored for already-registered users.
+      By default install kicks off a background scan of your recent Claude
+      Code sessions for repeatable mistakes (surfaced next session). Pass
+      --no-scan, or set HIVEMIND_INSTALL_SCAN=0, to skip it.
 
   hivemind uninstall [--only <platforms>]
       Auto-detect installed assistants and remove hivemind from each.
@@ -59,10 +79,13 @@ Usage:
   hivemind claw    install | uninstall
   hivemind cursor  install | uninstall
   hivemind hermes  install | uninstall
+  hivemind claude_cowork install | uninstall
   hivemind pi      install | uninstall
       Install or remove hivemind for a specific assistant.
 
-  hivemind login            Run device-flow login (open browser).
+  hivemind login [--ref <code>]
+                            Run device-flow login (open browser). --ref
+                            attributes a new signup to a referrer code.
   hivemind status           Show which assistants are wired up.
   hivemind update [--dry-run]
       Check npm for a newer @deeplake/hivemind, upgrade the CLI, and refresh
@@ -138,7 +161,7 @@ Team-wide rules:
 
 Cross-agent helpers:
   hivemind context                             Print the rules + open-goals block on demand.
-                                               Fallback for pi/openclaw agents (no SessionStart hook)
+                                               Fallback for harnesses/pi/openclaw agents (no SessionStart hook)
                                                and read-only diagnostic for any agent.
 
 Account / org / workspace:
@@ -187,6 +210,19 @@ function parseToken(args: string[]): string | undefined {
   return raw && raw.length > 0 ? raw : undefined;
 }
 
+// Affiliate referral code from `--ref <code>` / `--ref=<code>`. Carried into the
+// device flow so a NEW signup can be attributed to the referring influencer.
+function parseRef(args: string[]): string | undefined {
+  const idx = args.findIndex(a => a === "--ref" || a.startsWith("--ref="));
+  if (idx === -1) return undefined;
+  const raw = args[idx].includes("=") ? args[idx].split("=", 2)[1] : args[idx + 1];
+  // A bare `--ref` followed by another flag (e.g. `--ref --skip-auth`) must not
+  // swallow that flag as the code. Reject anything that looks like a flag.
+  if (!raw || raw.startsWith("--")) return undefined;
+  const code = raw.trim();
+  return code.length > 0 ? code : undefined;
+}
+
 function hasEnvToken(): boolean {
   return Boolean(process.env.HIVEMIND_TOKEN);
 }
@@ -203,6 +239,18 @@ function hasEnvToken(): boolean {
 // In every path, a failure (or "No") continues the install — hooks land and
 // the user can `hivemind login` later. This is the deliberate inversion
 // behind the consent rollout: install ≠ auth.
+/**
+ * The background install-time session scan is on by default. Users who don't
+ * want their recent sessions mined (or their Claude subscription spent on it)
+ * opt out with `--no-scan` on the install command or HIVEMIND_INSTALL_SCAN set
+ * to a falsy value ("0", "false", "no", "off").
+ */
+function installScanOptedOut(args: string[]): boolean {
+  if (args.includes("--no-scan")) return true;
+  const env = (process.env.HIVEMIND_INSTALL_SCAN ?? "").trim().toLowerCase();
+  return env === "0" || env === "false" || env === "no" || env === "off";
+}
+
 async function runAuthGate(args: string[]): Promise<void> {
   const flagToken = parseToken(args);
   const isTTY = Boolean(process.stdin.isTTY);
@@ -226,74 +274,46 @@ async function runAuthGate(args: string[]): Promise<void> {
     return;
   }
 
-  // Install-time value-show: when the guards pass (claude CLI present,
-  // prior sessions on disk, no manifest yet, TTY attached), offer to
-  // scan the user's recent sessions for repeatable mistakes BEFORE
-  // showing the abstract sign-in pitch. A real insight from their own
-  // work converts on "keep this skill across machines" better than the
-  // generic "shared memory" copy.
+  // Install-time value-show: kick off a scan of the user's recent Claude
+  // Code sessions for repeatable mistakes in the BACKGROUND — never block the
+  // install on it. A detached `mine-local` worker mines + ranks while install
+  // continues; the resulting insight surfaces at the next SessionStart via the
+  // local-mined notification rule (src/notifications/rules/local-mined.ts).
   //
-  // Every failure path (declined, timed out, no insight emitted)
-  // returns null and we fall through to the existing unlock copy — the
-  // install never dead-ends on a scan failure.
-  let foundInsight: { skill_name: string } | null = null;
-  if (canOfferInstallScan()) {
-    // Don't claim "Hivemind installed" here — runAuthGate runs BEFORE
-    // the per-platform installers, so the assistant install hasn't
-    // actually happened yet. Codex PR #198 P3 flagged the earlier
-    // wording as misleading status output.
-    log("");
-    log("🐝 Want me to scan your recent Claude Code sessions for repeatable mistakes?");
-    log("Takes 2-4 minutes. Scans 10 sessions in parallel using your Claude Code subscription.");
-    log("");
-    const scanOk = await confirm("Scan now?", true);
-    if (scanOk) {
+  // We don't ask first: the scan reads only local session files (nothing
+  // leaves the machine until sign-in) and the sole real cost — a few Claude
+  // subscription calls — is disclosed inline, not gated behind a prompt.
+  // Gating lost every user who said "no" (or "not now") before seeing any
+  // value; the earlier synchronous version also blocked the terminal for up
+  // to 5 minutes. Opt out with `--no-scan` or HIVEMIND_INSTALL_SCAN=0.
+  if (!installScanOptedOut(args)) {
+    const auto = maybeAutoMineLocal({
+      sessionCount: 10,
+      onlyAgent: "claude_code",
+      advise: true,
+    });
+    if (auto.triggered) {
       log("");
-      log("Scanning your 10 most-recent sessions (up to 5 min). Be patient — haiku is running in the background.");
-      const { insight, skillsCount } = await runInstallScan();
-      log("");
-      if (insight && insight.insight && insight.insight.trim().length > 0) {
-        log(formatScanResult(insight));
-        foundInsight = { skill_name: insight.skill_name };
-      } else if (skillsCount > 0) {
-        // Codex PR #198 P3: don't lie about "no patterns found" when
-        // mine-local actually wrote skills to disk. They just lacked
-        // a banner-quality one-liner. The skills are real and the
-        // user benefits from them on next SessionStart even without
-        // the install-time banner.
-        log(`Mined ${skillsCount} skill${skillsCount === 1 ? "" : "s"} locally — they'll be available in your next claude session.`);
-        log("(No banner-quality insight to surface here — the gate is conservative on what gets the top-line.)");
-      } else {
-        log("No repeatable patterns found in this scan. (That's OK — the gate is conservative.)");
-      }
+      log("🐝 Scanning your recent Claude Code sessions for repeatable mistakes in the");
+      log("   background (using your Claude Code subscription). Your first insight will");
+      log("   appear the next time you start Claude Code.");
     }
   }
 
   log("");
-  if (foundInsight) {
-    // Insight-aware sign-in pitch: lead with the concrete value the
-    // user just saw rather than the generic "shared memory" framing.
-    // Skill name is kebab-case-validated upstream by mine-local's
-    // assertValidSkillName, so it's safe to interpolate inline.
-    log("🐝 Sign in to keep this skill across machines and share it with your team.");
-    log("");
-    log(`Without sign-in, \`${foundInsight.skill_name}\` lives only on this machine and`);
-    log("won't follow you to a new laptop or be shared with teammates who'd benefit.");
-  } else {
-    log("🐝 One more step to unlock Hivemind");
-    log("");
-    log("To enable shared memory and auto-learning across your agents,");
-    log("we need to sign you in. Your traces will be securely stored in");
-    log("your private Hivemind, so all your agents can recall them.");
-    log("");
-    log("You can later connect your own cloud storage like S3/GCS/Azure Blob.");
-  }
+  log("🐝 One more step to unlock Hivemind");
+  log("");
+  log("To enable shared memory and auto-learning across your agents,");
+  log("we need to sign you in. Your traces will be securely stored in");
+  log("your private Hivemind, so all your agents can recall them.");
+  log("");
+  log("You can later connect your own cloud storage like S3/GCS/Azure Blob.");
   log("");
   const yes = await confirm("Sign in now?", true);
 
   let signedIn = false;
   if (yes) {
-    signedIn = await ensureLoggedIn();
+    signedIn = await ensureLoggedIn(parseRef(args));
     if (!signedIn) {
       warn("Login did not complete.");
     }
@@ -345,7 +365,7 @@ async function runInstallAll(args: string[]): Promise<void> {
 
   if (targets.length === 0) {
     log("No supported assistants detected.");
-    log("Supported: Claude Code, Codex, OpenClaw, Cursor, Hermes Agent.");
+    log("Supported: Claude Code, Codex, OpenClaw, Cursor, Hermes Agent, Pi, Claude Cowork.");
     log("Install one and rerun `hivemind install`, or target a specific assistant: `hivemind cursor install`.");
     return;
   }
@@ -366,6 +386,67 @@ async function runInstallAll(args: string[]): Promise<void> {
 
   await maybeShowOrgChoice();
 
+  // Kick off the one-shot memory backfill in the background: stage knowledge
+  // from the user's past local agent sessions (claude/codex/…) without
+  // blocking install. Auth-free (it stages to disk); a later
+  // `hivemind memory flush` uploads it once signed in. Detached + sentinel-
+  // guarded, so this is a no-op on subsequent installs.
+  const backfill = maybeAutoBackfillMemory();
+  if (backfill.triggered) {
+    log("");
+    log("Mining your past sessions for team memory in the background — sign in, then run `hivemind memory flush` to push.");
+  }
+
+  // Docs onboarding at install — extracted to src/docs/install-docs.ts so the
+  // decision + detached-worker spawn are unit-tested. Everything effectful is
+  // injected here; a docs hiccup must never break install (guarded inside).
+  const { homedir } = await import("node:os");
+  const { tryGitTopLevel } = await import("../graph/git-hook-install.js");
+  const { loadConfig } = await import("../config.js");
+  const { spawnDetachedNodeWorker } = await import("../utils/spawn-detached.js");
+  const { isAutoEnabled } = await import("../docs/auto-registry.js");
+  const { deriveProjectKey } = await import("../utils/repo-identity.js");
+  const { runInstallDocsOnboarding } = await import("../docs/install-docs.js");
+  await runInstallDocsOnboarding({
+    cwd: process.cwd(),
+    interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+    loggedIn: isLoggedIn(),
+    home: homedir(),
+    gitTopLevel: (cwd) => tryGitTopLevel(cwd),
+    loadCfg: () => loadConfig(),
+    autoEnabled: (orgId, root) => isAutoEnabled(orgId, deriveProjectKey(root).key),
+    // Build inline (fast, no LLM) so the wiki worker has a snapshot + the
+    // page estimate is real. Heavy graph deps stay lazy.
+    buildGraph: async (root) => {
+      const { runBuildCommand } = await import("../commands/graph.js");
+      await runBuildCommand(["--cwd", root, "--trigger", "manual"]);
+    },
+    onboard: async ({ root, orgId, orgName }) => {
+      const { runDocsOnboarding } = await import("../docs/onboarding.js");
+      const { deriveProjectKey } = await import("../utils/repo-identity.js");
+      const { loadCurrentSnapshot } = await import("../graph/load-current.js");
+      return runDocsOnboarding({
+        root, isGitRepo: true, orgId, orgName,
+        project: deriveProjectKey(root).key,
+        snap: loadCurrentSnapshot(root),
+      });
+    },
+    spawn: (workerArgs) => {
+      const cliEntry = process.argv[1];
+      if (!cliEntry) return false;
+      spawnDetachedNodeWorker(cliEntry, workerArgs);
+      return true;
+    },
+    showHint: () => {
+      if (docsHintShown()) return;
+      log("");
+      for (const line of docsInstallLines()) log(line);
+      markDocsHintShown();
+    },
+    log,
+    warn,
+  });
+
   log("");
   log("Done. Restart each assistant to activate hooks.");
 }
@@ -378,6 +459,7 @@ function runSingleInstall(id: PlatformId): void {
     else if (id === "cursor") installCursor();
     else if (id === "hermes") installHermes();
     else if (id === "pi") installPi();
+    else if (id === "claude_cowork") installCowork();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${(err as Error).message}`);
   }
@@ -391,6 +473,7 @@ function runSingleUninstall(id: PlatformId): void {
     else if (id === "cursor") uninstallCursor();
     else if (id === "hermes") uninstallHermes();
     else if (id === "pi") uninstallPi();
+    else if (id === "claude_cowork") uninstallCowork();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${(err as Error).message}`);
   }
@@ -427,7 +510,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (cmd === "login") { await ensureLoggedIn(); return; }
+  if (cmd === "login") { await ensureLoggedIn(parseRef(args.slice(1))); return; }
   if (cmd === "status") { runStatus(); return; }
   if (cmd === "update") {
     const code = await runUpdate({ dryRun: hasFlag(args.slice(1), "--dry-run") });
@@ -454,12 +537,41 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (cmd === "docs" || cmd === "doc") {
+    await runDocsCommand(args.slice(1));
+    return;
+  }
+
   if (cmd === "context") {
     await runContextCommand(args.slice(1));
     return;
   }
 
   if (cmd === "graph") {
+    // `graph init` sets up the auto-build. Provision the tree-sitter parsers
+    // into the shared embed-deps dir the graph-on-stop hook resolves from, so
+    // the automatic rebuild works — not just this CLI run (which resolves
+    // tree-sitter from its own package). Idempotent + best-effort; decoupled
+    // from the ~600 MB embeddings download.
+    if (args[1] === "init") {
+      try { ensureGraphDeps(); } catch { /* best-effort — never block graph init */ }
+    }
+    let runGraphCommand: (a: string[]) => Promise<void> | void;
+    try {
+      ({ runGraphCommand } = await import("../commands/graph.js"));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("tree-sitter") || (err as { code?: string })?.code === "ERR_MODULE_NOT_FOUND") {
+        console.error(
+          "hivemind graph requires the optional 'tree-sitter' native module, which is not installed.\n" +
+            "It can fail to build on some platforms (e.g. Node 24 / arm64). Everything else in Hivemind\n" +
+            "works without it. To enable the codebase graph, reinstall with a toolchain that can build\n" +
+            "native addons, or install tree-sitter manually in the package directory.",
+        );
+        process.exit(1);
+      }
+      throw err;
+    }
     await runGraphCommand(args.slice(1));
     return;
   }
@@ -483,13 +595,33 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  if (cmd === "memory") {
+    const sub = args[1];
+    if (sub === "backfill") {
+      const code = await runBackfillMemory(args.slice(2));
+      process.exit(code);
+    }
+    if (sub === "flush") {
+      const r = await runFlushMemory();
+      if (r.reason === "not-logged-in") {
+        warn("Not logged in — run `hivemind login` before flushing staged memory.");
+        process.exit(1);
+      }
+      log(`memory flush: uploaded ${r.uploaded}/${r.pending} staged summary(ies)` +
+        `${r.failed ? `, ${r.failed} failed` : ""}.`);
+      return;
+    }
+    warn("Usage: hivemind memory backfill [--dry-run] [--force] [--n <num|all>] [--window-days N] [--project-only] [--verbose] | flush");
+    process.exit(1);
+  }
+
   // Account / org / workspace subcommands — passthrough to the auth-login dispatcher.
   if (AUTH_SUBCOMMANDS.has(cmd)) {
     await runAuthCommand(args);
     return;
   }
 
-  const platformCmds: PlatformId[] = ["claude", "codex", "claw", "cursor", "hermes", "pi"];
+  const platformCmds: PlatformId[] = ["claude", "codex", "claw", "cursor", "hermes", "pi", "claude_cowork"];
   if (platformCmds.includes(cmd as PlatformId)) {
     const sub = args[1];
     if (sub === "install") {

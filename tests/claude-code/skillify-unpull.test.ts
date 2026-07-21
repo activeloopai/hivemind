@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordPull, loadManifest } from "../../src/skillify/manifest.js";
 import { runUnpull } from "../../src/skillify/unpull.js";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 let projectRoot: string;
 let projectSkillsRoot: string;
@@ -19,14 +20,13 @@ beforeEach(() => {
   mkdirSync(projectSkillsRoot, { recursive: true });
   fakeHome = mkdtempSync(join(tmpdir(), "skillify-unpull-home-"));
   originalHome = process.env.HOME;
-  process.env.HOME = fakeHome;
+  setFakeHome(fakeHome);
 });
 
 afterEach(() => {
   try { rmSync(projectRoot, { recursive: true, force: true }); } catch { /* nothing */ }
   try { rmSync(fakeHome, { recursive: true, force: true }); } catch { /* nothing */ }
-  if (originalHome === undefined) delete process.env.HOME;
-  else process.env.HOME = originalHome;
+  clearFakeHome();
 });
 
 /** Create a fake skill directory + record it in the manifest. */

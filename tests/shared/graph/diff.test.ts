@@ -54,7 +54,24 @@ describe("diffSnapshots — pure semantics", () => {
   it("identical snapshots → empty diff", () => {
     const s = snap([n("a.ts:foo:function")], [e("a.ts:foo:function", "a.ts:bar:function")]);
     const d = diffSnapshots(s, s);
-    expect(d.counts).toEqual({ nodes_added: 0, nodes_removed: 0, edges_added: 0, edges_removed: 0 });
+    expect(d.counts).toEqual({ nodes_added: 0, nodes_removed: 0, nodes_modified: 0, edges_added: 0, edges_removed: 0 });
+  });
+
+  it("a surviving node with a changed SIGNATURE lands in nodes.modified", () => {
+    const before = { ...n("a.ts:foo:function"), signature: "function foo(): number" };
+    const after = { ...n("a.ts:foo:function"), signature: "function foo(x: string): number" };
+    const d = diffSnapshots(snap([before], []), snap([after], []));
+    expect(d.counts.nodes_modified).toBe(1);
+    expect(d.nodes.modified).toEqual([{ before, after }]);
+    expect(d.counts.nodes_added).toBe(0);
+    expect(d.counts.nodes_removed).toBe(0);
+  });
+
+  it("a source_location-only change is NOT modified (line shifts are noise)", () => {
+    const before = { ...n("a.ts:foo:function"), signature: "function foo(): number", source_location: "L1" };
+    const after = { ...before, source_location: "L50" };
+    const d = diffSnapshots(snap([before], []), snap([after], []));
+    expect(d.counts.nodes_modified).toBe(0);
   });
 
   it("added node appears in nodes.added", () => {
@@ -109,7 +126,7 @@ describe("diffSnapshots — pure semantics", () => {
       [e("a.ts:keep:function", "a.ts:newName:function")],
     );
     const d = diffSnapshots(a, b);
-    expect(d.counts).toEqual({ nodes_added: 1, nodes_removed: 1, edges_added: 1, edges_removed: 1 });
+    expect(d.counts).toEqual({ nodes_added: 1, nodes_removed: 1, nodes_modified: 0, edges_added: 1, edges_removed: 1 });
     expect(d.nodes.added[0]!.id).toBe("a.ts:newName:function");
     expect(d.nodes.removed[0]!.id).toBe("a.ts:oldName:function");
   });

@@ -41,6 +41,7 @@ import { extractJsonBlock } from "../skillify/gate-parser.js";
 import { resolveSkillsRoot, writeNewSkill, listSkills, parseFrontmatter } from "../skillify/skill-writer.js";
 import { detectAgentSkillsRoots } from "../skillify/agent-roots.js";
 import { fanOutSymlinks } from "../skillify/pull.js";
+import { runAdvisor } from "../skillify/advisor.js";
 import {
   LOCAL_MANIFEST_PATH,
   LOCAL_MINE_LOCK_PATH,
@@ -244,8 +245,8 @@ function buildSessionPrompt(pairs: Pair[], session: SessionFile, verdictPath: st
     `  "skills": [`,
     `    {`,
     `      "name": "<kebab-case>",`,
-    `      "description": "<one-line>",`,
-    `      "trigger": "<short trigger>",`,
+    `      "description": "<one-line: what the skill does>",`,
+    `      "trigger": "<REQUIRED: one concrete activation condition, phrased 'Use this skill when <situation>' — folded into the host-visible description, so make it specific>",`,
     `      "body": "<full SKILL.md body without frontmatter>",`,
     `      "insight": "<one-line, concrete + quantified + second person; OPTIONAL>"`,
     `    },`,
@@ -479,6 +480,13 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
   const dryRun = takeBoolFlag(work, "--dry-run");
   const nRaw = takeFlagValue(work, "--n");
   const onlyAgent = takeFlagValue(work, "--only");
+  // --advise: after writing the manifest, run the sonnet advisor to rank the
+  // insight-bearing candidates and mark the strongest as primary, so
+  // getLatestInsightEntry (and the SessionStart banner) surface the best
+  // finding rather than the most-recent one. Off by default so the plain
+  // SessionStart auto-mine stays haiku-only; the install-time background scan
+  // opts in.
+  const advise = takeBoolFlag(work, "--advise");
 
   if (loadManifest() && !force) {
     console.error(`Local skills have already been mined on this machine.`);
@@ -648,7 +656,7 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
     console.log(`Fan-out targets: ${fanOutRoots.join(", ")}`);
   }
 
-  const written: Array<{ skill: MinedSkill; session: SessionFile; result: { path: string; createdAt: string }; symlinks: string[] }> = [];
+  const written: Array<{ skill: MinedSkill; session: SessionFile; result: { path: string; name: string; createdAt: string }; symlinks: string[] }> = [];
   const knownSummaries: Array<{ name: string; desc: string }> = [...existingSummaries];
 
   for (const { skill, session } of flat) {
@@ -658,6 +666,10 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
       continue;
     }
     try {
+      // writeNewSkill validates the raw name then length-caps it to the
+      // 64-char loader ceiling (an over-long mined name is truncated, not
+      // dropped) and returns the canonical on-disk name. Use result.name for
+      // the log line and dedup list so they match what's written.
       const result = writeNewSkill({
         skillsRoot,
         name: skill.name,
@@ -672,9 +684,9 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
         ? fanOutSymlinks(canonicalDir, basename(canonicalDir), fanOutRoots)
         : [];
       const symlinkSuffix = symlinks.length > 0 ? `, fan-out → ${symlinks.length} root(s)` : "";
-      console.log(`  wrote ${skill.name} ← session ${session.sessionId.slice(0, 8)} (${session.agent}${symlinkSuffix})`);
+      console.log(`  wrote ${result.name} ← session ${session.sessionId.slice(0, 8)} (${session.agent}${symlinkSuffix})`);
       written.push({ skill, session, result, symlinks });
-      knownSummaries.push({ name: skill.name, desc: skill.description });
+      knownSummaries.push({ name: result.name, desc: skill.description });
     } catch (e: any) {
       if (/already exists/i.test(e.message ?? "")) {
         console.log(`  skipped ${skill.name} (file already exists at ${skillsRoot})`);
@@ -691,7 +703,10 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
   if (written.length > 0) {
     const existing = loadManifest();
     const newEntries: ManifestEntry[] = written.map(({ skill, session, result, symlinks }) => ({
-      skill_name: skill.name,
+      // result.name is the canonical (possibly length-capped) on-disk name, so
+      // the manifest identity matches canonical_path / the frontmatter — not
+      // the raw model name, which may not exist on disk.
+      skill_name: result.name,
       canonical_path: result.path,
       symlinks,
       source_session_ids: [session.sessionId],
@@ -710,6 +725,14 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
       created_at: existing?.created_at ?? new Date().toISOString(),
       entries: [...(existing?.entries ?? []), ...newEntries],
     });
+
+    // Rank the freshly-written insight candidates with the sonnet advisor
+    // and mark the best as primary. Best-effort: on any failure we keep the
+    // recency-ordered pick. Only worth a sonnet call when >1 candidate
+    // carries an insight — runAdvisor itself fast-paths the trivial case.
+    if (advise) {
+      try { await runAdvisor(); } catch { /* keep recency pick */ }
+    }
   }
 
   console.log("");

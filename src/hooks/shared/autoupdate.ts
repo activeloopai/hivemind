@@ -55,7 +55,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type { Credentials } from "../../commands/auth-creds.js";
 import { log as _log } from "../../utils/debug.js";
 
@@ -65,10 +65,56 @@ export type AgentId = "claude" | "codex" | "cursor" | "hermes" | "pi" | "opencla
 
 export interface AutoUpdateOpts {
   agent: AgentId;
+  /**
+   * Directory the running bundle lives in (`dirname(fileURLToPath(import.meta.url))`
+   * at the call site). When it identifies a Codex-managed (plugin directory)
+   * install, the npm self-update is skipped — Codex owns updates there via
+   * marketplace snapshots. Omit for channels that have no directory install.
+   */
+  bundleDir?: string;
   /** Test override: resolved hivemind binary path or null. When provided, skips the PATH walk. */
   hivemindBinaryPath?: string | null;
   /** Test override: replaces the actual subprocess spawn with a fake. Must return the spawned child's pid (or 0). */
   spawn?: (cmd: string, args: string[]) => { pid?: number };
+}
+
+/**
+ * Is the running bundle a Codex-managed (plugin directory) install rather
+ * than our npm `hivemind install`?
+ *
+ * Codex extracts marketplace plugins under `<codexHome>/plugins/cache/
+ * <marketplace>/<plugin>/<ref>/bundle/` (e.g. the `openai-curated` directory).
+ * Our npm installer instead copies bundles to `<codexHome>/hivemind/bundle/`
+ * and bakes absolute paths. ONLY the managed channel must skip the npm
+ * self-update: there, Codex refreshes the plugin from marketplace snapshots
+ * and an `npm install -g` + `hivemind install` would fight its file
+ * management.
+ *
+ * Deliberately CONSERVATIVE. Returns true only on positive identification of
+ * the managed cache path. Every other location — our npm path, a dev
+ * checkout, an unrecognized layout — returns false so the update STILL runs.
+ * The dangerous failure mode is a false "managed" verdict that silently
+ * freezes updates for npm users; the safe default is therefore always
+ * "not managed → update". A missed managed detection only costs a redundant,
+ * self-serializing update attempt (see the flock in `runUpdate`).
+ *
+ * `plugins/cache` is anchored to a `.codex` segment (or an explicit
+ * `CODEX_HOME`), so an unrelated path that merely contains `plugins/cache`
+ * does not trip the skip.
+ */
+export function isCodexManagedInstall(
+  bundleDir: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!bundleDir) return false;
+  const norm = bundleDir.replace(/\\/g, "/");
+  if (norm.includes("/.codex/plugins/cache/")) return true;
+  const codexHome = env.CODEX_HOME;
+  if (codexHome && codexHome.trim() !== "") {
+    const h = codexHome.replace(/\\/g, "/").replace(/\/+$/, "");
+    if (norm.includes(`${h}/plugins/cache/`)) return true;
+  }
+  return false;
 }
 
 /**
@@ -94,12 +140,20 @@ const defaultSpawn = (cmd: string, args: string[]): { pid?: number } => {
 /** Find the hivemind binary on PATH synchronously. ~5ms; on the hot path. */
 function findHivemindOnPath(): string | null {
   // node:os doesn't expose `which`. Walk PATH manually — sync, fast,
-  // no subprocess.
+  // no subprocess. PATH is delimited by ':' on POSIX and ';' on Windows
+  // (path.delimiter), and on Windows the binary is a `.cmd`/`.exe` shim
+  // (an extensionless `hivemind` is not a runnable Windows program).
   const PATH = process.env.PATH ?? "";
-  const dirs = PATH.split(":").filter(Boolean);
+  const dirs = PATH.split(delimiter).filter(Boolean);
+  const candidates =
+    process.platform === "win32"
+      ? ["hivemind.cmd", "hivemind.exe", "hivemind.bat", "hivemind"]
+      : ["hivemind"];
   for (const dir of dirs) {
-    const candidate = join(dir, "hivemind");
-    if (existsSync(candidate)) return candidate;
+    for (const name of candidates) {
+      const candidate = join(dir, name);
+      if (existsSync(candidate)) return candidate;
+    }
   }
   return null;
 }
@@ -125,6 +179,10 @@ export async function autoUpdate(
 ): Promise<void> {
   const t0 = Date.now();
   log(`agent=${opts.agent} entered`);
+  if (isCodexManagedInstall(opts.bundleDir)) {
+    log(`agent=${opts.agent} skip: Codex-managed install (${opts.bundleDir}); updates come via marketplace snapshots (${Date.now() - t0}ms)`);
+    return;
+  }
   if (!creds?.token) { log(`agent=${opts.agent} skip: no creds.token (${Date.now() - t0}ms)`); return; }
   if (creds.autoupdate === false) { log(`agent=${opts.agent} skip: autoupdate=false (${Date.now() - t0}ms)`); return; }
 
