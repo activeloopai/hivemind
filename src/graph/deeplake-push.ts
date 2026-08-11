@@ -40,7 +40,8 @@ import { createHash } from "node:crypto";
 
 import { loadConfig, type Config } from "../config.js";
 import { resolveDirConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
 import type { GraphSnapshot } from "./types.js";
 
@@ -58,8 +59,8 @@ export type PushOutcome =
 export interface PushDeps {
   /** Override for tests; defaults to loadConfig(). Returns null when no auth. */
   loadConfig?: () => Config | null;
-  /** Override for tests; defaults to constructing a real DeeplakeApi. */
-  makeApi?: (config: Config) => DeeplakeApi;
+  /** Override for tests; defaults to constructing the configured backend. */
+  makeApi?: (config: Config) => StorageBackend;
   /** Working directory for `.hivemind` resolution; defaults to process.cwd(). */
   cwd?: string;
 }
@@ -196,14 +197,8 @@ export async function pushSnapshot(
   return { kind: "inserted", commitSha };
 }
 
-function defaultMakeApi(config: Config): DeeplakeApi {
-  return new DeeplakeApi(
-    config.token,
-    config.apiUrl,
-    config.orgId,
-    config.workspaceId,
-    config.tableName,
-  );
+function defaultMakeApi(config: Config): StorageBackend {
+  return createStorageBackend(config, config.tableName);
 }
 
 function errorOutcome(stage: string, err: unknown): PushOutcome {

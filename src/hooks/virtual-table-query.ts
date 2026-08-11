@@ -1,6 +1,7 @@
-import type { DeeplakeApi } from "../deeplake-api.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { sqlLike, sqlStr } from "../utils/sql.js";
 import { normalizeContent, emptySessionBodyNotice } from "../shell/grep-core.js";
+import { nullExpression, textExpression } from "../storage/sql-dialect.js";
 
 type Row = Record<string, unknown>;
 
@@ -121,7 +122,7 @@ function buildDirFilter(dirs: string[]): string {
 }
 
 async function queryUnionRows(
-  api: DeeplakeApi,
+  api: StorageBackend,
   memoryQuery: string,
   sessionsQuery: string,
 ): Promise<Row[]> {
@@ -147,7 +148,7 @@ async function queryUnionRows(
 }
 
 export async function readVirtualPathContents(
-  api: DeeplakeApi,
+  api: StorageBackend,
   memoryTable: string,
   sessionsTable: string,
   virtualPaths: string[],
@@ -157,10 +158,13 @@ export async function readVirtualPathContents(
   if (uniquePaths.length === 0) return result;
 
   const inList = buildInList(uniquePaths);
+  const textSummary = textExpression("summary", api.dialect);
+  const textMessage = textExpression("message", api.dialect);
+  const nullBigint = nullExpression("bigint", api.dialect);
   const rows = await queryUnionRows(
     api,
-    `SELECT path, summary::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path IN (${inList})`,
-    `SELECT path, message::text AS content, NULL::bigint AS size_bytes, COALESCE(creation_date::text, '') AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path IN (${inList})`,
+    `SELECT path, ${textSummary} AS content, ${nullBigint} AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path IN (${inList})`,
+    `SELECT path, ${textMessage} AS content, ${nullBigint} AS size_bytes, COALESCE(${textExpression("creation_date", api.dialect)}, '') AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path IN (${inList})`,
   );
 
   const memoryHits = new Map<string, string>();
@@ -246,17 +250,18 @@ export async function readVirtualPathContents(
 }
 
 export async function listVirtualPathRowsForDirs(
-  api: DeeplakeApi,
+  api: StorageBackend,
   memoryTable: string,
   sessionsTable: string,
   dirs: string[],
 ): Promise<Map<string, Row[]>> {
   const uniqueDirs = [...new Set(dirs.map(dir => dir.replace(/\/+$/, "") || "/"))];
   const filter = buildDirFilter(uniqueDirs);
+  const nullText = nullExpression("text", api.dialect);
   const rows = await queryUnionRows(
     api,
-    `SELECT path, NULL::text AS content, size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}"${filter}`,
-    `SELECT path, NULL::text AS content, size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}"${filter}`,
+    `SELECT path, ${nullText} AS content, size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}"${filter}`,
+    `SELECT path, ${nullText} AS content, size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}"${filter}`,
   );
 
   const deduped = dedupeRowsByPath(rows.map((row) => ({
@@ -280,7 +285,7 @@ export async function listVirtualPathRowsForDirs(
 }
 
 export async function readVirtualPathContent(
-  api: DeeplakeApi,
+  api: StorageBackend,
   memoryTable: string,
   sessionsTable: string,
   virtualPath: string,
@@ -289,7 +294,7 @@ export async function readVirtualPathContent(
 }
 
 export async function listVirtualPathRows(
-  api: DeeplakeApi,
+  api: StorageBackend,
   memoryTable: string,
   sessionsTable: string,
   dir: string,
@@ -298,7 +303,7 @@ export async function listVirtualPathRows(
 }
 
 export async function findVirtualPaths(
-  api: DeeplakeApi,
+  api: StorageBackend,
   memoryTable: string,
   sessionsTable: string,
   dir: string,
@@ -306,10 +311,12 @@ export async function findVirtualPaths(
 ): Promise<string[]> {
   const normalizedDir = dir.replace(/\/+$/, "") || "/";
   const likePath = `${sqlLike(normalizedDir === "/" ? "" : normalizedDir)}/%`;
+  const nullText = nullExpression("text", api.dialect);
+  const nullBigint = nullExpression("bigint", api.dialect);
   const rows = await queryUnionRows(
     api,
-    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
-    `SELECT path, NULL::text AS content, NULL::bigint AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
+    `SELECT path, ${nullText} AS content, ${nullBigint} AS size_bytes, '' AS creation_date, 0 AS source_order FROM "${memoryTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
+    `SELECT path, ${nullText} AS content, ${nullBigint} AS size_bytes, '' AS creation_date, 1 AS source_order FROM "${sessionsTable}" WHERE path LIKE '${likePath}' ESCAPE '\\' AND filename LIKE '${filenamePattern}' ESCAPE '\\'`,
   );
 
   return [...new Set(

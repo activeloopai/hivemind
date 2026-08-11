@@ -16,8 +16,23 @@
 import { sqlIdent, sqlLike, sqlStr } from "../utils/sql.js";
 import { stableUnionRows } from "./stable-read.js";
 import { pickByScopePrecedence } from "./branch-scope.js";
+import type { StorageDialect } from "../deeplake-schema.js";
+import type { StorageBackend } from "../storage/backend.js";
 
-export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
+export type QueryFn = ((sql: string) => Promise<Array<Record<string, unknown>>>) & {
+  dialect?: StorageDialect;
+};
+
+/** Preserve provider metadata when adapting a StorageBackend to legacy query seams. */
+export function storageQuery(backend: StorageBackend): QueryFn {
+  const query: QueryFn = (sql: string) => backend.query(sql);
+  query.dialect = backend.dialect;
+  return query;
+}
+
+export function queryDialect(query: QueryFn): StorageDialect {
+  return query.dialect ?? "deeplake";
+}
 
 /** Doc tier — `fast` per-file docs vs `slow` protected project knowledge. */
 export type DocTier = "fast" | "slow";

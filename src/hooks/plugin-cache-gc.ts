@@ -13,7 +13,7 @@
  * also cleaned up.
  */
 
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { log as _log } from "../utils/debug.js";
 import {
@@ -24,6 +24,7 @@ import {
   readCurrentVersionFromManifest,
   resolveVersionedPluginDir,
 } from "../utils/plugin-cache.js";
+import { isDirectRun } from "../utils/direct-run.js";
 
 const defaultLog = (msg: string) => _log("plugin-cache-gc", msg);
 
@@ -61,8 +62,7 @@ export function runGc(bundleDir: string, opts: RunGcOptions = {}): void {
 // Imports from tests take the `runGc` export directly and skip this.
 /* c8 ignore start — script-mode bootstrap, covered by bundle integration test */
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
-const __entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
-if (import.meta.url === __entryUrl) {
+if (isDirectRun(import.meta.url)) {
   try { runGc(__bundleDir); }
   catch (e: any) { defaultLog(`fatal: ${e.message}`); }
 }

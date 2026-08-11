@@ -5,7 +5,7 @@
 //
 // Subscribes to the agent lifecycle events documented in
 // `pi-mono/packages/coding-agent/src/core/extensions/types.ts` to:
-//   - inject deeplake memory context at session_start
+//   - inject Hivemind memory context at session_start
 //   - capture user prompts (input event)
 //   - capture tool call results (tool_result event)
 //   - capture assistant messages (message_end event)
@@ -875,10 +875,7 @@ function spawnWikiWorker(
   const configPath = join(tmpDir, "config.json");
   const project = (cwd ?? "").split("/").pop() || "unknown";
   const config = {
-    apiUrl: creds.apiUrl,
-    token: creds.token,
-    orgId: creds.orgId,
-    workspaceId: creds.workspaceId,
+    storage: { kind: "deeplake" as const, orgId: creds.orgId, workspaceId: creds.workspaceId },
     memoryTable: MEMORY_TABLE,
     sessionsTable: SESSIONS_TABLE,
     sessionId,
@@ -975,10 +972,7 @@ function spawnPiSkillifyWorker(creds: Creds, sessionId: string, cwd: string): vo
   // gate-runner falls back to its agent dispatch which for `agent: "pi"`
   // resolves to the `pi --print` invocation we'd want for consistency.
   const config = {
-    apiUrl: creds.apiUrl,
-    token: creds.token,
-    orgId: creds.orgId,
-    workspaceId: creds.workspaceId,
+    storage: { kind: "deeplake" as const, orgId: creds.orgId, workspaceId: creds.workspaceId },
     sessionsTable: SESSIONS_TABLE,
     skillsTable: process.env.HIVEMIND_SKILLS_TABLE || "skills",
     userName: creds.userName,
@@ -1309,7 +1303,7 @@ function piRenderSkillifyCommands(): string {
     .join("\n");
 }
 
-const CONTEXT_PREAMBLE = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents in your org.
+const CONTEXT_PREAMBLE = `HIVEMIND MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents in your workspace.
 
 Three hivemind tools are registered:
   hivemind_search { query, limit? }   keyword search across summaries + sessions

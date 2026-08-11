@@ -55,15 +55,15 @@ import { repoDir } from "../graph/snapshot.js";
 import { isDirectRun } from "../utils/direct-run.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
 
+function workTreeIdFor(cwd: string): string {
+  return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+}
+
 /**
  * Mirror of workTreeIdFor in src/commands/graph.ts. Kept inline (rather
  * than as a shared util) so the gate hook stays leanly self-contained —
  * one sha256-hex-truncate, no extra module dependency.
  */
-function workTreeIdFor(cwd: string): string {
-  return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
-}
-
 /**
  * How long between auto-rebuilds. The first SessionEnd after this interval
  * AND after a commit-with-source-changes is the one that fires the build.

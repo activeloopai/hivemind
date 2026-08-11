@@ -61,7 +61,7 @@ describe("DeeplakeFs graph bridge — branch coverage", () => {
 
   function seedWorktreeSnapshot(): void {
     const { createHash } = require("node:crypto") as typeof import("node:crypto");
-    const wt = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+    const wt = createHash("sha256").update(process.cwd()).digest("hex").slice(0, 16);
     mkdirSync(snapshotsDir, { recursive: true });
     const commit = "c".repeat(40);
     const snap = {

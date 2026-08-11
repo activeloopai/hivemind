@@ -48,14 +48,14 @@ import { readLastBuild } from "./last-build.js";
 import { repoDir } from "./snapshot.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
 
-/**
- * Mirror of workTreeIdFor in src/commands/graph.ts. Each consumer of the
- * per-worktree singletons computes worktreeId from its own cwd.
- */
 function workTreeIdFor(cwd: string): string {
   return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
 }
 
+/**
+ * Mirror of workTreeIdFor in src/commands/graph.ts. Each consumer of the
+ * per-worktree singletons computes worktreeId from its own cwd.
+ */
 export interface GraphContextDeps {
   /** Override for tests; defaults to Date.now(). */
   now?: () => number;
@@ -146,7 +146,7 @@ export function graphContextLine(cwd: string, deps: GraphContextDeps = {}): stri
     "  omits instance-method calls (obj.method()), nested/inner functions, and",
     "  dynamic dispatch — so confirm every claim against the file before stating it.",
     "",
-    "  Query via the Deeplake mount (intercepted — use `cat`, not `ls`):",
+    "  Query via the Hivemind memory mount (intercepted — use `cat`, not `ls`):",
     "    cat ~/.deeplake/memory/graph/query/<pattern>   ← start here",
     "        search + 1-hop expand (callers, callees, imports). AND: query/<a>+<b>.",
     "    cat ~/.deeplake/memory/graph/find/<pattern>     substring search → handles",

@@ -24,6 +24,8 @@ const removeMemberMock = vi.fn();
 const sessionPruneMock = vi.fn();
 const consoleLogMock = vi.fn();
 const exitSpy = vi.fn();
+const getAutoupdateEnabledMock = vi.fn();
+const setAutoupdateEnabledMock = vi.fn();
 
 vi.mock("../../src/commands/auth.js", () => ({
   loadCredentials: (...a: unknown[]) => loadCredentialsMock(...a),
@@ -47,6 +49,10 @@ vi.mock("../../src/commands/session-prune.js", () => ({
 // ~/.deeplake/credentials.json and make these assertions machine-dependent.
 vi.mock("../../src/config.js", () => ({
   loadConfig: (...a: unknown[]) => loadConfigMock(...a),
+}));
+vi.mock("../../src/user-config.js", () => ({
+  getAutoupdateEnabled: () => getAutoupdateEnabledMock(),
+  setAutoupdateEnabled: (enabled: boolean) => setAutoupdateEnabledMock(enabled),
 }));
 
 const validCreds = {
@@ -86,6 +92,8 @@ beforeEach(() => {
   sessionPruneMock.mockReset().mockResolvedValue(undefined);
   consoleLogMock.mockReset();
   exitSpy.mockReset();
+  getAutoupdateEnabledMock.mockReset().mockReturnValue(true);
+  setAutoupdateEnabledMock.mockReset();
   vi.spyOn(console, "log").mockImplementation(((...a: unknown[]) => { consoleLogMock(...a); }) as any);
   vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
     exitSpy(code);
@@ -487,25 +495,25 @@ describe("runAuthCommand — sessions prune", () => {
 });
 
 describe("runAuthCommand — autoupdate", () => {
-  it("'autoupdate on' calls saveCredentials with autoupdate:true", async () => {
+  it("'autoupdate on' stores the user preference without rewriting credentials", async () => {
     await run(["autoupdate", "on"]);
-    expect(saveCredentialsMock).toHaveBeenCalledTimes(1);
-    expect(saveCredentialsMock.mock.calls[0][0]).toMatchObject({ ...validCreds, autoupdate: true });
+    expect(setAutoupdateEnabledMock).toHaveBeenCalledWith(true);
+    expect(saveCredentialsMock).not.toHaveBeenCalled();
     expect(consoleText()).toContain("Autoupdate enabled");
   });
 
-  it("'autoupdate off' calls saveCredentials with autoupdate:false", async () => {
+  it("'autoupdate off' stores autoupdate:false", async () => {
     await run(["autoupdate", "off"]);
-    expect(saveCredentialsMock.mock.calls[0][0]).toMatchObject({ autoupdate: false });
+    expect(setAutoupdateEnabledMock).toHaveBeenCalledWith(false);
     expect(consoleText()).toContain("Autoupdate disabled");
   });
 
   it("'autoupdate true/false' aliases work too", async () => {
     await run(["autoupdate", "true"]);
-    expect(saveCredentialsMock.mock.calls[0][0]).toMatchObject({ autoupdate: true });
-    saveCredentialsMock.mockClear();
+    expect(setAutoupdateEnabledMock).toHaveBeenCalledWith(true);
+    setAutoupdateEnabledMock.mockClear();
     await run(["autoupdate", "false"]);
-    expect(saveCredentialsMock.mock.calls[0][0]).toMatchObject({ autoupdate: false });
+    expect(setAutoupdateEnabledMock).toHaveBeenCalledWith(false);
   });
 
   it("'autoupdate' (no arg) prints the current value with 'on' default for missing field", async () => {
@@ -515,15 +523,16 @@ describe("runAuthCommand — autoupdate", () => {
   });
 
   it("'autoupdate' (no arg) prints 'off' when the stored value is explicitly false", async () => {
-    loadCredentialsMock.mockReturnValue({ ...validCreds, autoupdate: false });
+    getAutoupdateEnabledMock.mockReturnValue(false);
     await run(["autoupdate"]);
     expect(consoleText()).toContain("Autoupdate is currently: off");
   });
 
-  it("'autoupdate' without credentials exits 1", async () => {
+  it("'autoupdate' without credentials still reads the user preference", async () => {
     loadCredentialsMock.mockReturnValue(null);
     await run(["autoupdate"]);
-    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(consoleText()).toContain("Autoupdate is currently: on");
   });
 });
 

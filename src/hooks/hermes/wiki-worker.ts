@@ -25,14 +25,15 @@ import { uploadSummary } from "../upload-summary.js";
 import { log as _log } from "../../utils/debug.js";
 import { EmbedClient } from "../../embeddings/client.js";
 import { embeddingsDisabled } from "../../embeddings/disable.js";
-import { deeplakeClientHeader } from "../../utils/client-header.js";
+import { createWorkerStorage, queryWorkerStorage } from "../worker-storage.js";
 
 const dlog = (msg: string) => _log("hermes-wiki-worker", msg);
 
 interface WorkerConfig {
-  apiUrl: string;
-  token: string;
-  orgId: string;
+  storage?: { kind: "deeplake" | "sqlite" | "postgres"; orgId?: string; workspaceId?: string };
+  apiUrl?: string;
+  token?: string;
+  orgId?: string;
   workspaceId: string;
   memoryTable: string;
   sessionsTable: string;
@@ -69,44 +70,8 @@ function esc(s: string): string {
     .replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
-async function query(sql: string, retries = 4): Promise<Record<string, unknown>[]> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const r = await fetch(`${cfg.apiUrl}/workspaces/${cfg.workspaceId}/tables/query`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${cfg.token}`,
-        "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": cfg.orgId,
-        ...deeplakeClientHeader(),
-      },
-      body: JSON.stringify({ query: sql }),
-    });
-    if (r.ok) {
-      const j = await r.json() as { columns?: string[]; rows?: unknown[][] };
-      if (!j.columns || !j.rows) return [];
-      return j.rows.map(row =>
-        Object.fromEntries(j.columns!.map((col, i) => [col, row[i]]))
-      );
-    }
-    // 403 on Deeplake arrives as a CloudFlare/nginx HTML page when the shared
-    // IP hits a rate limit (codex exec bursts while the worker is running),
-    // and 401 shows up transiently when the upstream auth cache expires.
-    // Treat both as retryable with exponential backoff.
-    const retryable = r.status === 401 || r.status === 403 ||
-      r.status === 429 || r.status === 500 || r.status === 502 || r.status === 503;
-    if (attempt < retries && retryable) {
-      // Exponential backoff with jitter — Cloudflare/nginx 403s from IP
-      // rate limiting (codex exec bursts) can take 30-60 s to clear.
-      const base = Math.min(30_000, 2000 * Math.pow(2, attempt));
-      const delay = base + Math.floor(Math.random() * 1000);
-      wlog(`API ${r.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-      continue;
-    }
-    throw new Error(`API ${r.status}: ${(await r.text()).slice(0, 200)}`);
-  }
-  return [];
-}
+const storageBackend = createWorkerStorage(cfg, wlog);
+const query = (sql: string): Promise<Record<string, unknown>[]> => queryWorkerStorage(storageBackend, sql);
 
 function cleanup(): void {
   try {
@@ -134,12 +99,13 @@ async function main(): Promise<void> {
     // math (`newRowsFromWindow`) and the stamped offset stay correct.
     const dbFetch = async (): Promise<{ rows: Record<string, unknown>[]; total: number }> => {
       const like = esc(`/sessions/%${cfg.sessionId}%`);
-      const cnt = await query(`SELECT count(*) AS n FROM "${cfg.sessionsTable}" WHERE path LIKE E'${like}'`);
+      const stringPrefix = cfg.storage?.kind === "sqlite" ? "" : "E";
+      const cnt = await query(`SELECT count(*) AS n FROM "${cfg.sessionsTable}" WHERE path LIKE ${stringPrefix}'${like}'`);
       const total = Number(cnt[0]?.["n"] ?? 0);
       if (total === 0) return { rows: [], total: 0 };
       const r = await query(
         `SELECT message, creation_date FROM "${cfg.sessionsTable}" ` +
-        `WHERE path LIKE E'${like}' ORDER BY creation_date DESC LIMIT ${WIKI_FALLBACK_MAX_ROWS}`
+        `WHERE path LIKE ${stringPrefix}'${like}' ORDER BY creation_date DESC LIMIT ${WIKI_FALLBACK_MAX_ROWS}`
       );
       return { rows: r.reverse(), total };
     };
@@ -351,6 +317,7 @@ async function main(): Promise<void> {
           sessionId: cfg.sessionId,
           text,
           embedding,
+          dialect: cfg.storage?.kind ?? "deeplake",
           pluginVersion: cfg.pluginVersion ?? "",
         });
         wlog(`uploaded ${vpath} (summary=${result.summaryLength}, desc=${result.descLength})`);
@@ -370,6 +337,7 @@ async function main(): Promise<void> {
   } catch (e: any) {
     wlog(`fatal: ${e.message}`);
   } finally {
+    await storageBackend.close().catch(() => undefined);
     cleanup();
     try {
       releaseLock(cfg.sessionId);

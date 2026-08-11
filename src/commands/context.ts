@@ -17,13 +17,13 @@
  *      is a read-only diagnostic that surfaces what the renderer
  *      would produce right now without firing SessionStart.
  *
- * The CLI is thin: load config → construct DeeplakeApi → call
+ * The CLI is thin: load config → construct the storage backend → call
  * renderContextBlock → print. No flags in v1 (the renderer's
  * maxRules / maxGoals defaults of 10 are the v1 contract).
  */
 
 import { loadRoutedConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
 import { renderContextBlock } from "../hooks/shared/context-renderer.js";
 
 const USAGE = `
@@ -53,13 +53,7 @@ export async function runContextCommand(args: string[]): Promise<void> {
     throw new Error("unreachable");
   }
 
-  const api = new DeeplakeApi(
-    cfg.token,
-    cfg.apiUrl,
-    cfg.orgId,
-    cfg.workspaceId,
-    cfg.tableName,
-  );
+  const api = createStorageBackend(cfg, cfg.tableName);
 
   const known = await api.knownTablesOrNull();
   const tableExists = known ? (name: string) => known.includes(name) : undefined;

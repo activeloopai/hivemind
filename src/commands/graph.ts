@@ -16,9 +16,9 @@ import { tryGitTopLevel } from "../graph/git-hook-install.js";
 import { loadCurrentSnapshot } from "../graph/load-current.js";
 import { spawnDetachedNodeWorker } from "../utils/spawn-detached.js";
 import { readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, relative, resolve, sep } from "node:path";
 
-import { createHash } from "node:crypto";
 
 import { getVersion } from "../cli/version.js";
 import { fileContentHash, readCache, writeCache } from "../graph/cache.js";
@@ -29,7 +29,10 @@ import {
   loadSnapshotByCommit,
   printDiffHuman,
 } from "../graph/diff.js";
-import { extractFile } from "../graph/extract/index.js";
+
+function workTreeIdFor(cwd: string): string {
+  return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+}
 import {
   loadGraphIgnore,
   ignoreDirSet,
@@ -469,6 +472,11 @@ export async function runBuildCommand(args: string[]): Promise<void> {
   const sourceFiles = discoverSourceFiles(cwd, ignoreConfig);
   console.log(`Discovered ${sourceFiles.length} source files. Extracting...`);
 
+  // The parser stack includes optional native tree-sitter packages. Load it
+  // only for graph builds so lightweight commands such as `graph diff` and
+  // `graph history` remain usable when those optional packages are absent.
+  const { extractFile } = await import("../graph/extract/index.js");
+
   const extractions: FileExtraction[] = [];
   let skipped = 0;
   let totalParseErrors = 0;
@@ -658,10 +666,6 @@ export async function runPullCommand(args: string[]): Promise<void> {
  * (e.g., main checkout + git worktree for a feature branch). NOT cross-machine
  * stable; pair with user_id in the cloud PK to keep rows distinct across machines.
  */
-function workTreeIdFor(cwd: string): string {
-  return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
-}
-
 // ─── Source-file discovery ─────────────────────────────────────────────────
 
 function discoverSourceFiles(rootDir: string, config: GraphIgnoreConfig): string[] {

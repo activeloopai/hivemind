@@ -36,8 +36,10 @@
 
 import { randomUUID } from "node:crypto";
 import { loadRoutedConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
+import { escapedStringPrefix } from "../storage/sql-dialect.js";
 
 type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
 
@@ -77,19 +79,13 @@ function parseAgentFlag(args: string[]): { agent: string; rest: string[] } {
   return { agent, rest };
 }
 
-function loadApiOrDie(table: string): { api: DeeplakeApi; query: QueryFn; userName: string } {
+function loadApiOrDie(table: string): { api: StorageBackend; query: QueryFn; userName: string } {
   const cfg = loadRoutedConfig();
   if (!cfg) {
     process.stderr.write("hivemind: not logged in. Run `hivemind login` first.\n");
     process.exit(1);
   }
-  const api = new DeeplakeApi(
-    cfg.token,
-    cfg.apiUrl,
-    cfg.orgId,
-    cfg.workspaceId,
-    table,
-  );
+  const api = createStorageBackend(cfg, table);
   const query: QueryFn = (sql) => api.query(sql) as Promise<Array<Record<string, unknown>>>;
   return { api, query, userName: cfg.userName };
 }
@@ -114,7 +110,7 @@ async function goalAdd(text: string, agent: string = "manual"): Promise<void> {
     `'${sqlStr(goalId)}', ` +
     `'${sqlStr(cfg.userName)}', ` +
     `'opened', ` +
-    `E'${sqlStr(text)}', ` +
+    `${escapedStringPrefix(api.dialect)}'${sqlStr(text)}', ` +
     `1, ` +
     `'${sqlStr(ts)}', ` +
     `'${sqlStr(ts)}', ` +
@@ -224,7 +220,7 @@ async function kpiAdd(args: string[]): Promise<void> {
     `'${randomUUID()}', ` +
     `'${sqlStr(goalId)}', ` +
     `'${sqlStr(kpiId)}', ` +
-    `E'${sqlStr(content)}', ` +
+    `${escapedStringPrefix(api.dialect)}'${sqlStr(content)}', ` +
     `1, ` +
     `'${sqlStr(ts)}', ` +
     `'${sqlStr(ts)}', ` +
@@ -293,7 +289,7 @@ async function kpiBump(goalId: string, kpiId: string, deltaStr: string): Promise
   }
   const ts = new Date().toISOString();
   await query(
-    `UPDATE "${safe}" SET content = E'${sqlStr(newContent)}', updated_at = '${sqlStr(ts)}' WHERE goal_id = '${sqlStr(goalId)}' AND kpi_id = '${sqlStr(kpiId)}'`
+    `UPDATE "${safe}" SET content = ${escapedStringPrefix(api.dialect)}'${sqlStr(newContent)}', updated_at = '${sqlStr(ts)}' WHERE goal_id = '${sqlStr(goalId)}' AND kpi_id = '${sqlStr(kpiId)}'`
   );
   process.stdout.write(`${goalId}/${kpiId} +${delta}\n`);
 }

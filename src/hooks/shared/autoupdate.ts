@@ -58,6 +58,7 @@ import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { Credentials } from "../../commands/auth-creds.js";
 import { log as _log } from "../../utils/debug.js";
+import { getAutoupdateEnabled, readUserConfig } from "../../user-config.js";
 
 const log = (msg: string) => _log("autoupdate", msg);
 
@@ -185,8 +186,11 @@ export async function autoUpdate(
     log(`agent=${opts.agent} skip: Codex-managed install (${opts.bundleDir}); updates come via marketplace snapshots (${Date.now() - t0}ms)`);
     return;
   }
-  if (!creds?.token) { log(`agent=${opts.agent} skip: no creds.token (${Date.now() - t0}ms)`); return; }
-  if (creds.autoupdate === false) { log(`agent=${opts.agent} skip: autoupdate=false (${Date.now() - t0}ms)`); return; }
+  const provider = process.env.HIVEMIND_BACKEND ?? readUserConfig().storage?.provider ?? "deeplake";
+  if (provider === "deeplake" && !creds?.token) { log(`agent=${opts.agent} skip: no creds.token (${Date.now() - t0}ms)`); return; }
+  const userPreference = readUserConfig().autoupdate;
+  const autoupdateEnabled = userPreference ?? creds?.autoupdate ?? getAutoupdateEnabled();
+  if (!autoupdateEnabled) { log(`agent=${opts.agent} skip: autoupdate=false (${Date.now() - t0}ms)`); return; }
 
   const binaryPath = opts.hivemindBinaryPath !== undefined
     ? opts.hivemindBinaryPath

@@ -2,7 +2,7 @@ import { basename, posix } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import type { DeeplakeApi } from "../deeplake-api.js";
+import type { StorageBackend } from "../storage/backend.js";
 import type {
   IFileSystem, FsStat, MkdirOptions, RmOptions, CpOptions,
   FileContent, BufferEncoding,
@@ -11,6 +11,7 @@ import { normalizeContent, emptySessionBodyNotice } from "./grep-core.js";
 import { readSessionEventCache } from "../hooks/session-event-cache.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
+import { escapedStringPrefix } from "../storage/sql-dialect.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
 import { buildVirtualIndexContent, INDEX_LIMIT_PER_SECTION } from "../hooks/virtual-table-query.js";
 import {
@@ -234,7 +235,7 @@ export class DeeplakeFs implements IFileSystem {
   private embedClient: EmbedClient | null = null;
 
   private constructor(
-    private readonly client: DeeplakeApi,
+    private readonly client: StorageBackend,
     private readonly table: string,
     readonly mountPoint: string,
   ) {
@@ -243,7 +244,7 @@ export class DeeplakeFs implements IFileSystem {
   }
 
   static async create(
-    client: DeeplakeApi,
+    client: StorageBackend,
     table: string,
     mount = "/memory",
     sessionsTable?: string,
@@ -441,7 +442,7 @@ export class DeeplakeFs implements IFileSystem {
 
     const embeddings = await this.computeEmbeddings(rows);
 
-    // Upsert in parallel — the semaphore in DeeplakeApi.query() handles concurrency.
+    // Upsert in parallel — each backend applies its own concurrency controls.
     // Re-queue any rows that failed so they are retried on the next flush.
     const results = await Promise.allSettled(rows.map((r, i) => this.upsertRow(r, embeddings[i])));
     let failures = 0;
@@ -497,9 +498,10 @@ export class DeeplakeFs implements IFileSystem {
     const ts = new Date().toISOString();
     const cd = r.creationDate ?? ts;
     const lud = r.lastUpdateDate ?? ts;
-    const embSql = embeddingSqlLiteral(embedding);
+    const embSql = embeddingSqlLiteral(embedding, this.client.dialect);
+    const stringPrefix = escapedStringPrefix(this.client.dialect);
     if (this.flushed.has(r.path)) {
-      let setClauses = `filename = '${fname}', summary = E'${text}', summary_embedding = ${embSql}, ` +
+      let setClauses = `filename = '${fname}', summary = ${stringPrefix}'${text}', summary_embedding = ${embSql}, ` +
         `mime_type = '${mime}', size_bytes = ${r.sizeBytes}, last_update_date = '${esc(lud)}'`;
       if (r.project !== undefined) setClauses += `, project = '${esc(r.project)}'`;
       if (r.description !== undefined) setClauses += `, description = '${esc(r.description)}'`;
@@ -511,7 +513,7 @@ export class DeeplakeFs implements IFileSystem {
       const cols = "id, path, filename, summary, summary_embedding, mime_type, size_bytes, creation_date, last_update_date" +
         (r.project !== undefined ? ", project" : "") +
         (r.description !== undefined ? ", description" : "");
-      const vals = `'${id}', '${p}', '${fname}', E'${text}', ${embSql}, '${mime}', ${r.sizeBytes}, '${esc(cd)}', '${esc(lud)}'` +
+      const vals = `'${id}', '${p}', '${fname}', ${stringPrefix}'${text}', ${embSql}, '${mime}', ${r.sizeBytes}, '${esc(cd)}', '${esc(lud)}'` +
         (r.project !== undefined ? `, '${esc(r.project)}'` : "") +
         (r.description !== undefined ? `, '${esc(r.description)}'` : "");
       await this.client.query(
@@ -555,7 +557,7 @@ export class DeeplakeFs implements IFileSystem {
         `UPDATE "${safe}" SET ` +
         `owner = '${esc(parts.owner)}', ` +
         `status = '${esc(parts.status)}', ` +
-        `content = E'${esc(r.contentText)}', ` +
+        `content = ${escapedStringPrefix(this.client.dialect)}'${esc(r.contentText)}', ` +
         `updated_at = '${esc(updatedAt)}' ` +
         `WHERE goal_id = '${esc(parts.goal_id)}'`
       );
@@ -567,7 +569,7 @@ export class DeeplakeFs implements IFileSystem {
         `'${esc(parts.goal_id)}', ` +
         `'${esc(parts.owner)}', ` +
         `'${esc(parts.status)}', ` +
-        `E'${esc(r.contentText)}', ` +
+        `${escapedStringPrefix(this.client.dialect)}'${esc(r.contentText)}', ` +
         `1, ` +
         `'${esc(createdAt)}', ` +
         `'${esc(updatedAt)}', ` +
@@ -602,7 +604,7 @@ export class DeeplakeFs implements IFileSystem {
       // (created_at ASC). Edit time goes to updated_at.
       await this.client.query(
         `UPDATE "${safe}" SET ` +
-        `content = E'${esc(r.contentText)}', ` +
+        `content = ${escapedStringPrefix(this.client.dialect)}'${esc(r.contentText)}', ` +
         `updated_at = '${esc(updatedAt)}' ` +
         `WHERE goal_id = '${esc(parts.goal_id)}' AND kpi_id = '${esc(parts.kpi_id)}'`
       );
@@ -613,7 +615,7 @@ export class DeeplakeFs implements IFileSystem {
         `'${id}', ` +
         `'${esc(parts.goal_id)}', ` +
         `'${esc(parts.kpi_id)}', ` +
-        `E'${esc(r.contentText)}', ` +
+        `${escapedStringPrefix(this.client.dialect)}'${esc(r.contentText)}', ` +
         `1, ` +
         `'${esc(createdAt)}', ` +
         `'${esc(updatedAt)}', ` +
@@ -797,7 +799,7 @@ export class DeeplakeFs implements IFileSystem {
     // cursor / hermes / interactive), not just the pre-tool-use hook (Claude).
     if (isDocsPath(p) && this.docsTable) {
       if (isDocsDir(p)) throw fsErr("EISDIR", "illegal operation on a directory", p);
-      const r = await handleDocsVfs(docsSubpathOf(p), (sql) => this.client.query(sql), this.docsTable, { embedQuery: makeQueryEmbedder(), project: this.docsProject ?? undefined });
+      const r = await handleDocsVfs(docsSubpathOf(p), (sql) => this.client.query(sql), this.docsTable, { embedQuery: makeQueryEmbedder(), project: this.docsProject ?? undefined, dialect: this.client.dialect });
       if (r.kind === "ok") return r.body;
       throw fsErr("ENOENT", `${r.message}`, p);
     }
@@ -912,7 +914,7 @@ export class DeeplakeFs implements IFileSystem {
       const ts = new Date().toISOString();
       await this.client.query(
         `UPDATE "${this.table}" SET ` +
-        `summary = summary || E'${esc(add)}', ` +
+        `summary = summary || ${escapedStringPrefix(this.client.dialect)}'${esc(add)}', ` +
         `size_bytes = size_bytes + ${Buffer.byteLength(add, "utf-8")}, ` +
         `last_update_date = '${ts}' ` +
         `WHERE path = '${esc(p)}'`

@@ -432,7 +432,7 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "harnesses/openclaw/dist",
-  external: ["node:*"],
+  external: ["node:*", "pg"],
   // Guarantee `globalThis.__hivemind_tuning__` exists as an object before any
   // bundled module's lazy env reads execute. esbuild's `define` rewrites
   // `process.env.HIVEMIND_X` → `globalThis.__hivemind_tuning__.HIVEMIND_X`
@@ -461,6 +461,16 @@ await build({
     "process.env.HIVEMIND_SESSIONS_TABLE": "undefined",
     "process.env.HIVEMIND_MEMORY_PATH": "undefined",
     "process.env.HIVEMIND_CAPTURE": "undefined",
+    "process.env.HIVEMIND_BACKEND": "undefined",
+    "process.env.HIVEMIND_SQLITE_PATH": "undefined",
+    "process.env.HIVEMIND_POSTGRES_URL": "undefined",
+    "process.env.HIVEMIND_POSTGRES_SCHEMA": "undefined",
+    "process.env.HIVEMIND_VECTOR_SCAN_LIMIT": "undefined",
+    "process.env.HIVEMIND_CONFIG_PATH": "undefined",
+    "process.env.HIVEMIND_SKILLS_TABLE": "undefined",
+    "process.env.HIVEMIND_RULES_TABLE": "undefined",
+    "process.env.HIVEMIND_GOALS_TABLE": "undefined",
+    "process.env.HIVEMIND_KPIS_TABLE": "undefined",
     // ----- User-tunable knobs: routed through a globalThis dispatch -----
     // Every read of `process.env.HIVEMIND_X` in transitively-bundled code is
     // rewritten by esbuild to `globalThis.__hivemind_tuning__.HIVEMIND_X`.
@@ -496,6 +506,24 @@ await build({
     // file as a network send trips the critical rule even though the
     // value is just a directory path.
     "process.env.HIVEMIND_STATE_DIR": "globalThis.__hivemind_tuning__.HIVEMIND_STATE_DIR",
+    "process.env.HIVEMIND_BACKEND": "undefined",
+    "process.env.HIVEMIND_SQLITE_PATH": "undefined",
+    "process.env.HIVEMIND_POSTGRES_URL": "undefined",
+    "process.env.HIVEMIND_POSTGRES_SCHEMA": "undefined",
+    "process.env.HIVEMIND_VECTOR_SCAN_LIMIT": "undefined",
+    "process.env.HIVEMIND_CONFIG_PATH": "undefined",
+    "process.env.HIVEMIND_TOKEN": "undefined",
+    "process.env.HIVEMIND_ORG_ID": "undefined",
+    "process.env.HIVEMIND_WORKSPACE_ID": "undefined",
+    "process.env.HIVEMIND_API_URL": "undefined",
+    "process.env.HIVEMIND_TABLE": "undefined",
+    "process.env.HIVEMIND_SESSIONS_TABLE": "undefined",
+    "process.env.HIVEMIND_SKILLS_TABLE": "undefined",
+    "process.env.HIVEMIND_RULES_TABLE": "undefined",
+    "process.env.HIVEMIND_GOALS_TABLE": "undefined",
+    "process.env.HIVEMIND_KPIS_TABLE": "undefined",
+    "process.env.HIVEMIND_CODEBASE_TABLE": "undefined",
+    "process.env.HIVEMIND_MEMORY_PATH": "undefined",
     "process.env.HIVEMIND_GRAPH_CWD": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_CWD",
     "process.env.HIVEMIND_GRAPH_ON_STOP": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_ON_STOP",
     "process.env.HIVEMIND_GRAPH_PULL": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_PULL",
@@ -544,7 +572,7 @@ await build({
   platform: "node",
   format: "esm",
   outdir: "harnesses/openclaw/dist",
-  external: ["node:*"],
+  external: ["node:*", "pg"],
   // Same banner as the main openclaw bundle — see the comment there for
   // the rationale. The worker entry itself overwrites this with the
   // tuning passed in via the config JSON before any shared module's
@@ -595,6 +623,24 @@ await build({
     "process.env.HIVEMIND_DOCS_TABLE": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_TABLE",
     "process.env.HIVEMIND_SKILLIFY_EVERY_N_TURNS": "globalThis.__hivemind_tuning__.HIVEMIND_SKILLIFY_EVERY_N_TURNS",
     "process.env.HIVEMIND_AUTOPULL_DISABLED": "globalThis.__hivemind_tuning__.HIVEMIND_AUTOPULL_DISABLED",
+    "process.env.HIVEMIND_BACKEND": "undefined",
+    "process.env.HIVEMIND_SQLITE_PATH": "undefined",
+    "process.env.HIVEMIND_POSTGRES_URL": "undefined",
+    "process.env.HIVEMIND_POSTGRES_SCHEMA": "undefined",
+    "process.env.HIVEMIND_VECTOR_SCAN_LIMIT": "undefined",
+    "process.env.HIVEMIND_CONFIG_PATH": "undefined",
+    "process.env.HIVEMIND_TOKEN": "undefined",
+    "process.env.HIVEMIND_ORG_ID": "undefined",
+    "process.env.HIVEMIND_WORKSPACE_ID": "undefined",
+    "process.env.HIVEMIND_API_URL": "undefined",
+    "process.env.HIVEMIND_TABLE": "undefined",
+    "process.env.HIVEMIND_SESSIONS_TABLE": "undefined",
+    "process.env.HIVEMIND_SKILLS_TABLE": "undefined",
+    "process.env.HIVEMIND_RULES_TABLE": "undefined",
+    "process.env.HIVEMIND_GOALS_TABLE": "undefined",
+    "process.env.HIVEMIND_KPIS_TABLE": "undefined",
+    "process.env.HIVEMIND_CODEBASE_TABLE": "undefined",
+    "process.env.HIVEMIND_MEMORY_PATH": "undefined",
     // Skillify state-dir test-isolation override. OpenClaw never needs
     // to redirect state, so this rewrites to `undefined` at runtime and
     // the call-site fallback produces the homedir-based production path.
@@ -610,6 +656,7 @@ chmodSync("harnesses/openclaw/dist/skillify-worker.js", 0o755);
 // stub-unused-child-process plugin. install-openclaw.ts copies all of dist/.
 const openclawGraphWorkerExternals = [
   "node:*",
+  "pg",
   "node-liblzma",
   "@mongodb-js/zstd",
   "@huggingface/transformers",
@@ -678,6 +725,11 @@ const openclawGraphWorkerDefine = {
     // redirect the config path, so rewrite to undefined — the call site's
     // `?? homedir()/.deeplake/config.json` fallback yields the correct path.
     "process.env.HIVEMIND_CONFIG_PATH": "undefined",
+    "process.env.HIVEMIND_BACKEND": "undefined",
+    "process.env.HIVEMIND_SQLITE_PATH": "undefined",
+    "process.env.HIVEMIND_POSTGRES_URL": "undefined",
+    "process.env.HIVEMIND_POSTGRES_SCHEMA": "undefined",
+    "process.env.HIVEMIND_VECTOR_SCAN_LIMIT": "undefined",
   },
 };
 

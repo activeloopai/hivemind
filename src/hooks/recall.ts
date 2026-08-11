@@ -30,7 +30,7 @@
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { resolveDirConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embedSummaryWithWarmup } from "../embeddings/embed-summary.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
@@ -114,7 +114,7 @@ async function findHit(
   signal: AbortSignal,
 ): Promise<FindResult> {
   const prompt = input.prompt ?? "";
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+  const api = createStorageBackend(config, config.tableName);
   // Pass the budget's abort signal so a timeout actually CANCELS the in-flight
   // query rather than leaving the socket/retry loop running.
   const q = (sql: string) => api.query(sql, signal) as Promise<Array<Record<string, unknown>>>;
@@ -200,7 +200,7 @@ async function main(): Promise<void> {
 
   const session = input.session_id;
   const baseConfig = loadConfig();
-  if (!baseConfig?.token) {
+  if (!baseConfig) {
     log("skip no-config");
     recordRecallEvent({ event: "no-config", gate: reason, session });
     return;

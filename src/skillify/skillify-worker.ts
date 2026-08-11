@@ -14,7 +14,7 @@
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { utcTimestamp } from "../utils/debug.js";
-import { deeplakeClientHeader } from "../utils/client-header.js";
+import { createWorkerStorage, queryWorkerStorage } from "../hooks/worker-storage.js";
 import { extractPairs, SessionRow, Pair } from "./extractors/index.js";
 import {
   resolveSkillsRoot,
@@ -35,9 +35,10 @@ import {
 } from "./state.js";
 
 interface WorkerConfig {
-  apiUrl: string;
-  token: string;
-  orgId: string;
+  storage?: { kind: "deeplake" | "sqlite" | "postgres"; orgId?: string; workspaceId?: string };
+  apiUrl?: string;
+  token?: string;
+  orgId?: string;
   workspaceId: string;
   sessionsTable: string;
   userName: string;
@@ -120,61 +121,8 @@ function esc(s: string): string {
 // keep the worker process alive past the wall-clock at which the parent
 // already considers the run abandoned. 30s matches the per-attempt budget
 // in src/deeplake-api.ts (QUERY_TIMEOUT_MS).
-const QUERY_TIMEOUT_MS = 30_000;
-
-async function query(sql: string, retries = 4): Promise<Record<string, unknown>[]> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    let r: Response;
-    try {
-      r = await fetch(`${cfg.apiUrl}/workspaces/${cfg.workspaceId}/tables/query`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${cfg.token}`,
-          "Content-Type": "application/json",
-          "X-Activeloop-Org-Id": cfg.orgId,
-          ...deeplakeClientHeader(),
-        },
-        signal: AbortSignal.timeout(QUERY_TIMEOUT_MS),
-        body: JSON.stringify({ query: sql }),
-      });
-    } catch (e: any) {
-      // Network-level failure: AbortSignal timeout, DNS lookup error,
-      // ECONNRESET, etc. The original loop only checked HTTP statuses,
-      // so a fetch rejection would propagate past the retry path and
-      // out of main(); the per-project worker lock would still be
-      // released by main()'s finally, but we'd lose the retry budget
-      // for transient network blips that the HTTP-status path already
-      // handles. Match the exponential-backoff schedule used below for
-      // 5xx responses.
-      if (attempt < retries) {
-        const base = Math.min(30_000, 2000 * Math.pow(2, attempt));
-        const delay = base + Math.floor(Math.random() * 1000);
-        wlog(`fetch failed (${e?.name ?? e?.code ?? e?.message}), retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-      throw e;
-    }
-    if (r.ok) {
-      const j = await r.json() as { columns?: string[]; rows?: unknown[][] };
-      if (!j.columns || !j.rows) return [];
-      return j.rows.map(row =>
-        Object.fromEntries(j.columns!.map((col, i) => [col, row[i]]))
-      );
-    }
-    const retryable = r.status === 401 || r.status === 403 ||
-      r.status === 429 || r.status === 500 || r.status === 502 || r.status === 503;
-    if (attempt < retries && retryable) {
-      const base = Math.min(30_000, 2000 * Math.pow(2, attempt));
-      const delay = base + Math.floor(Math.random() * 1000);
-      wlog(`API ${r.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-      continue;
-    }
-    throw new Error(`API ${r.status}: ${(await r.text()).slice(0, 200)}`);
-  }
-  return [];
-}
+const storageBackend = createWorkerStorage({ ...cfg, memoryTable: cfg.skillsTable }, wlog);
+const query = (sql: string): Promise<Record<string, unknown>[]> => queryWorkerStorage(storageBackend, sql);
 
 function authorClause(): string {
   // scope=team with a populated team list mines sessions authored by
@@ -603,6 +551,7 @@ async function main(): Promise<void> {
   } catch (e: any) {
     wlog(`fatal: ${e.message}`);
   } finally {
+    await storageBackend.close().catch(() => undefined);
     // Counter was already reset by the hook before spawn, so we don't touch it here.
     cleanup(keepTmpForInspection);
     try { releaseWorkerLock(cfg.projectKey); }

@@ -69,7 +69,7 @@ Empirical evidence preserved in the session JSONL captured by the probe — see 
 ```
 • SessionStart hook (completed)
   warning: 💡 5 skills mined from your local sessions live in ~/.claude/skills/. Run 'hivemind login' to share them with your team.
-  hook context: DEEPLAKE MEMORY: ...
+  hook context: HIVEMIND MEMORY: ...
 ```
 
 **v1 implication:** Codex has the SAME systemMessage user-visible channel as Claude Code. `src/hooks/codex/session-start.ts` was migrated from plain-text stdout to JSON output mirroring CC's dual-channel shape. No shared `delivery/codex.ts` adapter needed — the hook itself emits the JSON.

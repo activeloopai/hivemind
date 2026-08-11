@@ -13,7 +13,7 @@ import { buildClaudeInvocation } from "./wiki-worker-spawn.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { utcTimestamp, log as _log } from "../utils/debug.js";
-import { deeplakeClientHeader } from "../utils/client-header.js";
+import { createWorkerStorage, queryWorkerStorage } from "./worker-storage.js";
 
 const dlog = (msg: string) => _log("wiki-worker", msg);
 import { finalizeSummary, releaseLock, readState } from "./summary-state.js";
@@ -26,9 +26,10 @@ import { embedSummaryWithWarmup } from "../embeddings/embed-summary.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
 
 interface WorkerConfig {
-  apiUrl: string;
-  token: string;
-  orgId: string;
+  storage?: { kind: "deeplake" | "sqlite" | "postgres"; orgId?: string; workspaceId?: string };
+  apiUrl?: string;
+  token?: string;
+  orgId?: string;
   workspaceId: string;
   memoryTable: string;
   sessionsTable: string;
@@ -85,45 +86,8 @@ const EVENT_FETCH_RETRIES = parseNonNegativeInt(process.env.HIVEMIND_WIKI_EVENT_
 const EVENT_FETCH_BACKOFF_MS = parseNonNegativeInt(process.env.HIVEMIND_WIKI_EVENT_BACKOFF_MS, 1500);
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
-async function query(sql: string, retries = 4): Promise<Record<string, unknown>[]> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const r = await fetch(`${cfg.apiUrl}/workspaces/${cfg.workspaceId}/tables/query`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${cfg.token}`,
-        "Content-Type": "application/json",
-        "X-Activeloop-Org-Id": cfg.orgId,
-        ...deeplakeClientHeader(),
-      },
-      body: JSON.stringify({ query: sql }),
-    });
-    if (r.ok) {
-      const j = await r.json() as { columns?: string[]; rows?: unknown[][] };
-      if (!j.columns || !j.rows) return [];
-      return j.rows.map(row =>
-        Object.fromEntries(j.columns!.map((col, i) => [col, row[i]]))
-      );
-    }
-    // 403 can arrive as a CloudFlare/nginx HTML page when the shared IP
-    // hits a transient rate limit (claude -p or codex exec bursts while
-    // the worker is running), and 401 shows up when the upstream auth
-    // cache expires. Treat both as retryable with exponential backoff.
-    const retryable = r.status === 401 || r.status === 403 ||
-      r.status === 429 || r.status === 500 || r.status === 502 || r.status === 503;
-    if (attempt < retries && retryable) {
-      // Exponential backoff with jitter — Cloudflare/nginx 403s from IP
-      // rate limiting (claude -p or codex exec bursts) can take 30-60 s
-      // to clear.
-      const base = Math.min(30_000, 2000 * Math.pow(2, attempt));
-      const delay = base + Math.floor(Math.random() * 1000);
-      wlog(`API ${r.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-      continue;
-    }
-    throw new Error(`API ${r.status}: ${(await r.text()).slice(0, 200)}`);
-  }
-  return [];
-}
+const storageBackend = createWorkerStorage(cfg, wlog);
+const query = (sql: string): Promise<Record<string, unknown>[]> => queryWorkerStorage(storageBackend, sql);
 
 function cleanup(): void {
   try {
@@ -382,6 +346,7 @@ async function main(): Promise<void> {
           sessionId: cfg.sessionId,
           text,
           embedding,
+          dialect: cfg.storage?.kind ?? "deeplake",
           pluginVersion: cfg.pluginVersion ?? "",
         });
         wlog(`uploaded ${vpath} (summary=${result.summaryLength}, desc=${result.descLength})`);
@@ -401,6 +366,7 @@ async function main(): Promise<void> {
   } catch (e: any) {
     wlog(`fatal: ${e.message}`);
   } finally {
+    await storageBackend.close().catch(() => undefined);
     cleanup();
     try {
       releaseLock(cfg.sessionId);

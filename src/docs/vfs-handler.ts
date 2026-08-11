@@ -28,12 +28,15 @@ import { parseFilesIndex, WIKI_DOC_PREFIX } from "./wiki-generate.js";
 import { readPrivateDoc } from "./private-store.js";
 import { MAIN_SCOPE, type GitRunner } from "./branch-scope.js";
 import type { DocEmbedder } from "./embed.js";
+import type { StorageDialect } from "../deeplake-schema.js";
 
 export type DocsVfsResult =
   | { kind: "ok"; body: string }
   | { kind: "not-found"; message: string };
 
 export interface DocsVfsOptions {
+  /** SQL dialect used by the query seam. Defaults to Deeplake for compatibility. */
+  dialect?: StorageDialect;
   /** Query embedder (kind='query') for semantic `find/`. Absent → lexical only. */
   embedQuery?: DocEmbedder;
   /** Project scope for shared org tables (legacy '' rows always included). */
@@ -82,7 +85,7 @@ export async function handleDocsVfs(
       limit: 20,
       project: opts.project,
     };
-    const hits = await searchDocs(query, tableName, searchOpts);
+    const hits = await searchDocs(query, tableName, searchOpts, opts.dialect);
     if (hits.length === 0) return { kind: "ok", body: `No docs match "${q}".` };
     const lines = [`${hits.length} doc(s) match "${q}"${queryEmbedding ? " (semantic + keyword)" : " (keyword)"}:`, ""];
     for (const h of hits) lines.push(`## ${h.path}\n${firstDocLine(h.content)}`);

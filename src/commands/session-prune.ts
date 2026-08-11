@@ -12,7 +12,8 @@
  */
 
 import { loadConfig, type Config } from "../config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { sqlStr } from "../utils/sql.js";
 import { confirm } from "../cli/util.js";
 
@@ -68,7 +69,7 @@ function extractSessionId(path: string): string {
 // ── Core ─────────────────────────────────────────────────────────────────────
 
 async function listSessions(
-  api: DeeplakeApi,
+  api: StorageBackend,
   sessionsTable: string,
   author: string,
 ): Promise<SessionInfo[]> {
@@ -94,14 +95,8 @@ async function deleteSessions(
 ): Promise<{ sessionsDeleted: number; summariesDeleted: number }> {
   if (sessionPaths.length === 0) return { sessionsDeleted: 0, summariesDeleted: 0 };
 
-  const sessionsApi = new DeeplakeApi(
-    config.token, config.apiUrl, config.orgId, config.workspaceId,
-    config.sessionsTableName,
-  );
-  const memoryApi = new DeeplakeApi(
-    config.token, config.apiUrl, config.orgId, config.workspaceId,
-    config.tableName,
-  );
+  const sessionsApi = createStorageBackend(config, config.sessionsTableName);
+  const memoryApi = createStorageBackend(config, config.tableName);
 
   let sessionsDeleted = 0;
   let summariesDeleted = 0;
@@ -144,10 +139,7 @@ export async function sessionPrune(argv: string[]): Promise<void> {
   const { before, sessionId, all, yes } = parseArgs(argv);
   const author = config.userName;
 
-  const sessionsApi = new DeeplakeApi(
-    config.token, config.apiUrl, config.orgId, config.workspaceId,
-    config.sessionsTableName,
-  );
+  const sessionsApi = createStorageBackend(config, config.sessionsTableName);
 
   // Fetch all sessions for this author
   const sessions = await listSessions(sessionsApi, config.sessionsTableName, author);

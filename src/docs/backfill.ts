@@ -8,7 +8,7 @@
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
 import { runPool } from "./pool.js";
-import type { QueryFn } from "./read.js";
+import { queryDialect, type QueryFn } from "./read.js";
 import type { DocEmbedder } from "./embed.js";
 
 export interface BackfillReport {
@@ -35,7 +35,7 @@ export async function backfillDocEmbeddings(
     const vec = await embed(String(r["content"] ?? ""));
     if (!vec || vec.length === 0) return; // embedder off / failed → leave NULL
     await query(
-      `UPDATE "${safe}" SET content_embedding = ${embeddingSqlLiteral(vec)} ` +
+      `UPDATE "${safe}" SET content_embedding = ${embeddingSqlLiteral(vec, queryDialect(query))} ` +
       `WHERE id = '${sqlStr(String(r["id"]))}'`,
     );
     embedded++;

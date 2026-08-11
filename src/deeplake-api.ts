@@ -17,6 +17,12 @@ import {
 } from "./deeplake-schema.js";
 import { enqueueNotification } from "./notifications/queue.js";
 import { loadCredentials } from "./commands/auth-creds.js";
+import type {
+  BackendTableNames,
+  ExecuteResult,
+  SqlValue,
+  StorageBackend,
+} from "./storage/backend.js";
 
 // index-marker-store touches node:fs. Load it lazily so bundlers that split
 // chunks (e.g. the openclaw plugin build) can put fs operations in a separate
@@ -38,14 +44,14 @@ function summarizeSql(sql: string, maxLen = 220): string {
 /**
  * SQL tracing is opt-in and evaluated on every call so callers can flip the
  * env vars after module load (e.g. the one-shot shell bundle silences
- * `[deeplake-sql]` stderr writes so they don't land in Claude Code's
+ * `[hivemind-sql]` stderr writes so they don't land in Claude Code's
  * Bash-tool result — Claude Code merges child stderr into tool_result).
  */
 function traceSql(msg: string): void {
   const traceEnabled = process.env.HIVEMIND_TRACE_SQL === "1"
     || process.env.HIVEMIND_DEBUG === "1";
   if (!traceEnabled) return;
-  process.stderr.write(`[deeplake-sql] ${msg}\n`);
+  process.stderr.write(`[hivemind-sql] ${msg}\n`);
   if (process.env.HIVEMIND_DEBUG === "1") log(msg);
 }
 
@@ -211,10 +217,41 @@ export interface WriteRow {
   lastUpdateDate?: string;
 }
 
-export class DeeplakeApi {
+function deeplakeSqlLiteral(value: SqlValue): string {
+  if (value === null) return "NULL";
+  if (value instanceof Date) return `'${sqlStr(value.toISOString())}'`;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("Non-finite SQL number");
+    return String(value);
+  }
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  if (Array.isArray(value)) return `ARRAY[${value.map(Number).join(",")}]::float4[]`;
+  if (typeof value === "object") return `'${sqlStr(JSON.stringify(value))}'::jsonb`;
+  return `E'${sqlStr(value)}'`;
+}
+
+function interpolateParameters(sql: string, params: readonly SqlValue[]): string {
+  return sql.replace(/\$(\d+)/g, (_all, index: string) => {
+    const position = Number(index) - 1;
+    if (position < 0 || position >= params.length) throw new Error(`Missing SQL parameter $${index}`);
+    return deeplakeSqlLiteral(params[position]);
+  });
+}
+
+export class DeeplakeApi implements StorageBackend {
+  readonly kind = "deeplake" as const;
+  readonly dialect = "deeplake" as const;
+  readonly capabilities = {
+    serverVectorSearch: true,
+    transactions: false,
+    json: "native",
+    vectors: "server",
+  } as const;
   private _pendingRows: WriteRow[] = [];
   private _sem = new Semaphore(MAX_CONCURRENCY);
   private _tablesCache: string[] | null = null;
+  private _retryLogger?: (message: string) => void;
+  private _skipRetryDelay = false;
 
   constructor(
     private token: string,
@@ -222,16 +259,35 @@ export class DeeplakeApi {
     private orgId: string,
     private workspaceId: string,
     readonly tableName: string,
+    private tableNames?: BackendTableNames,
   ) {}
 
+  /** Detached workers keep their own retry log and already have a hard wall clock. */
+  configureWorkerRetries(logger: (message: string) => void): void {
+    this._retryLogger = logger;
+    this._skipRetryDelay = true;
+  }
+
+  private async retryWait(message: string, delay: number, signal?: AbortSignal): Promise<void> {
+    this._retryLogger?.(`${message}, retrying in ${this._skipRetryDelay ? 0 : delay.toFixed(0)}ms`);
+    if (!this._skipRetryDelay) await sleep(delay, signal);
+  }
+
   /** Execute SQL with retry on transient errors and bounded concurrency. */
-  async query(sql: string, signal?: AbortSignal): Promise<Record<string, unknown>[]> {
+  async query(
+    sql: string,
+    paramsOrSignal: readonly SqlValue[] | AbortSignal = [],
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>[]> {
+    const params = paramsOrSignal instanceof AbortSignal ? [] : paramsOrSignal;
+    const activeSignal = paramsOrSignal instanceof AbortSignal ? paramsOrSignal : signal;
+    const renderedSql = params.length > 0 ? interpolateParameters(sql, params) : sql;
     const startedAt = Date.now();
-    const summary = summarizeSql(sql);
+    const summary = summarizeSql(renderedSql);
     traceSql(`query start: ${summary}`);
     await this._sem.acquire();
     try {
-      const rows = await this._queryWithRetry(sql, signal);
+      const rows = await this._queryWithRetry(renderedSql, activeSignal);
       traceSql(`query ok (${Date.now() - startedAt}ms, rows=${rows.length}): ${summary}`);
       return rows;
     } catch (e: unknown) {
@@ -241,6 +297,46 @@ export class DeeplakeApi {
     } finally {
       this._sem.release();
     }
+  }
+
+  async execute(sql: string, params: readonly SqlValue[] = []): Promise<ExecuteResult> {
+    const rows = await this.query(sql, params);
+    return { rowCount: rows.length };
+  }
+
+  async transaction<T>(fn: (tx: StorageBackend) => Promise<T>): Promise<T> {
+    // Deeplake's SQL endpoint does not expose multi-statement transactions.
+    // Keep the neutral callback shape and advertise the limitation through
+    // capabilities so callers that require atomicity can branch explicitly.
+    return fn(this);
+  }
+
+  async getColumns(table: string): Promise<string[]> {
+    const safe = sqlIdent(table);
+    const rows = await this.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = $1 AND table_schema = $2`,
+      [safe, this.workspaceId],
+    );
+    return rows.map(row => String(row.column_name));
+  }
+
+  async initializeSchema(): Promise<void> {
+    if (!this.tableNames) {
+      await this.ensureTable(this.tableName);
+      return;
+    }
+    await this.ensureTable(this.tableNames.memory);
+    await this.ensureSessionsTable(this.tableNames.sessions);
+    await this.ensureSkillsTable(this.tableNames.skills);
+    await this.ensureRulesTable(this.tableNames.rules);
+    await this.ensureGoalsTable(this.tableNames.goals);
+    await this.ensureKpisTable(this.tableNames.kpis);
+    await this.ensureDocsTable(this.tableNames.docs);
+    await this.ensureCodebaseTable(this.tableNames.codebase);
+  }
+
+  async close(): Promise<void> {
+    // HTTP requests are connectionless from this adapter's perspective.
   }
 
   private async _queryWithRetry(sql: string, externalSignal?: AbortSignal): Promise<Record<string, unknown>[]> {
@@ -279,7 +375,7 @@ export class DeeplakeApi {
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
           log(`query retry ${attempt + 1}/${MAX_RETRIES} (fetch error: ${lastError.message}) in ${delay.toFixed(0)}ms`);
-          await sleep(delay, externalSignal);
+          await this.retryWait(`fetch failed (${lastError.message})`, delay, externalSignal);
           continue;
         }
         throw lastError;
@@ -295,15 +391,16 @@ export class DeeplakeApi {
       const retryable403 =
         isSessionInsertQuery(sql) &&
         (resp.status === 401 || (resp.status === 403 && (text.length === 0 || isTransientHtml403(text))));
+      const retryableWorkerAuth = this._skipRetryDelay && (resp.status === 401 || resp.status === 403);
       // Deeplake returns HTTP 500 (not 409) when ADD COLUMN IF NOT EXISTS / CREATE
       // INDEX IF NOT EXISTS hit an already-present object. The error is
       // deterministic — retrying just burns ~4s of exponential backoff per call,
       // and SessionStart issues several of these on every run. Fail fast.
       const alreadyExists = resp.status === 500 && isDuplicateIndexError(text);
-      if (!alreadyExists && attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403)) {
+      if (!alreadyExists && attempt < MAX_RETRIES && (RETRYABLE_CODES.has(resp.status) || retryable403 || retryableWorkerAuth)) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 200;
         log(`query retry ${attempt + 1}/${MAX_RETRIES} (${resp.status}) in ${delay.toFixed(0)}ms`);
-        await sleep(delay, externalSignal);
+        await this.retryWait(`API ${resp.status}`, delay, externalSignal);
         continue;
       }
       // Surface a session-start banner for the "out of credits" case before
@@ -721,4 +818,3 @@ export class DeeplakeApi {
 export function _resetSdkStateForTesting(): void {
   _signalledBalanceExhausted = false;
 }
-

@@ -27,6 +27,7 @@ import {
 import { sessionPrune } from "./session-prune.js";
 import { loadConfig } from "../config.js";
 import { renderWhoami } from "./whoami.js";
+import { getAutoupdateEnabled, setAutoupdateEnabled } from "../user-config.js";
 
 /**
  * Dispatch one auth subcommand.
@@ -187,16 +188,15 @@ export async function runAuthCommand(args: string[]): Promise<void> {
     }
 
     case "autoupdate": {
-      if (!creds) { console.log("Not logged in."); process.exit(1); }
       const val = args[1]?.toLowerCase();
       if (val === "on" || val === "true") {
-        saveCredentials({ ...creds, autoupdate: true });
+        setAutoupdateEnabled(true);
         console.log("Autoupdate enabled. Plugin will update automatically on session start.");
       } else if (val === "off" || val === "false") {
-        saveCredentials({ ...creds, autoupdate: false });
+        setAutoupdateEnabled(false);
         console.log("Autoupdate disabled. You'll see a notice when updates are available.");
       } else {
-        const current = creds.autoupdate !== false ? "on" : "off";
+        const current = getAutoupdateEnabled() ? "on" : "off";
         console.log(`Autoupdate is currently: ${current}`);
         console.log("Usage: autoupdate [on|off]");
       }

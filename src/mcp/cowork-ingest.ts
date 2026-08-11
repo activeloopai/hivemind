@@ -35,7 +35,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { loadCredentials } from "../commands/auth.js";
 import { loadConfig, type Config } from "../config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
 import { claudeDesktopConfigDir } from "../cli/util.js";
 import { getVersion } from "../cli/version.js";
 import {
@@ -68,7 +68,7 @@ const LOCK_HEARTBEAT_MS = 20_000;
 const SUMMARY_IDLE_MS = 5 * 60_000;
 
 const DATA_NOTICE =
-  "ℹ️ Hivemind data notice: this Cowork session is being saved to your team's shared Deeplake memory " +
+  "ℹ️ Hivemind data notice: this Cowork session is being saved to your team's shared Hivemind memory " +
   "(your prompts, the assistant's responses, and tool calls) so agents and teammates can recall it later. " +
   "Everyone in your Deeplake workspace can read it. To turn capture off, set HIVEMIND_CAPTURE=false. " +
   "(This notice is shown once.)";
@@ -354,9 +354,11 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
   if (!existsSync(root)) return { skipped: "no-cowork-sessions" };
 
   const creds = loadCredentials();
-  if (!creds?.token) return { skipped: "not-authenticated" };
   const config = loadConfig();
   if (!config) return { skipped: "no-config" };
+  if ((config.storage?.kind ?? "deeplake") === "deeplake" && !creds?.token) {
+    return { skipped: "not-authenticated" };
+  }
 
   const release = tryAcquireLock();
   if (!release) return { skipped: "busy" };
@@ -405,17 +407,15 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
     }
 
     if (appendedAny) {
-      const api = new DeeplakeApi(
-        config.token,
-        config.apiUrl,
-        config.orgId,
-        config.workspaceId,
-        config.sessionsTableName,
-      );
-      await drainSessionQueues(api, {
-        sessionsTable: config.sessionsTableName,
-        queueDir: COWORK_QUEUE_DIR,
-      });
+      const api = createStorageBackend(config, config.sessionsTableName);
+      try {
+        await drainSessionQueues(api, {
+          sessionsTable: config.sessionsTableName,
+          queueDir: COWORK_QUEUE_DIR,
+        });
+      } finally {
+        await api.close();
+      }
       // Persist the line watermark immediately after the upload, before the
       // slow summarize step below. Rows carry random ids, so a crash between
       // the insert and a later saveState would replay these lines under fresh

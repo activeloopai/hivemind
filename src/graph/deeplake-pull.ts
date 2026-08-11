@@ -43,15 +43,16 @@ import { dirname, join } from "node:path";
  * (.last-build.json + latest-commit.txt) are partitioned by this id so two
  * checkouts of the same project don't overwrite each other.
  */
+import { type Config } from "../config.js";
+import { loadRoutedConfig } from "../dir-config.js";
+import { createStorageBackend } from "../storage/factory.js";
+import type { StorageBackend } from "../storage/backend.js";
+import { sqlIdent, sqlStr } from "../utils/sql.js";
+import { deriveProjectKey } from "../utils/repo-identity.js";
+
 function workTreeIdFor(cwd: string): string {
   return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
 }
-
-import { type Config } from "../config.js";
-import { loadRoutedConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
-import { sqlIdent, sqlStr } from "../utils/sql.js";
-import { deriveProjectKey } from "../utils/repo-identity.js";
 import { writeLastBuild, readLastBuild } from "./last-build.js";
 import { appendHistoryEntry } from "./history.js";
 import { computeSnapshotSha256, repoDir } from "./snapshot.js";
@@ -70,8 +71,8 @@ export type PullOutcome =
 export interface PullDeps {
   /** Override for tests. Defaults to loadConfig(). Returns null when no auth. */
   loadConfig?: () => Config | null;
-  /** Override for tests. Defaults to a real DeeplakeApi. */
-  makeApi?: (config: Config) => DeeplakeApi;
+  /** Override for tests. Defaults to the configured storage backend. */
+  makeApi?: (config: Config) => StorageBackend;
   /** Override for tests. Defaults to `git rev-parse HEAD` in `cwd`. */
   readHead?: (cwd: string) => string | null;
 }
@@ -277,14 +278,8 @@ function defaultReadHead(cwd: string): string | null {
   }
 }
 
-function defaultMakeApi(config: Config): DeeplakeApi {
-  return new DeeplakeApi(
-    config.token,
-    config.apiUrl,
-    config.orgId,
-    config.workspaceId,
-    config.tableName,
-  );
+function defaultMakeApi(config: Config): StorageBackend {
+  return createStorageBackend(config, config.tableName);
 }
 
 /**

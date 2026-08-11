@@ -31,7 +31,7 @@ import { runPush } from "../skillify/push.js";
 import { runUnpull } from "../skillify/unpull.js";
 import { loadConfig } from "../config.js";
 import { loadRoutedConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
 import { runMineLocal } from "./mine-local.js";
 import { renderSubcommandUsageBlock } from "../cli/skillify-spec.js";
 
@@ -227,9 +227,7 @@ async function pullSkills(args: string[]): Promise<void> {
     console.error("Not logged in. Run: hivemind login");
     process.exit(1);
   }
-  const api = new DeeplakeApi(
-    config.token, config.apiUrl, config.orgId, config.workspaceId, config.skillsTableName,
-  );
+  const api = createStorageBackend(config, config.skillsTableName);
   // Wrap api.query so it matches the QueryFn signature expected by runPull.
   const query = (sql: string) => api.query(sql) as Promise<Record<string, unknown>[]>;
 
@@ -290,9 +288,7 @@ async function pushSkills(args: string[]): Promise<void> {
   if (!config) {
     throw new Error("Not logged in. Run: hivemind login");
   }
-  const api = new DeeplakeApi(
-    config.token, config.apiUrl, config.orgId, config.workspaceId, config.skillsTableName,
-  );
+  const api = createStorageBackend(config, config.skillsTableName);
   const query = (sql: string) => api.query(sql) as Promise<Record<string, unknown>[]>;
   const scopeCfg = loadScopeConfig();
 

@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
 import { resolveDirConfig } from "../../dir-config.js";
-import { DeeplakeApi } from "../../deeplake-api.js";
+import { createStorageBackend } from "../../storage/factory.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
 import { log as _log } from "../../utils/debug.js";
 import { bundleDirFromImportMeta, spawnCodexWikiWorker, wikiLog } from "./spawn-wiki-worker.js";
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   if (CAPTURE) {
     try {
       const sessionsTable = config.sessionsTableName;
-      const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
+      const api = createStorageBackend(config, sessionsTable);
       const ts = new Date().toISOString();
 
       // Codex Stop doesn't include last_assistant_message, but it provides
@@ -129,7 +129,7 @@ async function main(): Promise<void> {
       const embedding = embeddingsDisabled()
         ? null
         : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");
-      const embeddingSql = embeddingSqlLiteral(embedding);
+      const embeddingSql = embeddingSqlLiteral(embedding, api.dialect);
 
       const insertSql = buildDirectSessionInsertSql(sessionsTable, {
         // Reuse the event id already embedded in the message JSON so the row PK
@@ -146,7 +146,7 @@ async function main(): Promise<void> {
         agent: "codex",
         pluginVersion: PLUGIN_VERSION,
         timestamp: ts,
-      });
+      }, api.dialect);
 
       await api.query(insertSql);
       log("stop event captured");

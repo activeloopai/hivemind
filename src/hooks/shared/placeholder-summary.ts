@@ -42,6 +42,8 @@
 
 import { sqlStr } from "../../utils/sql.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
+import type { StorageDialect } from "../../deeplake-schema.js";
+import { escapedStringPrefix } from "../../storage/sql-dialect.js";
 
 /** Minimal query surface — matches DeeplakeApi.query / the worker `query` fn. */
 export type PlaceholderQueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
@@ -56,6 +58,7 @@ export interface PlaceholderParams {
   /** Agent literal stored in the `agent` column: claude_code | codex | cursor | hermes. */
   agent: string;
   pluginVersion: string;
+  dialect?: StorageDialect;
   /** Override for the timestamp (testing). Defaults to now. */
   ts?: string;
   /** Override for randomUUID (testing). */
@@ -103,6 +106,7 @@ export function buildPlaceholderInsertSql(params: PlaceholderParams): { sql: str
   ].join("\n");
   const filename = `${sessionId}.md`;
   const sizeBytes = Buffer.byteLength(content, "utf-8");
+  const stringPrefix = escapedStringPrefix(params.dialect ?? "deeplake");
 
   // Single atomic statement: the row is created only when no row exists at this
   // path. Closes the SELECT-then-INSERT race that produced duplicate stubs
@@ -110,7 +114,7 @@ export function buildPlaceholderInsertSql(params: PlaceholderParams): { sql: str
   // existing row (placeholder or finalized) suppresses the write.
   const sql =
     `INSERT INTO "${table}" (id, path, filename, summary, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `SELECT '${uuid}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', E'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
+    `SELECT '${uuid}', '${sqlStr(summaryPath)}', '${sqlStr(filename)}', ${stringPrefix}'${sqlStr(content)}', '${sqlStr(userName)}', 'text/markdown', ` +
     `${sizeBytes}, '${sqlStr(projectName)}', '${PLACEHOLDER_DESCRIPTION}', '${sqlStr(agent)}', '${sqlStr(pluginVersion)}', '${now}', '${now}' ` +
     `WHERE NOT EXISTS (SELECT 1 FROM "${table}" WHERE path = '${sqlStr(summaryPath)}')`;
 

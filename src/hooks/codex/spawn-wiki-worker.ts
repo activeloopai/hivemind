@@ -96,10 +96,11 @@ export function spawnCodexWikiWorker(opts: SpawnOptions): void {
 
   const configFile = join(tmpDir, "config.json");
   writeFileSync(configFile, JSON.stringify({
-    apiUrl: config.apiUrl,
-    token: config.token,
-    orgId: config.orgId,
-    workspaceId: config.workspaceId,
+    storage: {
+      kind: config.storage?.kind ?? "deeplake",
+      orgId: (config.storage?.kind ?? "deeplake") === "deeplake" ? config.orgId : undefined,
+      workspaceId: (config.storage?.kind ?? "deeplake") === "deeplake" ? config.workspaceId : undefined,
+    },
     memoryTable: config.tableName,
     sessionsTable: config.sessionsTableName,
     sessionId,

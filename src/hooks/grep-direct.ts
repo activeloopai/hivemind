@@ -5,7 +5,7 @@
  * which handles dual-table SQL + session-JSON normalization + regex refinement.
  */
 
-import type { DeeplakeApi } from "../deeplake-api.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { grepBothTables, type GrepMatchParams } from "../shell/grep-core.js";
 import { capOutputForClaude } from "../utils/output-cap.js";
 import { EmbedClient } from "../embeddings/client.js";
@@ -308,7 +308,7 @@ export function parseBashGrep(cmd: string): GrepParams | null {
 
 /** Run grep via the shared dual-table core. Returns formatted grep output. */
 export async function handleGrepDirect(
-  api: DeeplakeApi,
+  api: StorageBackend,
   table: string,
   sessionsTable: string,
   params: GrepParams,

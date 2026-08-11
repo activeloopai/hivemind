@@ -1188,18 +1188,18 @@ describe("traceSql (indirect, via query() with trace env set)", () => {
     delete process.env.HIVEMIND_DEBUG;
   });
 
-  it("writes [deeplake-sql] to stderr when HIVEMIND_TRACE_SQL=1", async () => {
+  it("writes [hivemind-sql] to stderr when HIVEMIND_TRACE_SQL=1", async () => {
     process.env.HIVEMIND_TRACE_SQL = "1";
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["a"], rows: [["x"]] }));
     await makeApi().query("SELECT a FROM t");
-    const wrote = stderrSpy.mock.calls.some(c => String(c[0]).includes("[deeplake-sql]"));
+    const wrote = stderrSpy.mock.calls.some(c => String(c[0]).includes("[hivemind-sql]"));
     expect(wrote).toBe(true);
   });
 
-  it("does not write [deeplake-sql] to stderr when trace env vars are unset", async () => {
+  it("does not write [hivemind-sql] to stderr when trace env vars are unset", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ columns: ["a"], rows: [["x"]] }));
     await makeApi().query("SELECT a FROM t");
-    const wrote = stderrSpy.mock.calls.some(c => String(c[0]).includes("[deeplake-sql]"));
+    const wrote = stderrSpy.mock.calls.some(c => String(c[0]).includes("[hivemind-sql]"));
     expect(wrote).toBe(false);
   });
 });

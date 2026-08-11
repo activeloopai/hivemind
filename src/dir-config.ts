@@ -135,6 +135,13 @@ export function resolveDirConfig(
   const found = findDirConfig(cwd);
   if (!found) return { config: base, collect: true, found: null };
 
+  // A SQLite file or PostgreSQL schema is already the workspace boundary.
+  // `.hivemind` org/workspace routing is a Deeplake control-plane feature;
+  // collect:false remains provider-neutral.
+  if (base.storage && base.storage.kind !== "deeplake") {
+    return { config: base, collect: found.raw.collect !== false, found };
+  }
+
   const orgLocked = !!(envOverride ? envOverride.HIVEMIND_ORG_ID : process.env.HIVEMIND_ORG_ID);
   const wsLocked = !!(envOverride ? envOverride.HIVEMIND_WORKSPACE_ID : process.env.HIVEMIND_WORKSPACE_ID);
   const config: Config = {
@@ -143,6 +150,14 @@ export function resolveDirConfig(
     orgName: orgLocked ? base.orgName : (found.raw.orgName ?? found.raw.orgId ?? base.orgName),
     workspaceId: wsLocked ? base.workspaceId : (found.raw.workspaceId ?? base.workspaceId),
   };
+  if (config.storage?.kind === "deeplake") {
+    config.storage = {
+      ...config.storage,
+      orgId: config.orgId,
+      orgName: config.orgName,
+      workspaceId: config.workspaceId,
+    };
+  }
   return { config, collect: found.raw.collect !== false, found };
 }
 

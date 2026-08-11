@@ -1,4 +1,4 @@
-import type { DeeplakeApi } from "../deeplake-api.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { sqlLike } from "../utils/sql.js";
 import { type GrepParams, handleGrepDirect, parseBashGrep } from "./grep-direct.js";
 import { normalizeContent, refineGrepMatches } from "../shell/grep-core.js";
@@ -411,7 +411,7 @@ interface ExecuteCompiledBashDeps {
 }
 
 export async function executeCompiledBashCommand(
-  api: DeeplakeApi,
+  api: StorageBackend,
   memoryTable: string,
   sessionsTable: string,
   cmd: string,

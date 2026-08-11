@@ -74,17 +74,13 @@ describe.skipIf(!bundleBuilt)(
         expect(r.status).toBe(0);
       });
 
-      it("graph exits 1 with a friendly user message, not an uncaught exception", () => {
+      it("graph help remains available without the optional parser stack", () => {
         const r = runCli(["graph"]);
-        // Must be a handled exit — process.exit(1), not an unhandled crash.
-        expect(r.status).toBe(1);
-        // The error message must mention tree-sitter so the user knows why.
-        expect(r.stderr).toContain("tree-sitter");
-        // Must NOT be Node.js's raw ERR_MODULE_NOT_FOUND (which would print a
-        // full stack trace and exit(1) via uncaughtException — a crash, not a
-        // graceful degradation).
+        // Only `graph build` needs tree-sitter. Help, diff, and history stay
+        // usable because the parser module is imported inside the build path.
+        expect(r.status).toBe(0);
+        expect(r.stdout).toContain("hivemind graph");
         expect(r.stderr).not.toContain("ERR_MODULE_NOT_FOUND");
-        expect(r.stderr).not.toContain("at node:internal");
       });
     });
   },

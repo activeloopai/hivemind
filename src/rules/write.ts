@@ -14,6 +14,8 @@ import { randomUUID } from "node:crypto";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
 import type { RuleRow } from "./read.js";
 import { getRuleLatest } from "./read.js";
+import type { StorageDialect } from "../deeplake-schema.js";
+import { escapedStringPrefix } from "../storage/sql-dialect.js";
 
 export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
 
@@ -85,6 +87,7 @@ export async function insertRule(
   query: QueryFn,
   tableName: string,
   input: InsertRuleInput,
+  dialect: StorageDialect = "deeplake",
 ): Promise<WriteResult> {
   assertValidText(input.text);
   const safe = sqlIdent(tableName);
@@ -100,7 +103,7 @@ export async function insertRule(
     `VALUES (` +
     `'${sqlStr(rowId)}', ` +
     `'${sqlStr(ruleId)}', ` +
-    `E'${sqlStr(input.text)}', ` +
+    `${escapedStringPrefix(dialect)}'${sqlStr(input.text)}', ` +
     `'team', ` +
     `'active', ` +
     `'${sqlStr(input.assigned_by)}', ` +
@@ -122,6 +125,7 @@ export async function editRule(
   query: QueryFn,
   tableName: string,
   input: EditRuleInput,
+  dialect: StorageDialect = "deeplake",
 ): Promise<WriteResult> {
   const previous = await getRuleLatest(query, tableName, input.rule_id);
   if (!previous) {
@@ -133,7 +137,7 @@ export async function editRule(
     assigned_by: input.assigned_by,
     agent: input.agent,
     plugin_version: input.plugin_version,
-  });
+  }, dialect);
 }
 
 /**
@@ -146,8 +150,9 @@ export async function markRuleDone(
   query: QueryFn,
   tableName: string,
   input: { rule_id: string; assigned_by: string; agent?: string; plugin_version?: string },
+  dialect: StorageDialect = "deeplake",
 ): Promise<WriteResult> {
-  return editRule(query, tableName, { ...input, status: "done" });
+  return editRule(query, tableName, { ...input, status: "done" }, dialect);
 }
 
 interface AppendInput {
@@ -163,6 +168,7 @@ async function appendVersion(
   tableName: string,
   previous: RuleRow,
   next: AppendInput,
+  dialect: StorageDialect,
 ): Promise<WriteResult> {
   assertValidText(next.text);
   const safe = sqlIdent(tableName);
@@ -178,7 +184,7 @@ async function appendVersion(
     `VALUES (` +
     `'${sqlStr(rowId)}', ` +
     `'${sqlStr(previous.rule_id)}', ` +
-    `E'${sqlStr(next.text)}', ` +
+    `${escapedStringPrefix(dialect)}'${sqlStr(next.text)}', ` +
     `'team', ` +
     `'${sqlStr(next.status)}', ` +
     `'${sqlStr(next.assigned_by)}', ` +

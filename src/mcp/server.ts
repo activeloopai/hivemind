@@ -17,9 +17,11 @@
 import * as z from "zod/v3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { loadCredentials } from "../commands/auth.js";
 import { loadRoutedConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { loadCredentials } from "../commands/auth.js";
+import { readUserConfig } from "../user-config.js";
+import { createStorageBackend } from "../storage/factory.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { isMissingTableError } from "../deeplake-schema.js";
 import { sqlStr, sqlLike } from "../utils/sql.js";
 import { searchDeeplakeTables, searchDocs, buildGrepSearchOptions, normalizeContent, TRUNCATION_NOTICE, type GrepMatchParams } from "../shell/grep-core.js";
@@ -27,25 +29,39 @@ import { deriveProjectKey } from "../utils/repo-identity.js";
 import { makeQueryEmbedder } from "../docs/embed.js";
 import { getVersion } from "../cli/version.js";
 import { startCoworkIngestLoop, coworkDataNoticeOnce } from "./cowork-ingest.js";
+import { textExpression } from "../storage/sql-dialect.js";
 
 interface ServerContext {
-  api: DeeplakeApi;
+  api: StorageBackend;
   memoryTable: string;
   sessionsTable: string;
   docsTable: string;
 }
 
+let cachedContext: ServerContext | null = null;
+
 function getContext(): ServerContext | { error: string } {
-  const creds = loadCredentials();
-  if (!creds?.token) {
-    return { error: "Not authenticated. Run `hivemind login` to sign in to Deeplake." };
-  }
+  if (cachedContext) return cachedContext;
   const config = loadRoutedConfig();
   if (!config) {
-    return { error: "Hivemind config could not be loaded — credentials present but invalid." };
+    const provider = process.env.HIVEMIND_BACKEND ?? readUserConfig().storage?.provider ?? "deeplake";
+    if (provider === "deeplake" && !loadCredentials()) {
+      return { error: "Not authenticated. Run `hivemind login` first." };
+    }
+    if (provider === "deeplake") {
+      return { error: "Hivemind config could not be loaded." };
+    }
+    return { error: "Hivemind storage is not configured. Run `hivemind backend status`." };
   }
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
-  return { api, memoryTable: config.tableName, sessionsTable: config.sessionsTableName, docsTable: config.docsTableName };
+  // Legacy callers supplied a Deeplake-shaped Config after a separate
+  // credentials check. Preserve that contract while provider-aware configs
+  // can authenticate from either credentials or environment variables.
+  if (!config.storage && !loadCredentials()) {
+    return { error: "Not authenticated. Run `hivemind login` first." };
+  }
+  const api = createStorageBackend(config, config.tableName);
+  cachedContext = { api, memoryTable: config.tableName, sessionsTable: config.sessionsTableName, docsTable: config.docsTableName };
+  return cachedContext;
 }
 
 function errorResult(text: string): { content: Array<{ type: "text"; text: string }> } {
@@ -147,7 +163,7 @@ server.registerTool(
     opts.queryEmbedding = await makeQueryEmbedder()(query);
 
     try {
-      const rows = await searchDocs((sql) => ctx.api.query(sql), ctx.docsTable, opts);
+      const rows = await searchDocs((sql) => ctx.api.query(sql), ctx.docsTable, opts, ctx.api.dialect);
       if (rows.length === 0) return errorResult(`No docs match "${query}".`);
       const lines = rows.map(r => `[${r.path}]\n${r.content.slice(0, 600)}`);
       return { content: [{ type: "text", text: lines.join("\n\n---\n\n") }] };
@@ -177,7 +193,7 @@ server.registerTool(
 
     const isSession = path.startsWith("/sessions/");
     const table = isSession ? ctx.sessionsTable : ctx.memoryTable;
-    const column = isSession ? "message::text" : "summary::text";
+    const column = textExpression(isSession ? "message" : "summary", ctx.api.dialect);
 
     try {
       const sql = `SELECT path, ${column} AS content FROM "${table}" WHERE path = '${sqlStr(path)}' LIMIT 200`;

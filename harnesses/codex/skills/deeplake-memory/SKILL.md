@@ -87,7 +87,7 @@ Only use bash commands (cat, ls, grep, echo, jq, head, tail, sed, awk, etc.) to 
 
 ## Limits
 
-Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
+Do NOT spawn subagents to read Hivemind memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 ## Getting Started
 

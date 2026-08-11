@@ -11,7 +11,7 @@ import { readStdin } from "../utils/stdin.js";
 import { type Config } from "../config.js";
 import { resolveCaptureConfig } from "./shared/dir-gate.js";
 import { redactSecrets } from "./shared/redact.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
 import { projectNameFromCwd } from "../utils/project-name.js";
 import { log as _log } from "../utils/debug.js";
 import { buildSessionPath } from "../utils/session-path.js";
@@ -98,7 +98,7 @@ async function main(): Promise<void> {
   }
 
   const sessionsTable = config.sessionsTableName;
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
+  const api = createStorageBackend(config, sessionsTable);
 
   // Build the event entry
   const ts = new Date().toISOString();
@@ -190,7 +190,7 @@ async function main(): Promise<void> {
   const embedding = embeddingsDisabled()
     ? null
     : await new EmbedClient({ daemonEntry: resolveEmbedDaemonPath() }).embed(line, "document");
-  const embeddingSql = embeddingSqlLiteral(embedding);
+  const embeddingSql = embeddingSqlLiteral(embedding, api.dialect);
 
   const insertSql = buildDirectSessionInsertSql(sessionsTable, {
     // Reuse the event id already embedded in the message JSON so the row PK
@@ -207,7 +207,7 @@ async function main(): Promise<void> {
     agent: "claude_code",
     pluginVersion: PLUGIN_VERSION,
     timestamp: ts,
-  });
+  }, api.dialect);
 
   try {
     await api.query(insertSql);

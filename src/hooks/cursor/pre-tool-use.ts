@@ -29,7 +29,7 @@
 import { readStdin } from "../../utils/stdin.js";
 import { deriveProjectKey } from "../../utils/repo-identity.js";
 import { loadRoutedConfig } from "../../dir-config.js";
-import { DeeplakeApi } from "../../deeplake-api.js";
+import { createStorageBackend } from "../../storage/factory.js";
 import { log as _log } from "../../utils/debug.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 import { touchesMemory, rewritePaths } from "../memory-path-utils.js";
@@ -88,13 +88,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const api = new DeeplakeApi(
-    config.token,
-    config.apiUrl,
-    config.orgId,
-    config.workspaceId,
-    config.tableName,
-  );
+  const api = createStorageBackend(config, config.tableName);
 
   // Docs VFS dispatch — a cat of /docs/* (browse or find/) answered from the
   // docs table, same rewrite trick as the graph dispatch above. Runs before the
@@ -104,7 +98,7 @@ async function main(): Promise<void> {
   // without a decision and let a memory-touching command reach the host shell.
   let docsBody: string | null = null;
   try {
-    docsBody = await tryDocsRead(rewritten, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+    docsBody = await tryDocsRead(rewritten, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(input.cwd ?? process.cwd()).key, dialect: api.dialect });
   } catch (err) {
     log(`docs vfs failed: ${(err as Error).message}`);
     docsBody = "(docs temporarily unavailable — try again)";

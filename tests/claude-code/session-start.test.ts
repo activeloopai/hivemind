@@ -128,10 +128,10 @@ describe("claude-code integration: session-start.js (sync hook)", () => {
     expect(typeof parsed.hookSpecificOutput.additionalContext).toBe("string");
   });
 
-  it("additionalContext contains DEEPLAKE MEMORY", () => {
+  it("additionalContext contains HIVEMIND MEMORY", () => {
     const raw = runHook("session-start.js", baseInput);
     const parsed = JSON.parse(raw);
-    expect(parsed.hookSpecificOutput.additionalContext).toContain("DEEPLAKE MEMORY");
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("HIVEMIND MEMORY");
   });
 
   it("contains login status text", () => {

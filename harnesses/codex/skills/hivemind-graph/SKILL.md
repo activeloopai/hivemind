@@ -1,6 +1,6 @@
 ---
 name: hivemind-graph
-description: Query the local code graph (functions, classes, calls, imports) through the Deeplake mount at memory/graph/. Use when the user asks structural questions about the codebase — "what calls X?", "what does Y import?", "where is Z defined?", "what is the architecture / which subsystems exist?". The graph is an AST-derived map of the repo, queried as files (no build needed — it rebuilds automatically).
+description: Query the local code graph (functions, classes, calls, imports) through the Hivemind memory mount at memory/graph/. Use when the user asks structural questions about the codebase — "what calls X?", "what does Y import?", "where is Z defined?", "what is the architecture / which subsystems exist?". The graph is an AST-derived map of the repo, queried as files (no build needed — it rebuilds automatically).
 allowed-tools: Bash
 ---
 
@@ -9,7 +9,7 @@ allowed-tools: Bash
 A deterministic, AST-derived map of the current repository — every function,
 class, method, interface, type, enum, const, and module, plus the edges between
 them (`calls`, `imports`, `extends`, `implements`, `method_of`). It is queried as
-synthesized files under the Deeplake mount; there are no real files on disk and
+synthesized files under the Hivemind memory mount; there are no real files on disk and
 no network call in the read path.
 
 The graph **builds and refreshes automatically** (on Stop / SessionEnd, gated by

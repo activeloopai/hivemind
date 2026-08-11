@@ -3,7 +3,7 @@
 /**
  * SessionStart hook:
  * 1. If no credentials → run device flow login (opens browser)
- * 2. Inject Deeplake memory instructions into Claude's context
+ * 2. Inject Hivemind memory instructions into Claude's context
  */
 
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,8 @@ import { homedir } from "node:os";
 import { loadCredentials, saveCredentials, healDriftedOrgToken } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
 import { resolveDirConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
 import { getInstalledVersion } from "../utils/version-check.js";
@@ -40,12 +41,12 @@ const __bundleDir = dirname(fileURLToPath(import.meta.url));
 // — no per-agent path resolution needed. Marketplace-only installs without
 // `npm i -g @deeplake/hivemind` are unsupported (documented in README + RELEASE_CHECKLIST).
 
-const context = `DEEPLAKE MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
+const context = `HIVEMIND MEMORY: You have TWO memory sources. ALWAYS check BOTH when the user asks you to recall, remember, or look up ANY information:
 
 1. Your built-in memory (~/.claude/) — personal per-project notes
-2. Deeplake global memory (~/.deeplake/memory/) — global memory shared across all sessions, users, and agents in the org
+2. Hivemind shared memory (~/.deeplake/memory/) — persistent memory for the selected backend workspace
 
-Deeplake memory has THREE tiers — pick the right one for the question:
+Hivemind memory has THREE tiers — pick the right one for the question:
 1. ~/.deeplake/memory/index.md   — auto-generated index, top 50 most-recently-updated entries with \`Created\` + \`Last Updated\` + \`Project\` + \`Description\` columns. ~5 KB. **For "what's recent / who did X this week / since <date>" queries, START HERE** and trust the \`Last Updated\` column over any \`Started:\` line in summary bodies.
 2. ~/.deeplake/memory/summaries/ — condensed wiki summaries per session (~3 KB each). For keyword/topic recall, search these.
 3. ~/.deeplake/memory/sessions/  — raw full-dialogue JSONL (~5 KB each). FALLBACK only — use when summaries don't contain the exact quote/turn you need.
@@ -90,7 +91,7 @@ Embeddings (semantic memory search) — opt-in, persisted in ~/.deeplake/config.
 
 IMPORTANT: Only use bash commands (cat, ls, grep, echo, jq, head, tail, etc.) to interact with ~/.deeplake/memory/. Do NOT use python, python3, node, curl, or other interpreters — they are not available in the memory filesystem. Avoid bash brace expansions like \`{1..10}\` (not fully supported); spell out paths explicitly. Bash output is capped at 10MB total — avoid \`for f in *.json; do cat $f\` style loops on the whole sessions dir.
 
-LIMITS: Do NOT spawn subagents to read deeplake memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
+LIMITS: Do NOT spawn subagents to read Hivemind memory. If a file returns empty after 2 attempts, skip it and move on. Report what you found rather than exhaustively retrying.
 
 Debugging: Set HIVEMIND_DEBUG=1 to enable verbose logging to ~/.deeplake/hook-debug.log`;
 
@@ -103,10 +104,10 @@ const { log: wikiLog } = makeWikiLogger(join(HOME, ".claude", "hooks"));
  * finalized+embedded row is never reverted to an 'in progress' stub by a
  * resumed/concurrent SessionStart (the production clobber).
  */
-async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string, pluginVersion: string): Promise<void> {
+async function createPlaceholder(api: StorageBackend, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string, pluginVersion: string): Promise<void> {
   await createPlaceholderSummary(
     (sql) => api.query(sql),
-    { table, sessionId, cwd, userName, orgName, workspaceId, agent: "claude_code", pluginVersion },
+    { table, sessionId, cwd, userName, orgName, workspaceId, agent: "claude_code", pluginVersion, dialect: api.dialect },
     wikiLog,
   );
 }
@@ -202,6 +203,7 @@ async function main(): Promise<void> {
   // back to the global identity when no `.hivemind` applies.
   const sessionCwd = input.cwd ?? process.cwd();
   const baseConfig = loadConfig();
+  const storageAvailable = Boolean(baseConfig && ((baseConfig.storage?.kind ?? "deeplake") !== "deeplake" || creds?.token));
   const dirRes = baseConfig ? resolveDirConfig(baseConfig, sessionCwd) : null;
   const collectHere = captureEnabled && (dirRes?.collect ?? true);
 
@@ -217,13 +219,13 @@ async function main(): Promise<void> {
   log(`autopull: pulled=${pullResult.pulled} skipped=${pullResult.skipped}`);
 
   let rulesBlock = "";
-  if (input.session_id && creds?.token) {
+  if (input.session_id && storageAvailable) {
     try {
       const config = dirRes?.config;
       if (config) {
         const table = config.tableName;
         const sessionsTable = config.sessionsTableName;
-        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+        const api = createStorageBackend(config, table);
         if (collectHere) {
           await api.ensureTable();
           await api.ensureSessionsTable(sessionsTable);
@@ -319,20 +321,22 @@ async function main(): Promise<void> {
   // the worker is fully detached.
   // Gate on creds: pullSnapshot would early-return "skipped-no-auth"
   // anyway, so spawning a worker without auth is wasted process churn.
-  if (creds?.token) spawnGraphPullWorker(input.cwd ?? process.cwd(), __bundleDir);
+  if (storageAvailable) spawnGraphPullWorker(input.cwd ?? process.cwd(), __bundleDir);
   const graphLine = graphContextLine(input.cwd ?? process.cwd());
   const graphNote = graphLine ?? "";
+
+  // Effective provider/identity after any Deeplake-only directory routing.
+  const effConfig = dirRes?.config ?? baseConfig;
 
   // Docs wiki note — the agent has no other way to learn the wiki exists.
   // Gated on the same local consent registry as auto sync (no network),
   // and worded on-demand, never wiki-first (see docs-context.ts).
-  const docsNote = creds?.token
-    ? docsWikiContextNote(creds.orgId ?? "", deriveProjectKey(input.cwd ?? process.cwd()).key)
+  const docsNote = storageAvailable && effConfig
+    ? docsWikiContextNote(effConfig.orgId ?? "", deriveProjectKey(input.cwd ?? process.cwd()).key)
     : "";
 
   // Disclose the EFFECTIVE identity (after any `.hivemind` overlay), so a
   // directory that routes elsewhere (or opts out) is never silent.
-  const effConfig = dirRes?.config ?? baseConfig;
   // NOT gated on `dirRes.collect`: the identity overlay now applies to reads
   // whether or not capture is on, so a `collect:false` directory can still be
   // routed — and must say so.
@@ -343,10 +347,13 @@ async function main(): Promise<void> {
   // `routed` covers reads AND capture — both resolve through the same overlay —
   // so the disclosure must never imply one moved without the other.
   const routedNote = routed ? ` · routed by ${dirRes?.found?.path}` : "";
-  const identityLine = dirRes && !dirRes.collect
-    ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search uses org: ${effOrg} (workspace: ${effWs})${routedNote}`
-    : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routedNote}`;
-  const baseContext = creds?.token
+  const provider = effConfig?.storage?.kind ?? "deeplake";
+  const identityLine = provider === "deeplake"
+    ? (dirRes && !dirRes.collect
+        ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search uses org: ${effOrg} (workspace: ${effWs})${routedNote}`
+        : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routedNote}`)
+    : `Hivemind memory backend: ${provider}${dirRes && !dirRes.collect ? ` · capture disabled by ${dirRes.found?.path}` : ""}`;
+  const baseContext = storageAvailable && effConfig
     ? `${resolvedContext}\n\n${identityLine}${updateNotice}`
     : `${resolvedContext}\n\nNot logged in to Deeplake; memory search is unavailable this session.${localMinedNote}${updateNotice}`;
   // Append the rules block when there's something to show, then

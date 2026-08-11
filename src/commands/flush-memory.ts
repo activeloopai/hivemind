@@ -21,7 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 
 import { type Config } from "../config.js";
 import { loadRoutedConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
 import { uploadSummary, type QueryFn, type UploadParams, type UploadResult } from "../hooks/upload-summary.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
@@ -84,7 +84,7 @@ export function defaultDeps(pluginVersion?: string): FlushDeps {
     loadConfig: loadRoutedConfig,
     makeQuery: (config) =>
       (sql: string) =>
-        new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName).query(sql),
+        createStorageBackend(config, config.tableName).query(sql),
     upload: uploadSummary,
     embed: defaultEmbed,
     pluginVersion,

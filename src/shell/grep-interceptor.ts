@@ -1,4 +1,4 @@
-import type { DeeplakeApi } from "../deeplake-api.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { defineCommand } from "just-bash";
 import yargsParser from "yargs-parser";
 import type { DeeplakeFs } from "./deeplake-fs.js";
@@ -63,7 +63,7 @@ const MAX_FALLBACK_CANDIDATES = 500;
  * use its own built-in grep.
  */
 export function createGrepCommand(
-  client: DeeplakeApi,
+  client: StorageBackend,
   fs: DeeplakeFs,
   table: string,
   sessionsTable?: string,

@@ -47,10 +47,7 @@ export function spawnSkillifyWorker(opts: SkillifySpawnOptions): void {
   const { config, cwd, projectKey, project, bundleDir, agent, scopeConfig, currentSessionId, reason } = opts;
 
   const tmpDir = join(tmpdir(), `deeplake-skillify-${projectKey}-${Date.now()}`);
-  // mode 0o700: tmpDir holds config.json with the user's full-org Deeplake API token.
-  // The file itself is written 0o600 below, but a world-readable directory still
-  // leaks the file's existence + name to other users on the host. Mirror of the
-  // Pi extension's spawnPiSkillifyWorker which already uses 0o700.
+  // Worker handoffs contain provider metadata, but no credentials or database URL.
   mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
 
   // Resolve the gate CLI for this agent up front (faster cold-start in the
@@ -58,14 +55,13 @@ export function spawnSkillifyWorker(opts: SkillifySpawnOptions): void {
   const gateBin = findAgentBin(agent as Agent);
 
   const configFile = join(tmpDir, "config.json");
-  // The config file embeds the user's Deeplake API token (full org scope).
-  // Write with mode 0o600 so other users on the same host can't read it
-  // during the worker's lifetime (typically 30-60s before cleanup).
+  // Keep the file private because it still carries local paths and project data.
   writeFileSync(configFile, JSON.stringify({
-    apiUrl: config.apiUrl,
-    token: config.token,
-    orgId: config.orgId,
-    workspaceId: config.workspaceId,
+    storage: {
+      kind: config.storage?.kind ?? "deeplake",
+      orgId: (config.storage?.kind ?? "deeplake") === "deeplake" ? config.orgId : undefined,
+      workspaceId: (config.storage?.kind ?? "deeplake") === "deeplake" ? config.workspaceId : undefined,
+    },
     sessionsTable: config.sessionsTableName,
     skillsTable: config.skillsTableName,
     userName: config.userName,

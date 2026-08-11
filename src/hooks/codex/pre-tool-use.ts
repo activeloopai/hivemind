@@ -28,7 +28,8 @@ import { spawnSync } from "node:child_process";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
 import { resolveDirConfig } from "../../dir-config.js";
-import { DeeplakeApi } from "../../deeplake-api.js";
+import { createStorageBackend } from "../../storage/factory.js";
+import type { StorageBackend } from "../../storage/backend.js";
 import { sqlLike } from "../../utils/sql.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 import { tryGraphRead } from "../../graph/graph-command.js";
@@ -102,7 +103,7 @@ function buildIndexContent(rows: Record<string, unknown>[]): string {
 
 interface CodexPreToolDeps {
   config?: ReturnType<typeof loadConfig>;
-  createApi?: (table: string, config: NonNullable<ReturnType<typeof loadConfig>>) => DeeplakeApi;
+  createApi?: (table: string, config: NonNullable<ReturnType<typeof loadConfig>>) => StorageBackend;
   executeCompiledBashCommandFn?: typeof executeCompiledBashCommand;
   readVirtualPathContentsFn?: typeof readVirtualPathContents;
   readVirtualPathContentFn?: typeof readVirtualPathContent;
@@ -122,13 +123,7 @@ export async function processCodexPreToolUse(
 ): Promise<CodexPreToolDecision> {
   const {
     config: baseConfig = loadConfig(),
-    createApi = (table, activeConfig) => new DeeplakeApi(
-      activeConfig.token,
-      activeConfig.apiUrl,
-      activeConfig.orgId,
-      activeConfig.workspaceId,
-      table,
-    ),
+    createApi = (table, activeConfig) => createStorageBackend(activeConfig, table),
     executeCompiledBashCommandFn = executeCompiledBashCommand,
     readVirtualPathContentsFn = readVirtualPathContents,
     readVirtualPathContentFn = readVirtualPathContent,
@@ -226,7 +221,7 @@ export async function processCodexPreToolUse(
       const lsDocs = rewritten.match(/^ls\s+(?:-[a-zA-Z]+\s+)*\/docs\/?\s*$/);
       if (lsDocs) {
         logFn("docs vfs intercept: ls /docs");
-        const r = await handleDocsVfs("", (sql) => api.query(sql), process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName, { project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+        const r = await handleDocsVfs("", (sql) => api.query(sql), process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName, { project: deriveProjectKey(input.cwd ?? process.cwd()).key, dialect: api.dialect });
         const body = r.kind === "ok" ? r.body : "(docs unavailable)";
         return { action: "block", output: body, rewrittenCommand: rewritten };
       }
@@ -295,7 +290,7 @@ export async function processCodexPreToolUse(
         logFn(`docs vfs intercept: ${virtualPath}`);
         const docsTable = process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName;
         const sub = virtualPath === "/docs" ? "" : virtualPath.slice("/docs/".length);
-        const r = await handleDocsVfs(sub, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+        const r = await handleDocsVfs(sub, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(input.cwd ?? process.cwd()).key, dialect: api.dialect });
         const body = r.kind === "ok" ? r.body : `${virtualPath}: No such file or directory`;
         return { action: "block", output: body, rewrittenCommand: rewritten };
       }

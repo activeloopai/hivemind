@@ -18,6 +18,7 @@ import { drainSessionStart, registerRule } from "../notifications/index.js";
 import { bumpSessionCount } from "../notifications/state.js";
 import { referralInviteRule } from "../notifications/rules/referral-invite.js";
 import { log as _log } from "../utils/debug.js";
+import { loadConfig } from "../config.js";
 
 const log = (msg: string) => _log("session-notifications", msg);
 
@@ -60,7 +61,8 @@ async function main(): Promise<void> {
   // out the first sessions.
   const sessionCount = bumpSessionCount(sessionId);
 
-  const creds = loadCredentials();
+  const config = loadConfig();
+  const creds = config?.storage?.kind && config.storage.kind !== "deeplake" ? null : loadCredentials();
   await drainSessionStart({ agent: "claude-code", creds, sessionId, source, sessionCount });
 }
 

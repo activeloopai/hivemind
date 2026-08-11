@@ -105,9 +105,10 @@ export interface DetectedPlatform {
 // Claude Code CLI). Cowork reads MCP servers from claude_desktop_config.json
 // inside this dir, shared with Claude Desktop chat.
 export function claudeDesktopConfigDir(): string {
-  if (process.platform === "darwin") return join(HOME, "Library", "Application Support", "Claude");
-  if (process.platform === "win32") return join(process.env.APPDATA ?? join(HOME, "AppData", "Roaming"), "Claude");
-  return join(HOME, ".config", "Claude");
+  const home = homedir();
+  if (process.platform === "darwin") return join(home, "Library", "Application Support", "Claude");
+  if (process.platform === "win32") return join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "Claude");
+  return join(home, ".config", "Claude");
 }
 
 // Hivemind's value is bidirectional shared memory — every supported agent

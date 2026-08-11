@@ -94,6 +94,24 @@ jobs:
     name: Typecheck and Test
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: hivemind_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d hivemind_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      HIVEMIND_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/hivemind_test
+
     steps:
       - uses: actions/checkout@v6.0.2
         with:

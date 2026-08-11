@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
@@ -33,9 +33,12 @@ beforeEach(() => {
   writeFileSync(join(tmpPkg, "package.json"), JSON.stringify({ version: "5.5.5" }));
 
   setFakeHome(tmpHome);
-  // Linux/macOS test runners: config dir is ~/.config/Claude. (On Windows CI
-  // os.homedir() + the helper keep this under tmpHome too.)
-  configPath = join(tmpHome, ".config", "Claude", "claude_desktop_config.json");
+  const configDir = process.platform === "darwin"
+    ? join(tmpHome, "Library", "Application Support", "Claude")
+    : process.platform === "win32"
+      ? join(tmpHome, "AppData", "Roaming", "Claude")
+      : join(tmpHome, ".config", "Claude");
+  configPath = join(configDir, "claude_desktop_config.json");
   vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 });
@@ -81,7 +84,7 @@ describe("installCowork", () => {
 
   it("merges non-destructively — preserves other servers and top-level keys", async () => {
     if (process.platform === "win32") return;
-    mkdirSync(join(tmpHome, ".config", "Claude"), { recursive: true });
+    mkdirSync(dirname(configPath), { recursive: true });
     writeFileSync(
       configPath,
       JSON.stringify({
@@ -112,7 +115,7 @@ describe("installCowork", () => {
 
   it("refuses to clobber a malformed config and surfaces a clear error", async () => {
     if (process.platform === "win32") return;
-    mkdirSync(join(tmpHome, ".config", "Claude"), { recursive: true });
+    mkdirSync(dirname(configPath), { recursive: true });
     writeFileSync(configPath, "{ not valid json ");
 
     const { installCowork } = await importCowork();
@@ -129,7 +132,7 @@ describe("installCowork", () => {
 describe("uninstallCowork", () => {
   it("removes only the hivemind entry, preserving other servers", async () => {
     if (process.platform === "win32") return;
-    mkdirSync(join(tmpHome, ".config", "Claude"), { recursive: true });
+    mkdirSync(dirname(configPath), { recursive: true });
     writeFileSync(
       configPath,
       JSON.stringify({
@@ -152,7 +155,7 @@ describe("uninstallCowork", () => {
 
   it("deletes the file when hivemind was its only content", async () => {
     if (process.platform === "win32") return;
-    mkdirSync(join(tmpHome, ".config", "Claude"), { recursive: true });
+    mkdirSync(dirname(configPath), { recursive: true });
     writeFileSync(
       configPath,
       JSON.stringify({ mcpServers: { hivemind: { command: "node", args: ["/x"] } } }),

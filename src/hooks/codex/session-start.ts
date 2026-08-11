@@ -21,12 +21,13 @@ import { log as _log } from "../../utils/debug.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
 import { autoPullSkills } from "../../skillify/auto-pull.js";
 import { spawnGraphPullWorker } from "../../graph/spawn-pull-worker.js";
+import { loadConfig } from "../../config.js";
 const log = (msg: string) => _log("codex-session-start", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
 // Codex DOES NOT have a model-only context channel for SessionStart hooks: any
 // `additionalContext` we emit is rendered as a `hook context: <text>` history
-// cell, user-visible. The big DEEPLAKE MEMORY tier doc + hivemind/skillify
+// cell, user-visible. The big HIVEMIND MEMORY tier doc + hivemind/skillify
 // command list that Claude Code's hook injects via `additionalContext` would
 // clobber the Codex UI every session, so we omit it entirely here. Codex's
 // skill autoloader already exposes the hivemind/* skills as Skill tool entries,
@@ -48,6 +49,8 @@ async function main(): Promise<void> {
   const input = await readStdin<CodexSessionStartInput>();
 
   let creds = loadCredentials();
+  const config = loadConfig();
+  const storageAvailable = Boolean(creds?.token || (config?.storage && config.storage.kind !== "deeplake"));
 
   if (!creds?.token) {
     log("no credentials found — run auth login to authenticate");
@@ -115,7 +118,7 @@ async function main(): Promise<void> {
   //     there is no model-only path. `suppressOutput: true` is parsed but
   //     ignored for SessionStart, so we can't hide it either.
   // Practical consequence: keep additionalContext MINIMAL on Codex. The
-  // bulky DEEPLAKE MEMORY tier doc + hivemind/skillify command list that
+  // bulky HIVEMIND MEMORY tier doc + hivemind/skillify command list that
   // claude-code's hook injects via `context` would clobber the Codex UI
   // every session. Codex's skill autoloader already exposes hivemind/skillify
   // command surfaces via per-skill SKILL.md files; the model can discover
@@ -141,13 +144,16 @@ async function main(): Promise<void> {
   // exit is wasted process churn. The check also keeps the codex
   // session-start "spawn must not fire when unauthenticated" contract
   // (tests/codex/codex-session-start-hook.test.ts).
-  if (creds?.token) spawnGraphPullWorker(input.cwd, __bundleDir);
+  if (storageAvailable) spawnGraphPullWorker(input.cwd, __bundleDir);
 
-  const additionalContext = creds?.token
-    ? `Hivemind: logged in as org ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"}).${versionNotice}`
+  const provider = config?.storage?.kind ?? "deeplake";
+  const additionalContext = storageAvailable
+    ? (provider === "deeplake"
+        ? `Hivemind: logged in as org ${creds?.orgName ?? creds?.orgId} (workspace: ${creds?.workspaceId ?? "default"}).${versionNotice}`
+        : `Hivemind memory backend: ${provider}.${versionNotice}`)
     : `Hivemind: not logged in. Run \`hivemind login\` to enable shared memory + skill sharing.${versionNotice}`;
 
-  const systemMessage = (!creds?.token && localMined > 0)
+  const systemMessage = (!storageAvailable && localMined > 0)
     ? `💡 ${localMined} ${skillNoun} mined from your local sessions live in ~/.claude/skills/. Run 'hivemind login' to share them with your team.`
     : undefined;
   const output: Record<string, unknown> = {

@@ -27,70 +27,110 @@
 
 import { sqlIdent, sqlStr } from "./utils/sql.js";
 
+export type LogicalColumnType = "text" | "integer" | "timestamp" | "json" | "vector";
+export type StorageDialect = "deeplake" | "sqlite" | "postgres";
+
 export interface ColumnDef {
   /** Bare column identifier, e.g. `contributors`. */
   name: string;
-  /** Column SQL minus the name, e.g. `TEXT NOT NULL DEFAULT '[]'`. */
-  sql: string;
+  /** Provider-neutral storage type. */
+  type: LogicalColumnType;
+  /** Defaults to true. */
+  nullable?: boolean;
+  /** Logical default value. Omitted columns have no DEFAULT clause. */
+  default?: string | number;
+  /**
+   * Compatibility rendering for existing callers and tests. New code should
+   * use renderColumnSql() with an explicit dialect.
+   */
+  readonly sql: string;
+}
+
+function column(
+  name: string,
+  type: LogicalColumnType,
+  options: { nullable?: boolean; default?: string | number } = {},
+): ColumnDef {
+  const logical = { name, type, ...options };
+  return Object.freeze({ ...logical, sql: renderColumnSql(logical, "deeplake") });
+}
+
+function defaultSql(value: string | number): string {
+  return typeof value === "number" ? String(value) : `'${sqlStr(value)}'`;
+}
+
+export function renderColumnSql(
+  col: Pick<ColumnDef, "type" | "nullable" | "default">,
+  dialect: StorageDialect,
+): string {
+  const typeSql: Record<StorageDialect, Record<LogicalColumnType, string>> = {
+    deeplake: { text: "TEXT", integer: "BIGINT", timestamp: "TIMESTAMP", json: "JSONB", vector: "FLOAT4[]" },
+    postgres: { text: "TEXT", integer: "BIGINT", timestamp: "TIMESTAMP", json: "JSONB", vector: "DOUBLE PRECISION[]" },
+    sqlite: { text: "TEXT", integer: "INTEGER", timestamp: "TEXT", json: "TEXT", vector: "TEXT" },
+  };
+  let sql = typeSql[dialect][col.type];
+  if (col.nullable === false) sql += " NOT NULL";
+  if (col.default !== undefined) sql += ` DEFAULT ${defaultSql(col.default)}`;
+  return sql;
 }
 
 // ── Schema definitions ──────────────────────────────────────────────────────
 
 /** Memory table — wiki summaries written by the SessionStart workers. */
 export const MEMORY_COLUMNS: readonly ColumnDef[] = Object.freeze([
-  { name: "id",                sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "path",              sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "filename",          sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "summary",           sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "summary_embedding", sql: "FLOAT4[]" },
-  { name: "author",            sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "mime_type",         sql: "TEXT NOT NULL DEFAULT 'text/plain'" },
-  { name: "size_bytes",        sql: "BIGINT NOT NULL DEFAULT 0" },
-  { name: "project",           sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "description",       sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "agent",             sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "plugin_version",    sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "creation_date",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "last_update_date",  sql: "TEXT NOT NULL DEFAULT ''" },
+  column("id", "text", { nullable: false, default: "" }),
+  column("path", "text", { nullable: false, default: "" }),
+  column("filename", "text", { nullable: false, default: "" }),
+  column("summary", "text", { nullable: false, default: "" }),
+  column("summary_embedding", "vector"),
+  column("author", "text", { nullable: false, default: "" }),
+  column("mime_type", "text", { nullable: false, default: "text/plain" }),
+  column("size_bytes", "integer", { nullable: false, default: 0 }),
+  column("project", "text", { nullable: false, default: "" }),
+  column("description", "text", { nullable: false, default: "" }),
+  column("agent", "text", { nullable: false, default: "" }),
+  column("plugin_version", "text", { nullable: false, default: "" }),
+  column("creation_date", "text", { nullable: false, default: "" }),
+  column("last_update_date", "text", { nullable: false, default: "" }),
 ]);
 
 /** Sessions table — raw per-turn agent events. */
 export const SESSIONS_COLUMNS: readonly ColumnDef[] = Object.freeze([
-  { name: "id",                sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "path",              sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "filename",          sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "message",           sql: "JSONB" },
-  { name: "message_embedding", sql: "FLOAT4[]" },
-  { name: "author",            sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "mime_type",         sql: "TEXT NOT NULL DEFAULT 'application/json'" },
-  { name: "size_bytes",        sql: "BIGINT NOT NULL DEFAULT 0" },
-  { name: "project",           sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "description",       sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "agent",             sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "plugin_version",    sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "creation_date",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "last_update_date",  sql: "TEXT NOT NULL DEFAULT ''" },
+  column("id", "text", { nullable: false, default: "" }),
+  column("path", "text", { nullable: false, default: "" }),
+  column("filename", "text", { nullable: false, default: "" }),
+  column("message", "json"),
+  column("message_embedding", "vector"),
+  column("author", "text", { nullable: false, default: "" }),
+  column("mime_type", "text", { nullable: false, default: "application/json" }),
+  column("size_bytes", "integer", { nullable: false, default: 0 }),
+  column("project", "text", { nullable: false, default: "" }),
+  column("description", "text", { nullable: false, default: "" }),
+  column("agent", "text", { nullable: false, default: "" }),
+  column("plugin_version", "text", { nullable: false, default: "" }),
+  column("creation_date", "text", { nullable: false, default: "" }),
+  column("last_update_date", "text", { nullable: false, default: "" }),
 ]);
 
 /** Skills table — one row per skill version. */
 export const SKILLS_COLUMNS: readonly ColumnDef[] = Object.freeze([
-  { name: "id",              sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "name",            sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "project",         sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "project_key",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "local_path",      sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "install",         sql: "TEXT NOT NULL DEFAULT 'project'" },
-  { name: "source_sessions", sql: "TEXT NOT NULL DEFAULT '[]'" },
-  { name: "source_agent",    sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "scope",           sql: "TEXT NOT NULL DEFAULT 'me'" },
-  { name: "author",          sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "contributors",    sql: "TEXT NOT NULL DEFAULT '[]'" },
-  { name: "description",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "trigger_text",    sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "body",            sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "version",         sql: "BIGINT NOT NULL DEFAULT 1" },
-  { name: "created_at",      sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "updated_at",      sql: "TEXT NOT NULL DEFAULT ''" },
+  column("id", "text", { nullable: false, default: "" }),
+  column("name", "text", { nullable: false, default: "" }),
+  column("project", "text", { nullable: false, default: "" }),
+  column("project_key", "text", { nullable: false, default: "" }),
+  column("local_path", "text", { nullable: false, default: "" }),
+  column("install", "text", { nullable: false, default: "project" }),
+  column("source_sessions", "text", { nullable: false, default: "[]" }),
+  column("source_agent", "text", { nullable: false, default: "" }),
+  column("scope", "text", { nullable: false, default: "me" }),
+  column("author", "text", { nullable: false, default: "" }),
+  column("contributors", "text", { nullable: false, default: "[]" }),
+  column("description", "text", { nullable: false, default: "" }),
+  column("trigger_text", "text", { nullable: false, default: "" }),
+  column("body", "text", { nullable: false, default: "" }),
+  column("version", "integer", { nullable: false, default: 1 }),
+  column("created_at", "text", { nullable: false, default: "" }),
+  column("updated_at", "text", { nullable: false, default: "" }),
 ]);
 
 /**
@@ -102,16 +142,16 @@ export const SKILLS_COLUMNS: readonly ColumnDef[] = Object.freeze([
  * quirk that bit the wiki worker.
  */
 export const RULES_COLUMNS: readonly ColumnDef[] = Object.freeze([
-  { name: "id",             sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "rule_id",        sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "text",           sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "scope",          sql: "TEXT NOT NULL DEFAULT 'team'" },
-  { name: "status",         sql: "TEXT NOT NULL DEFAULT 'active'" },
-  { name: "assigned_by",    sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "version",        sql: "BIGINT NOT NULL DEFAULT 1" },
-  { name: "created_at",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "agent",          sql: "TEXT NOT NULL DEFAULT 'manual'" },
-  { name: "plugin_version", sql: "TEXT NOT NULL DEFAULT ''" },
+  column("id", "text", { nullable: false, default: "" }),
+  column("rule_id", "text", { nullable: false, default: "" }),
+  column("text", "text", { nullable: false, default: "" }),
+  column("scope", "text", { nullable: false, default: "team" }),
+  column("status", "text", { nullable: false, default: "active" }),
+  column("assigned_by", "text", { nullable: false, default: "" }),
+  column("version", "integer", { nullable: false, default: 1 }),
+  column("created_at", "text", { nullable: false, default: "" }),
+  column("agent", "text", { nullable: false, default: "manual" }),
+  column("plugin_version", "text", { nullable: false, default: "" }),
 ]);
 
 /**
@@ -134,16 +174,16 @@ export const RULES_COLUMNS: readonly ColumnDef[] = Object.freeze([
  * Deeplake; logical join only).
  */
 export const GOALS_COLUMNS: readonly ColumnDef[] = Object.freeze([
-  { name: "id",             sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "goal_id",        sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "owner",          sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "status",         sql: "TEXT NOT NULL DEFAULT 'opened'" },
-  { name: "content",        sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "version",        sql: "BIGINT NOT NULL DEFAULT 1" },
-  { name: "created_at",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "updated_at",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "agent",          sql: "TEXT NOT NULL DEFAULT 'manual'" },
-  { name: "plugin_version", sql: "TEXT NOT NULL DEFAULT ''" },
+  column("id", "text", { nullable: false, default: "" }),
+  column("goal_id", "text", { nullable: false, default: "" }),
+  column("owner", "text", { nullable: false, default: "" }),
+  column("status", "text", { nullable: false, default: "opened" }),
+  column("content", "text", { nullable: false, default: "" }),
+  column("version", "integer", { nullable: false, default: 1 }),
+  column("created_at", "text", { nullable: false, default: "" }),
+  column("updated_at", "text", { nullable: false, default: "" }),
+  column("agent", "text", { nullable: false, default: "manual" }),
+  column("plugin_version", "text", { nullable: false, default: "" }),
 ]);
 
 /**
@@ -163,15 +203,15 @@ export const GOALS_COLUMNS: readonly ColumnDef[] = Object.freeze([
  * KPI conceptually means writing a tombstone version, deferred to v1.1.
  */
 export const KPIS_COLUMNS: readonly ColumnDef[] = Object.freeze([
-  { name: "id",             sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "goal_id",        sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "kpi_id",         sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "content",        sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "version",        sql: "BIGINT NOT NULL DEFAULT 1" },
-  { name: "created_at",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "updated_at",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "agent",          sql: "TEXT NOT NULL DEFAULT 'manual'" },
-  { name: "plugin_version", sql: "TEXT NOT NULL DEFAULT ''" },
+  column("id", "text", { nullable: false, default: "" }),
+  column("goal_id", "text", { nullable: false, default: "" }),
+  column("kpi_id", "text", { nullable: false, default: "" }),
+  column("content", "text", { nullable: false, default: "" }),
+  column("version", "integer", { nullable: false, default: 1 }),
+  column("created_at", "text", { nullable: false, default: "" }),
+  column("updated_at", "text", { nullable: false, default: "" }),
+  column("agent", "text", { nullable: false, default: "manual" }),
+  column("plugin_version", "text", { nullable: false, default: "" }),
 ]);
 
 /**
@@ -192,32 +232,32 @@ export const KPIS_COLUMNS: readonly ColumnDef[] = Object.freeze([
  * overwritten by a fast edit).
  */
 export const DOCS_COLUMNS: readonly ColumnDef[] = Object.freeze([
-  { name: "id",             sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "doc_id",         sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "path",           sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "content",        sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "anchors",        sql: "TEXT NOT NULL DEFAULT '[]'" },
-  { name: "tier",           sql: "TEXT NOT NULL DEFAULT 'fast'" },
-  { name: "status",         sql: "TEXT NOT NULL DEFAULT 'active'" },
-  { name: "project",        sql: "TEXT NOT NULL DEFAULT ''" },
+  column("id", "text", { nullable: false, default: "" }),
+  column("doc_id", "text", { nullable: false, default: "" }),
+  column("path", "text", { nullable: false, default: "" }),
+  column("content", "text", { nullable: false, default: "" }),
+  column("anchors", "text", { nullable: false, default: "[]" }),
+  column("tier", "text", { nullable: false, default: "fast" }),
+  column("status", "text", { nullable: false, default: "active" }),
+  column("project", "text", { nullable: false, default: "" }),
   // Which shared view a row belongs to: `main` = the canonical truth
   // (written only by the elected refresh turn); `u:<user>|b:<branch>` =
   // a personal branch overlay (v2, opt-in). Reads default to `main`.
-  { name: "scope",          sql: "TEXT NOT NULL DEFAULT 'main'" },
+  column("scope", "text", { nullable: false, default: "main" }),
   // Per-page source fingerprint: JSON `{file: git-blob-sha}` the page was
   // generated from. Drives freshness (stale iff it differs from HEAD's), the
   // overlay-divergence decision, the origin publish gate, and merge promotion.
   // Read only where needed (scoped reads) so generic reads stay heal-safe.
-  { name: "source_fp",      sql: "TEXT NOT NULL DEFAULT '{}'" },
-  { name: "version",        sql: "BIGINT NOT NULL DEFAULT 1" },
-  { name: "created_at",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "updated_at",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "agent",          sql: "TEXT NOT NULL DEFAULT 'manual'" },
-  { name: "plugin_version", sql: "TEXT NOT NULL DEFAULT ''" },
+  column("source_fp", "text", { nullable: false, default: "{}" }),
+  column("version", "integer", { nullable: false, default: 1 }),
+  column("created_at", "text", { nullable: false, default: "" }),
+  column("updated_at", "text", { nullable: false, default: "" }),
+  column("agent", "text", { nullable: false, default: "manual" }),
+  column("plugin_version", "text", { nullable: false, default: "" }),
   // Semantic-search vector over `content` (nomic, DOC_PREFIX). Nullable/empty
   // when embeddings are off or not yet backfilled — `docs/find/` guards with
   // ARRAY_LENGTH(...) > 0, exactly like grep-core does for summaries.
-  { name: "content_embedding", sql: "FLOAT4[]" },
+  column("content_embedding", "vector"),
 ]);
 
 // ── Module-load lint ────────────────────────────────────────────────────────
@@ -240,9 +280,7 @@ function validateSchema(label: string, cols: readonly ColumnDef[]): void {
       throw new Error(`${label}: duplicate column "${col.name}"`);
     }
     seen.add(col.name);
-    const notNull = /\bNOT\s+NULL\b/i.test(col.sql);
-    const hasDefault = /\bDEFAULT\b/i.test(col.sql);
-    if (notNull && !hasDefault) {
+    if (col.nullable === false && col.default === undefined) {
       throw new Error(
         `${label}: column "${col.name}" is NOT NULL but has no DEFAULT — ` +
         `ALTER TABLE ADD COLUMN on a populated table would fail.`,
@@ -264,29 +302,29 @@ function validateSchema(label: string, cols: readonly ColumnDef[]): void {
  */
 export const CODEBASE_COLUMNS: readonly ColumnDef[] = Object.freeze([
   // Identity key (matches the PK below)
-  { name: "org_id",          sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "workspace_id",    sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "repo_slug",       sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "user_id",         sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "worktree_id",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "commit_sha",      sql: "TEXT NOT NULL DEFAULT ''" },
+  column("org_id", "text", { nullable: false, default: "" }),
+  column("workspace_id", "text", { nullable: false, default: "" }),
+  column("repo_slug", "text", { nullable: false, default: "" }),
+  column("user_id", "text", { nullable: false, default: "" }),
+  column("worktree_id", "text", { nullable: false, default: "" }),
+  column("commit_sha", "text", { nullable: false, default: "" }),
 
   // Observation metadata
-  { name: "parent_sha",      sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "branch",          sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "ts",              sql: "TIMESTAMP" },
-  { name: "pushed_by",       sql: "TEXT NOT NULL DEFAULT ''" },
+  column("parent_sha", "text", { nullable: false, default: "" }),
+  column("branch", "text", { nullable: false, default: "" }),
+  column("ts", "timestamp"),
+  column("pushed_by", "text", { nullable: false, default: "" }),
 
   // Snapshot payload
-  { name: "snapshot_sha256", sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "snapshot_jsonb",  sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "node_count",      sql: "BIGINT NOT NULL DEFAULT 0" },
-  { name: "edge_count",      sql: "BIGINT NOT NULL DEFAULT 0" },
+  column("snapshot_sha256", "text", { nullable: false, default: "" }),
+  column("snapshot_jsonb", "text", { nullable: false, default: "" }),
+  column("node_count", "integer", { nullable: false, default: 0 }),
+  column("edge_count", "integer", { nullable: false, default: 0 }),
 
   // Generator metadata (for drift diagnostics — what hivemind version produced this?)
-  { name: "generator",         sql: "TEXT NOT NULL DEFAULT 'hivemind-graph'" },
-  { name: "generator_version", sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "schema_version",    sql: "BIGINT NOT NULL DEFAULT 1" },
+  column("generator", "text", { nullable: false, default: "hivemind-graph" }),
+  column("generator_version", "text", { nullable: false, default: "" }),
+  column("schema_version", "integer", { nullable: false, default: 1 }),
 ]);
 
 validateSchema("MEMORY_COLUMNS", MEMORY_COLUMNS);
@@ -300,11 +338,16 @@ validateSchema("CODEBASE_COLUMNS", CODEBASE_COLUMNS);
 
 // ── SQL builders ────────────────────────────────────────────────────────────
 
-/** Render a `CREATE TABLE IF NOT EXISTS … USING deeplake` from a column list. */
-export function buildCreateTableSql(tableName: string, cols: readonly ColumnDef[]): string {
+/** Render a CREATE TABLE statement from a provider-neutral column list. */
+export function buildCreateTableSql(
+  tableName: string,
+  cols: readonly ColumnDef[],
+  dialect: StorageDialect = "deeplake",
+): string {
   const safe = sqlIdent(tableName);
-  const colSql = cols.map(c => `${c.name} ${c.sql}`).join(", ");
-  return `CREATE TABLE IF NOT EXISTS "${safe}" (${colSql}) USING deeplake`;
+  const colSql = cols.map(c => `${c.name} ${renderColumnSql(c, dialect)}`).join(", ");
+  const suffix = dialect === "deeplake" ? " USING deeplake" : "";
+  return `CREATE TABLE IF NOT EXISTS "${safe}" (${colSql})${suffix}`;
 }
 
 /** Render a `SELECT column_name` against `information_schema.columns`. */
@@ -360,6 +403,7 @@ export async function healMissingColumns(args: {
   tableName: string;
   workspaceId: string;
   columns: readonly ColumnDef[];
+  dialect?: StorageDialect;
   /** Optional logger for `[schema-heal] …` lines. */
   log?: (msg: string) => void;
 }): Promise<HealResult> {
@@ -382,7 +426,9 @@ export async function healMissingColumns(args: {
   const altered: string[] = [];
   for (const col of missingCols) {
     try {
-      await args.query(`ALTER TABLE "${safeTable}" ADD COLUMN ${col.name} ${col.sql}`);
+      await args.query(
+        `ALTER TABLE "${safeTable}" ADD COLUMN ${col.name} ${renderColumnSql(col, args.dialect ?? "deeplake")}`,
+      );
       altered.push(col.name);
       args.log?.(`schema-heal: added "${args.tableName}"."${col.name}"`);
     } catch (e: unknown) {

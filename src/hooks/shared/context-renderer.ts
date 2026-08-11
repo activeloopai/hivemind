@@ -3,7 +3,7 @@
  *
  * Produces the "HIVEMIND RULES" + "HIVEMIND GOALS" + "HOW-TO" block
  * that every agent's SessionStart hook (claude-code, codex, cursor,
- * hermes) appends to its own DEEPLAKE MEMORY context. One source of
+ * hermes) appends to its own HIVEMIND MEMORY context. One source of
  * truth lives here so a wording fix lands in one place; the per-agent
  * forks just import and concatenate.
  *

@@ -14,7 +14,7 @@ import path from "node:path";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { log as _log } from "../utils/debug.js";
 import { loadRoutedConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
 import { getStateDir } from "./state-dir.js";
 import { agentModel, detectScorerAgent } from "./agent-model.js";
 import { improveSkillIfFailed } from "./skillopt-improve.js";
@@ -55,9 +55,9 @@ async function main(): Promise<void> {
   if (!sessionId || !skillRef) { log("no session/skill in env — nothing to do"); return; }
 
   const config = loadRoutedConfig();
-  if (!config?.token) { log("no config/credentials — exiting"); return; }
+  if (!config) { log("no storage config — exiting"); return; }
 
-  const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+  const api = createStorageBackend(config, config.tableName);
   const query = (sql: string) => api.query(sql) as Promise<Array<Record<string, unknown>>>;
   const now = new Date().toISOString();
 

@@ -16,6 +16,7 @@ import { homedir } from "node:os";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
 
 export interface SessionQueueApi {
+  dialect?: "deeplake" | "sqlite" | "postgres";
   query(sql: string): Promise<Record<string, unknown>[]>;
   ensureSessionsTable(name?: string): Promise<void>;
 }
@@ -124,7 +125,11 @@ export function appendQueuedSessionRow(row: QueuedSessionRow, queueDir = DEFAULT
   return queuePath;
 }
 
-export function buildSessionInsertSql(sessionsTable: string, rows: QueuedSessionRow[]): string {
+export function buildSessionInsertSql(
+  sessionsTable: string,
+  rows: QueuedSessionRow[],
+  dialect: "deeplake" | "sqlite" | "postgres" = "deeplake",
+): string {
   if (rows.length === 0) throw new Error("buildSessionInsertSql: rows must not be empty");
   const table = sqlIdent(sessionsTable);
   const values = rows.map((row) => {
@@ -134,24 +139,41 @@ export function buildSessionInsertSql(sessionsTable: string, rows: QueuedSession
     // would corrupt the JSON and the jsonb cast would 400. Mirrors the
     // capture.ts direct-INSERT path.
     const jsonForSql = coerceJsonbPayload(row.message).replace(/'/g, "''");
+    const jsonValue = dialect === "sqlite" ? `'${jsonForSql}'` : `'${jsonForSql}'::jsonb`;
     return (
-      `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', '${jsonForSql}'::jsonb, ` +
+      `('${sqlStr(row.id)}', '${sqlStr(row.path)}', '${sqlStr(row.filename)}', ${jsonValue}, ` +
       `'${sqlStr(row.author)}', ${row.sizeBytes}, '${sqlStr(row.project)}', '${sqlStr(row.description)}', ` +
-      `'${sqlStr(row.agent)}', '${sqlStr(row.pluginVersion ?? "")}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}')`
+      `'${sqlStr(row.agent)}', '${sqlStr(row.pluginVersion ?? "")}', '${sqlStr(row.creationDate)}', '${sqlStr(row.lastUpdateDate)}' ` +
+      `)`
     );
-  }).join(", ");
+  });
+
+  if (dialect !== "sqlite") {
+    const joined = values.join(", ");
+    const columns = "id, path, filename, message, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date";
+    return (
+      `INSERT INTO "${table}" (${columns}) ` +
+      `SELECT v.id, v.path, v.filename, v.message, v.author, v.size_bytes, v.project, v.description, v.agent, v.plugin_version, v.creation_date, v.last_update_date ` +
+      `FROM (VALUES ${joined}) AS v(${columns}) ` +
+      `WHERE NOT EXISTS (SELECT 1 FROM "${table}" AS t WHERE t.id = v.id)`
+    );
+  }
+
+  const selects = values.map((value, index) => {
+    const row = rows[index];
+    return `SELECT * FROM (VALUES ${value}) WHERE NOT EXISTS (SELECT 1 FROM "${table}" AS t WHERE t.id = '${sqlStr(row.id)}')`;
+  }).join(" UNION ALL ");
 
   // Idempotent batch insert: skip any row whose id already exists, so a flush
   // that re-sends the batch after a transient 5xx (the insert committed but the
   // gateway returned 502/503) cannot duplicate rows. The sessions table has no
   // UNIQUE constraint on id, so this anti-join is the multi-row equivalent of
   // buildDirectSessionInsertSql's `WHERE NOT EXISTS` guard on the single-row
-  // capture path. Verified lag-safe against the real backend.
+  // capture path. SELECT ... UNION ALL is portable across all three providers;
+  // SQLite does not support PostgreSQL's column alias list after VALUES.
   return (
     `INSERT INTO "${table}" (id, path, filename, message, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `SELECT v.id, v.path, v.filename, v.message, v.author, v.size_bytes, v.project, v.description, v.agent, v.plugin_version, v.creation_date, v.last_update_date ` +
-    `FROM (VALUES ${values}) AS v(id, path, filename, message, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `WHERE NOT EXISTS (SELECT 1 FROM "${table}" AS t WHERE t.id = v.id)`
+    selects
   );
 }
 
@@ -327,7 +349,7 @@ async function flushInflightFile(
   const queueDir = dirname(inflightPath);
   for (let i = 0; i < rows.length; i += maxBatchRows) {
     const chunk = rows.slice(i, i + maxBatchRows);
-    const sql = buildSessionInsertSql(sessionsTable, chunk);
+    const sql = buildSessionInsertSql(sessionsTable, chunk, api.dialect);
     try {
       await api.query(sql);
     } catch (e: any) {

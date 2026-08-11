@@ -23,7 +23,8 @@ import { dirname, join } from "node:path";
 import { loadCredentials, healDriftedOrgToken } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
 import { resolveDirConfig } from "../../dir-config.js";
-import { DeeplakeApi } from "../../deeplake-api.js";
+import { createStorageBackend } from "../../storage/factory.js";
+import type { StorageBackend } from "../../storage/backend.js";
 import { renderContextBlock } from "../shared/context-renderer.js";
 import { createPlaceholderSummary } from "../shared/placeholder-summary.js";
 import { renderSkillifyCommands } from "../../cli/skillify-spec.js";
@@ -43,12 +44,12 @@ const __bundleDir = dirname(fileURLToPath(import.meta.url));
 // Hivemind requires its npm bin (`hivemind` from @deeplake/hivemind) on PATH.
 // Inject text uses bare `hivemind <sub>` form — no per-agent path resolution needed.
 
-const context = `DEEPLAKE MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
+const context = `HIVEMIND MEMORY: Persistent memory at ~/.deeplake/memory/ shared across sessions, users, and agents.
 
 Structure: index.md (start here) → summaries/*.md → sessions/*.jsonl (last resort). Do NOT jump straight to JSONL.
 Search: use \`grep\` (NOT \`rg\`/ripgrep). Example: grep -ri "keyword" ~/.deeplake/memory/
 IMPORTANT: Only use these bash builtins to interact with ~/.deeplake/memory/: cat, ls, grep, echo, jq, head, tail, sed, awk, wc, sort, find. Do NOT use rg/ripgrep, python, python3, node, curl, or other interpreters — they may not be installed and the memory filesystem only supports the listed builtins.
-Do NOT spawn subagents to read deeplake memory.
+Do NOT spawn subagents to read Hivemind memory.
 
 Organization management — each argument is SEPARATE (do NOT quote subcommands together):
 - hivemind login                              — SSO login
@@ -98,7 +99,7 @@ function resolveCwd(input: CursorSessionStartInput): string {
 
 /** Create a placeholder summary via the shared race-safe writer (see placeholder-summary.ts). */
 async function createPlaceholder(
-  api: DeeplakeApi,
+  api: StorageBackend,
   table: string,
   sessionId: string,
   cwd: string,
@@ -109,7 +110,7 @@ async function createPlaceholder(
 ): Promise<void> {
   await createPlaceholderSummary(
     (sql) => api.query(sql),
-    { table, sessionId, cwd, userName, orgName, workspaceId, agent: "cursor", pluginVersion },
+    { table, sessionId, cwd, userName, orgName, workspaceId, agent: "cursor", pluginVersion, dialect: api.dialect },
   );
 }
 
@@ -151,16 +152,17 @@ async function main(): Promise<void> {
   // Per-directory `.hivemind`: route / opt out for this tree. Resolved once and
   // reused for the placeholder write and the disclosure banner below.
   const baseConfig = loadConfig();
+  const storageAvailable = Boolean(baseConfig && ((baseConfig.storage?.kind ?? "deeplake") !== "deeplake" || creds?.token));
   const dirRes = baseConfig ? resolveDirConfig(baseConfig, cwd) : null;
   const collectHere = captureEnabled && (dirRes?.collect ?? true);
   let rulesBlock = "";
-  if (creds?.token) {
+  if (storageAvailable) {
     try {
       const config = dirRes?.config;
       if (config) {
         const table = config.tableName;
         const sessionsTable = config.sessionsTableName;
-        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, table);
+        const api = createStorageBackend(config, table);
         if (collectHere) {
           await api.ensureTable();
           await api.ensureSessionsTable(sessionsTable);
@@ -215,7 +217,7 @@ async function main(): Promise<void> {
   // bytes land for the NEXT SessionStart. See src/graph/spawn-pull-worker.ts.
   // Gate on creds: avoid wasted process churn when unauthenticated
   // (pullSnapshot would early-return skipped-no-auth anyway).
-  if (creds?.token) spawnGraphPullWorker(resolveCwd(input), __bundleDir);
+  if (storageAvailable) spawnGraphPullWorker(resolveCwd(input), __bundleDir);
 
   // Disclose the EFFECTIVE identity (after any `.hivemind` overlay).
   const effConfig = dirRes?.config ?? baseConfig;
@@ -223,10 +225,13 @@ async function main(): Promise<void> {
     (dirRes.config.orgId !== baseConfig.orgId || dirRes.config.workspaceId !== baseConfig.workspaceId));
   const effOrg = effConfig ? (effConfig.orgName ?? effConfig.orgId) : (creds?.orgName ?? creds?.orgId);
   const effWs = effConfig ? effConfig.workspaceId : (creds?.workspaceId ?? "default");
-  const identityLine = dirRes && !dirRes.collect
-    ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search still uses org: ${effOrg}`
-    : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`;
-  const baseContext = creds?.token
+  const provider = effConfig?.storage?.kind ?? "deeplake";
+  const identityLine = provider === "deeplake"
+    ? (dirRes && !dirRes.collect
+        ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search still uses org: ${effOrg}`
+        : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`)
+    : `Hivemind memory backend: ${provider}${dirRes && !dirRes.collect ? ` · capture disabled by ${dirRes.found?.path}` : ""}`;
+  const baseContext = storageAvailable && effConfig
     ? `${context}\n${identityLine}${versionNotice}`
     : `${context}\nNot logged in to Deeplake. Run: hivemind login${localMinedNote}${versionNotice}`;
   // Cursor cannot route Write/Edit through hivemind hooks (its
@@ -234,7 +239,7 @@ async function main(): Promise<void> {
   // the CLI variant — `hivemind goal add/list/...` invoked as
   // shell commands. Same end state (rows in hivemind_goals /
   // hivemind_kpis), different code path inside the agent.
-  const baseWithGoals = creds?.token ? `${baseContext}\n\n${GOALS_INSTRUCTIONS_CLI}` : baseContext;
+  const baseWithGoals = storageAvailable && effConfig ? `${baseContext}\n\n${GOALS_INSTRUCTIONS_CLI}` : baseContext;
   const withRules = rulesBlock
     ? `${baseWithGoals}\n\n${rulesBlock}`
     : baseWithGoals;

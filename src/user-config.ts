@@ -14,6 +14,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export interface UserConfig {
+  storage?: {
+    provider?: "deeplake" | "sqlite" | "postgres";
+    sqlitePath?: string;
+    postgresSchema?: string;
+  };
+  autoupdate?: boolean;
   embeddings?: {
     enabled?: boolean;
   };
@@ -107,6 +113,14 @@ function migrationValueFromEnv(): boolean {
 
 export function setEmbeddingsEnabled(enabled: boolean): void {
   writeUserConfig({ embeddings: { enabled } });
+}
+
+export function getAutoupdateEnabled(): boolean {
+  return readUserConfig().autoupdate !== false;
+}
+
+export function setAutoupdateEnabled(enabled: boolean): void {
+  writeUserConfig({ autoupdate: enabled });
 }
 
 /**

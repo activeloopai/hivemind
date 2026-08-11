@@ -23,7 +23,8 @@ import { randomUUID } from "node:crypto";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
 import type { DocAnchor, DocRow, DocTier, QueryFn } from "./read.js";
-import { getDocLatest } from "./read.js";
+import { getDocLatest, queryDialect } from "./read.js";
+import { escapedStringPrefix } from "../storage/sql-dialect.js";
 
 export interface InsertDocInput {
   /** Documented source file path, e.g. `src/shell/deeplake-fs.ts`. Stable key. */
@@ -147,6 +148,8 @@ export async function insertDoc(
   const now = new Date().toISOString();
   const anchors = serializeAnchors(input.anchors ?? []);
   const tier: DocTier = input.tier ?? "fast";
+  const dialect = queryDialect(query);
+  const stringPrefix = escapedStringPrefix(dialect);
 
   const sql =
     `INSERT INTO "${safe}" ` +
@@ -156,19 +159,19 @@ export async function insertDoc(
     `'${sqlStr(rowId)}', ` +
     `'${sqlStr(input.doc_id)}', ` +
     `'${sqlStr(input.path)}', ` +
-    `E'${sqlStr(input.content)}', ` +
-    `E'${sqlStr(anchors)}', ` +
+    `${stringPrefix}'${sqlStr(input.content)}', ` +
+    `${stringPrefix}'${sqlStr(anchors)}', ` +
     `'${sqlStr(tier)}', ` +
     `'active', ` +
     `'${sqlStr(input.project ?? "")}', ` +
     `'${sqlStr(input.scope ?? "main")}', ` +
-    `E'${sqlStr(input.source_fp ?? "{}")}', ` +
+    `${stringPrefix}'${sqlStr(input.source_fp ?? "{}")}', ` +
     `1, ` +
     `'${sqlStr(now)}', ` +
     `'${sqlStr(now)}', ` +
     `'${sqlStr(input.agent ?? "manual")}', ` +
     `'${sqlStr(input.plugin_version ?? "")}', ` +
-    `${embeddingSqlLiteral(input.content_embedding)}` +
+    `${embeddingSqlLiteral(input.content_embedding, dialect)}` +
     `)`;
   await query(sql);
   return { doc_id: input.doc_id, version: 1 };
@@ -259,6 +262,8 @@ export async function upsertDoc(
   const id = docRowId(input.project, scope, input.doc_id);
   const anchors = serializeAnchors(input.anchors ?? []);
   const tier: DocTier = input.tier ?? "fast";
+  const dialect = queryDialect(query);
+  const stringPrefix = escapedStringPrefix(dialect);
 
   const retries = opts.retries ?? WRITE_RETRIES;
   const backoff = opts.backoffMs ?? WRITE_BACKOFF_MS;
@@ -288,11 +293,11 @@ export async function upsertDoc(
         `created_at, updated_at, agent, plugin_version, content_embedding) ` +
         `VALUES (` +
         `'${sqlStr(id)}', '${sqlStr(input.doc_id)}', '${sqlStr(input.path)}', ` +
-        `E'${sqlStr(input.content)}', E'${sqlStr(anchors)}', '${sqlStr(tier)}', ` +
-        `'active', '${sqlStr(input.project ?? "")}', '${sqlStr(scope)}', E'${sqlStr(input.source_fp ?? "{}")}', 1, ` +
+        `${stringPrefix}'${sqlStr(input.content)}', ${stringPrefix}'${sqlStr(anchors)}', '${sqlStr(tier)}', ` +
+        `'active', '${sqlStr(input.project ?? "")}', '${sqlStr(scope)}', ${stringPrefix}'${sqlStr(input.source_fp ?? "{}")}', 1, ` +
         `'${sqlStr(now)}', '${sqlStr(now)}', ` +
         `'${sqlStr(input.agent ?? "manual")}', '${sqlStr(input.plugin_version ?? "")}', ` +
-        `${embeddingSqlLiteral(input.content_embedding)}` +
+        `${embeddingSqlLiteral(input.content_embedding, dialect)}` +
         `)`;
       await query(sql);
       return { doc_id: input.doc_id, version: 1 };
@@ -425,14 +430,16 @@ async function updateInPlace(
   const status = next.status ?? (previous.status as "active" | "archived");
   const path = next.path ?? previous.path;
   const project = next.project ?? previous.project;
+  const dialect = queryDialect(query);
+  const stringPrefix = escapedStringPrefix(dialect);
 
   // One UPDATE, all columns — the F0 safety rule. created_at + doc_id are not
   // touched (immutable identity/creation stamp).
   const sql =
     `UPDATE "${safe}" SET ` +
     `path = '${sqlStr(path)}', ` +
-    `content = E'${sqlStr(content)}', ` +
-    `anchors = E'${sqlStr(anchors)}', ` +
+    `content = ${stringPrefix}'${sqlStr(content)}', ` +
+    `anchors = ${stringPrefix}'${sqlStr(anchors)}', ` +
     `tier = '${sqlStr(tier)}', ` +
     `status = '${sqlStr(status)}', ` +
     `project = '${sqlStr(project)}', ` +
@@ -442,13 +449,13 @@ async function updateInPlace(
     // rank the doc by its previous meaning forever, and `docs reindex` only
     // heals MISSING vectors, never stale ones. Missing beats lying.
     `${next.content_embedding !== undefined
-      ? `content_embedding = ${embeddingSqlLiteral(next.content_embedding)}, `
+      ? `content_embedding = ${embeddingSqlLiteral(next.content_embedding, dialect)}, `
       : next.content !== undefined && next.content !== previous.content
         ? `content_embedding = NULL, `
         : ""}` +
     // Fingerprint moves with the content: a patch that lands new bytes stamps
     // the new source state so freshness reflects what the page now describes.
-    `${next.source_fp !== undefined ? `source_fp = E'${sqlStr(next.source_fp)}', ` : ""}` +
+    `${next.source_fp !== undefined ? `source_fp = ${stringPrefix}'${sqlStr(next.source_fp)}', ` : ""}` +
     `version = ${nextVersion}, ` +
     `updated_at = '${sqlStr(now)}', ` +
     `agent = '${sqlStr(next.agent ?? "manual")}', ` +

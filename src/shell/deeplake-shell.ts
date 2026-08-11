@@ -26,7 +26,7 @@ import { deriveProjectKey } from "../utils/repo-identity.js";
 import { Bash } from "just-bash";
 import { loadConfig } from "../config.js";
 import { resolveDirConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
 import { DeeplakeFs } from "./deeplake-fs.js";
 import { createGrepCommand } from "./grep-interceptor.js";
 
@@ -35,7 +35,7 @@ async function main(): Promise<void> {
 
   // One-shot mode is what the pre-tool-use hook invokes via `node shell-bundle -c "..."`
   // to execute compound bash commands. Claude Code's Bash tool merges the child's
-  // stderr into the tool_result string Claude sees, so any `[deeplake-sql]` trace
+  // stderr into the tool_result string Claude sees, so any `[hivemind-sql]` trace
   // written to stderr here pollutes the model's view of the command output.
   // Silence trace env vars regardless of how the caller set them.
   if (isOneShot) {
@@ -63,12 +63,10 @@ async function main(): Promise<void> {
   const docsTable = process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName;
   const mount = process.env["HIVEMIND_MOUNT"] ?? "/";
 
-  const client = new DeeplakeApi(
-    config.token, config.apiUrl, config.orgId, config.workspaceId, table
-  );
+  const client = createStorageBackend(config, table);
 
   if (!isOneShot) {
-    process.stderr.write(`Connecting to deeplake://${config.workspaceId}/${table} ...\n`);
+    process.stderr.write(`Connecting to Hivemind ${config.storage?.kind ?? "deeplake"} storage ...\n`);
   }
 
   const fs = await DeeplakeFs.create(client, table, mount, sessionsTable, { goalsTable, kpisTable, docsTable, docsProject: deriveProjectKey(process.cwd()).key });

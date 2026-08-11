@@ -546,8 +546,6 @@ function tryAcquireOpenclawSkillifyLock(projectKey: string): boolean {
 }
 
 interface OpenclawSpawnArgs {
-  apiUrl: string;
-  token: string;
   orgId: string;
   workspaceId: string;
   userName: string;
@@ -638,10 +636,7 @@ function spawnOpenclawSkillifyWorker(a: OpenclawSpawnArgs): boolean {
   // rather than a per-project tree that would bear no relation to the user's
   // actual project layout.
   const config = {
-    apiUrl: a.apiUrl,
-    token: a.token,
-    orgId: a.orgId,
-    workspaceId: a.workspaceId,
+    storage: { kind: "deeplake" as const, orgId: a.orgId, workspaceId: a.workspaceId },
     sessionsTable,
     skillsTable,
     userName: a.userName,
@@ -1604,8 +1599,6 @@ export default definePluginEntry({
             // runtime. CodeRabbit on #172.
             try {
               if (spawnOpenclawSkillifyWorker({
-                apiUrl: cfg.apiUrl,
-                token: cfg.token,
                 orgId: cfg.orgId,
                 workspaceId: cfg.workspaceId,
                 userName: cfg.userName,

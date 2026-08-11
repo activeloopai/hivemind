@@ -1,5 +1,15 @@
 # Architecture
 
+## Storage layer
+
+Runtime features depend on a provider-neutral storage contract for parameterized queries, transactions, table and column discovery, additive schema healing, and cleanup. The factory selects one of three adapters:
+
+- Deeplake uses the existing HTTP SQL transport and server-side vector scoring.
+- SQLite uses Node's built-in `node:sqlite` with WAL, foreign keys, a busy timeout, and JSON-text vectors.
+- PostgreSQL is dynamically imported, uses a bounded `pg` pool, and scopes all tables to a validated schema.
+
+Logical schema types are rendered per provider. SQLite and vanilla PostgreSQL perform bounded application-side cosine scoring when embeddings are present and fall back to lexical results when they are disabled or malformed. Detached workers receive provider metadata only and reload credentials or connection URLs from protected configuration or inherited environment variables.
+
 ## Integration model per agent
 
 | Agent             | Mechanism                          | Hooks/tools wired                                                                       |

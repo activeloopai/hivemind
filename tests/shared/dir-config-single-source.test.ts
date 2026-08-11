@@ -7,17 +7,17 @@ import { fileURLToPath } from "node:url";
  * SINGLE-SOURCE-OF-TRUTH GUARD for per-directory workspace routing.
  *
  * `.hivemind` routing broke repeatedly because it was wired writer-by-writer:
- * each new code path that built a DeeplakeApi from a raw `loadConfig()` silently
+ * each new code path that built a storage backend from a raw `loadConfig()` silently
  * wrote/read the GLOBAL workspace instead of the directory's routed one (the
  * skillify/goals/rules/other-agent bugs). This test makes that class of
  * regression impossible to merge.
  *
- * The invariant: every module that constructs a `DeeplakeApi` MUST obtain its
+ * The invariant: every module that constructs a storage backend MUST obtain its
  * config through a router — `loadRoutedConfig` (the single entry point) or
  * `resolveDirConfig`/`resolveCaptureConfig` (when it also needs the `collect`
  * flag) — UNLESS it is explicitly allow-listed below with a reason.
  *
- * Adding a new DeeplakeApi call site therefore forces a choice: route it, or
+ * Adding a new storage call site therefore forces a choice: route it, or
  * justify why it doesn't (account-level op, creds-based, no directory context).
  * A silent unrouted writer can no longer slip in.
  */
@@ -26,10 +26,14 @@ const __dir = fileURLToPath(new URL(".", import.meta.url));
 const SRC = join(__dir, "..", "..", "src");
 
 /**
- * Files that build a DeeplakeApi but intentionally do NOT route through
+ * Files that build a storage backend but intentionally do NOT route through
  * `.hivemind`. Each MUST carry a reason — this list is the audit trail.
  */
 const ALLOWLIST: Record<string, string> = {
+  "commands/backend.ts":
+    "Global provider selection and connectivity checks are user-level configuration, not directory workspace operations.",
+  "hooks/worker-storage.ts":
+    "Detached workers receive already-routed provider metadata from their parent and have no independent directory context.",
   "commands/session-prune.ts":
     "Account-level cleanup of the user's own sessions; not scoped to a directory's workspace.",
   "commands/docs.ts":
@@ -61,11 +65,13 @@ function rel(abs: string): string {
 
 describe("dir-config single source of truth", () => {
   const files = walk(SRC);
-  const apiSites = files.filter((f) => readFileSync(f, "utf-8").includes("new DeeplakeApi("));
+  const isBackendSite = (src: string) => src.includes("createStorageBackend(") || src.includes("new DeeplakeApi(");
+  const providerInfrastructure = new Set(["storage/factory.ts", "deeplake-api.ts"]);
+  const apiSites = files.filter((f) => !providerInfrastructure.has(rel(f)) && isBackendSite(readFileSync(f, "utf-8")));
 
   it("finds DeeplakeApi construction sites to guard (sanity)", () => {
     // If this ever hits 0 the glob/walk broke and the guard is silently vacuous.
-    expect(apiSites.length).toBeGreaterThan(10);
+    expect(apiSites.length).toBeGreaterThan(20);
   });
 
   it("every DeeplakeApi site routes through .hivemind or is allow-listed with a reason", () => {
@@ -77,7 +83,7 @@ describe("dir-config single source of truth", () => {
       const allowed = key in ALLOWLIST;
       if (!routes && !allowed) {
         offenders.push(
-          `${key}: builds a DeeplakeApi from an unrouted config. ` +
+            `${key}: builds a storage backend from an unrouted config. ` +
             `Use loadRoutedConfig() (src/dir-config.ts), or add an ALLOWLIST entry with a reason.`,
         );
       }
@@ -85,7 +91,7 @@ describe("dir-config single source of truth", () => {
     expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
-  it("the allow-list has no stale entries (each still builds a DeeplakeApi and still does not route)", () => {
+  it("the allow-list has no stale entries (each still builds a backend and still does not route)", () => {
     const stale: string[] = [];
     for (const key of Object.keys(ALLOWLIST)) {
       const abs = join(SRC, key);
@@ -96,8 +102,8 @@ describe("dir-config single source of truth", () => {
         stale.push(`${key}: allow-listed but no longer exists — remove it.`);
         continue;
       }
-      if (!src.includes("new DeeplakeApi(")) {
-        stale.push(`${key}: allow-listed but no longer builds a DeeplakeApi — remove it.`);
+      if (!isBackendSite(src)) {
+        stale.push(`${key}: allow-listed but no longer builds a storage backend — remove it.`);
       } else if (ROUTER_TOKENS.some((t) => src.includes(t))) {
         stale.push(`${key}: now routes — remove it from the allow-list so the guard covers it.`);
       }

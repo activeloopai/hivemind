@@ -21,7 +21,8 @@
 
 import { sqlIdent, sqlStr } from "../utils/sql.js";
 import { docRowId } from "./write.js";
-import type { QueryFn } from "./read.js";
+import { queryDialect, type QueryFn } from "./read.js";
+import { escapedStringPrefix } from "../storage/sql-dialect.js";
 
 /** Parsed `_meta` content. */
 export interface RefreshMeta {
@@ -98,12 +99,13 @@ async function writeMetaRow(
 ): Promise<void> {
   const safe = sqlIdent(tableName);
   const id = docRowId(project, scope, META_DOC_ID);
+  const stringPrefix = escapedStringPrefix(queryDialect(query));
   await query(`DELETE FROM "${safe}" WHERE id = '${sqlStr(id)}'`);
   await query(
     `INSERT INTO "${safe}" ` +
       `(id, doc_id, path, content, anchors, tier, status, project, scope, version, ` +
       `created_at, updated_at, agent, plugin_version) VALUES (` +
-      `'${sqlStr(id)}', '${META_DOC_ID}', '', E'${sqlStr(JSON.stringify(meta))}', '[]', ` +
+      `'${sqlStr(id)}', '${META_DOC_ID}', '', ${stringPrefix}'${sqlStr(JSON.stringify(meta))}', '[]', ` +
       `'slow', 'meta', '${sqlStr(project)}', '${sqlStr(scope)}', 1, ` +
       `'${sqlStr(now)}', '${sqlStr(now)}', 'refresh-meta', '')`,
   );

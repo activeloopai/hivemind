@@ -27,7 +27,7 @@
 
 import { type Config } from "../config.js";
 import { loadRoutedConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
 import { runPull, type QueryFn } from "./pull.js";
 import { migrateLegacyCappedInstalls } from "./legacy-cap-migration.js";
 import { log as _log } from "../utils/debug.js";
@@ -116,13 +116,7 @@ export async function autoPullSkills(deps: AutoPullDeps = {}): Promise<AutoPullR
   if (deps.queryFn) {
     query = deps.queryFn;
   } else {
-    const api = new DeeplakeApi(
-      config.token,
-      config.apiUrl,
-      config.orgId,
-      config.workspaceId,
-      config.skillsTableName,
-    );
+    const api = createStorageBackend(config, config.skillsTableName);
     query = (sql: string) => api.query(sql) as Promise<Record<string, unknown>[]>;
     discoverTableExists = async () => {
       const known = await api.knownTablesOrNull();

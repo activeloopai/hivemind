@@ -12,6 +12,7 @@
 import { serializeFloat4Array } from "../../shell/grep-core.js";
 import { sqlStr } from "../../utils/sql.js";
 import type { RecallHit } from "./recall-format.js";
+import { scoreVectorRows, vectorScanLimit } from "../../storage/vector-search.js";
 
 // `summary` is selected alongside `description` so recall can inject a
 // high-signal EXCERPT (the ## Key Facts / ## Entities sections carry the
@@ -64,7 +65,26 @@ export async function recallTopHit(
     `FROM "${memoryTable}" WHERE ${filters.join(" AND ")} ` +
     `ORDER BY score DESC, ${TIE_BREAK} LIMIT ${Math.max(1, opts.limit ?? 3)}`;
 
-  return mapTopRow(await query(sql), "semantic");
+  try {
+    return mapTopRow(await query(sql), "semantic");
+  } catch (error) {
+    // SQLite and vanilla PostgreSQL intentionally have no vector operator.
+    // Preserve Deeplake's server path, but fall back to a bounded candidate
+    // scan when the provider rejects `<#>`.
+    const localFilters = [`path LIKE '/summaries/%'`, `summary_embedding IS NOT NULL`];
+    if (opts.project) localFilters.push(`project = '${sqlStr(opts.project)}'`);
+    if (opts.excludePath) localFilters.push(`path <> '${sqlStr(opts.excludePath)}'`);
+    const rows = await query(
+      `SELECT ${SELECT_COLS}, summary_embedding FROM "${memoryTable}" ` +
+        `WHERE ${localFilters.join(" AND ")} LIMIT ${vectorScanLimit()}`,
+    ).catch(() => { throw error; });
+    const scored = scoreVectorRows(rows, "summary_embedding", queryEmbedding)
+      .sort((a, b) => b.score - a.score ||
+        String(b.row.last_update_date ?? "").localeCompare(String(a.row.last_update_date ?? "")) ||
+        String(a.row.path ?? "").localeCompare(String(b.row.path ?? "")));
+    if (scored.length === 0) return null;
+    return mapTopRow([{ ...scored[0].row, score: scored[0].score }], "semantic");
+  }
 }
 
 function mapTopRow(rows: Array<Record<string, unknown>>, mode: "semantic"): RecallHit | null {

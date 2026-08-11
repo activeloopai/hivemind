@@ -11,6 +11,8 @@
 import { randomUUID } from "node:crypto";
 import { embeddingSqlLiteral } from "../embeddings/sql.js";
 import { redactSecrets } from "./shared/redact.js";
+import type { StorageDialect } from "../deeplake-schema.js";
+import { escapedStringPrefix } from "../storage/sql-dialect.js";
 
 export type QueryFn = (sql: string) => Promise<Array<Record<string, unknown>>>;
 
@@ -31,6 +33,8 @@ export interface UploadParams {
    * retrieval branch, it just won't show up in the semantic branch.
    */
   embedding?: number[] | null;
+  /** Dialect used by the detached worker's selected storage backend. */
+  dialect?: StorageDialect;
   /**
    * Hivemind plugin version that produced this summary.
    * - INSERT: omitted lands the column default (''), schema-compatible.
@@ -131,7 +135,9 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
   const ts = params.ts ?? new Date().toISOString();
   const desc = extractDescription(text);
   const sizeBytes = Buffer.byteLength(text);
-  const embSql = embeddingSqlLiteral(params.embedding ?? null);
+  const dialect = params.dialect ?? "deeplake";
+  const embSql = embeddingSqlLiteral(params.embedding ?? null, dialect);
+  const stringPrefix = escapedStringPrefix(dialect);
   // Keep undefined sentinel for UPDATE conditional. INSERT still defaults to ''.
   const pluginVersion = params.pluginVersion;
 
@@ -166,10 +172,10 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
       : `plugin_version = '${esc(pluginVersion)}', `;
     const sql =
       `UPDATE "${tableName}" SET ` +
-      `summary = E'${esc(text)}', ` +
+      `summary = ${stringPrefix}'${esc(text)}', ` +
       `summary_embedding = ${embSql}, ` +
       `size_bytes = ${sizeBytes}, ` +
-      `description = E'${esc(desc)}', ` +
+      `description = ${stringPrefix}'${esc(desc)}', ` +
       pluginVersionSet +
       `last_update_date = '${ts}' ` +
       `WHERE path = '${esc(vpath)}'`;
@@ -181,8 +187,8 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
   const pluginVersionForInsert = pluginVersion ?? "";
   const sql =
     `INSERT INTO "${tableName}" (id, path, filename, summary, summary_embedding, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `VALUES ('${randomUUID()}', '${esc(vpath)}', '${esc(fname)}', E'${esc(text)}', ${embSql}, '${esc(userName)}', 'text/markdown', ` +
-    `${sizeBytes}, '${esc(project)}', E'${esc(desc)}', '${esc(agent)}', '${esc(pluginVersionForInsert)}', '${ts}', '${ts}')`;
+    `VALUES ('${randomUUID()}', '${esc(vpath)}', '${esc(fname)}', ${stringPrefix}'${esc(text)}', ${embSql}, '${esc(userName)}', 'text/markdown', ` +
+    `${sizeBytes}, '${esc(project)}', ${stringPrefix}'${esc(desc)}', '${esc(agent)}', '${esc(pluginVersionForInsert)}', '${ts}', '${ts}')`;
   await query(sql);
   return { path: "insert", sql, descLength: desc.length, summaryLength: text.length };
 }

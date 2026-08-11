@@ -31,7 +31,10 @@ const log = (m: string) => _log("skillopt-trigger", m);
 
 /** Creds check — same as the worker (loadConfig accepts file OR env creds). */
 function defaultHasCreds(): boolean {
-  try { return Boolean(loadConfig()?.token); } catch { return false; }
+  try {
+    const config = loadConfig();
+    return Boolean(config && ((config.storage?.kind ?? "deeplake") !== "deeplake" || config.token));
+  } catch { return false; }
 }
 
 /** How many user messages after a skill call to keep judging it (the reaction may not be

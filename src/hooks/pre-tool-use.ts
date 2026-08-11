@@ -9,7 +9,8 @@ import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
 import { resolveDirConfig } from "../dir-config.js";
 import { armSkillOptOnSkillUse } from "./shared/skillopt-hook.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { sqlLike } from "../utils/sql.js";
 import { log as _log } from "../utils/debug.js";
 import { isDirectRun } from "../utils/direct-run.js";
@@ -250,7 +251,7 @@ export function extractGrepParams(
 
 interface ClaudePreToolDeps {
   config?: ReturnType<typeof loadConfig>;
-  createApi?: (table: string, config: NonNullable<ReturnType<typeof loadConfig>>) => DeeplakeApi;
+  createApi?: (table: string, config: NonNullable<ReturnType<typeof loadConfig>>) => StorageBackend;
   executeCompiledBashCommandFn?: typeof executeCompiledBashCommand;
   handleGrepDirectFn?: typeof handleGrepDirect;
   handleGraphVfsFn?: typeof handleGraphVfs;
@@ -268,13 +269,7 @@ interface ClaudePreToolDeps {
 export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreToolDeps = {}): Promise<ClaudePreToolDecision | null> {
   const {
     config: baseConfig = loadConfig(),
-    createApi = (table, activeConfig) => new DeeplakeApi(
-      activeConfig.token,
-      activeConfig.apiUrl,
-      activeConfig.orgId,
-      activeConfig.workspaceId,
-      table,
-    ),
+    createApi = (table, activeConfig) => createStorageBackend(activeConfig, table),
     executeCompiledBashCommandFn = executeCompiledBashCommand,
     handleGrepDirectFn = handleGrepDirect,
     handleGraphVfsFn = handleGraphVfs,
@@ -471,7 +466,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
       logFn(`docs vfs: ${subpath || "(root)"}`);
       const docsCwd = input.cwd ?? process.cwd();
       const docsGit = defaultGit(docsCwd);
-      const result = await handleDocsVfsFn(subpath, (sql) => api.query(sql), config.docsTableName, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(docsCwd).key, readerScope: currentScope(docsGit), git: docsGit });
+      const result = await handleDocsVfsFn(subpath, (sql) => api.query(sql), config.docsTableName, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(docsCwd).key, readerScope: currentScope(docsGit), git: docsGit, dialect: api.dialect });
       const body = result.kind === "ok" ? result.body : `(${result.kind}) ${result.message}`;
       if (input.tool_name === "Read") {
         const file_path = writeReadCacheFileFn(input.session_id, virtualPath, body);
@@ -480,7 +475,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
       return buildAllowDecision(safeEchoCommand(capOutputForClaude(body, { kind: "docs" })), `[hivemind docs] /docs/${subpath}`);
     }
     if (lsDir === "/docs" || lsDir === "/docs/") {
-      const result = await handleDocsVfsFn("", (sql) => api.query(sql), config.docsTableName, { project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+      const result = await handleDocsVfsFn("", (sql) => api.query(sql), config.docsTableName, { project: deriveProjectKey(input.cwd ?? process.cwd()).key, dialect: api.dialect });
       const body = result.kind === "ok" ? result.body : `(${result.kind}) ${result.message}`;
       if (input.tool_name === "Read") {
         const file_path = writeReadCacheFileFn(input.session_id, "/docs/_listing.txt", body);

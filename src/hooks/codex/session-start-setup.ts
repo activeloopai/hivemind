@@ -12,7 +12,8 @@ import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
 import { resolveDirConfig } from "../../dir-config.js";
-import { DeeplakeApi } from "../../deeplake-api.js";
+import { createStorageBackend } from "../../storage/factory.js";
+import type { StorageBackend } from "../../storage/backend.js";
 import { readStdin } from "../../utils/stdin.js";
 import { createPlaceholderSummary } from "../shared/placeholder-summary.js";
 import { log as _log } from "../../utils/debug.js";
@@ -28,10 +29,10 @@ const __bundleDir = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_VERSION = getInstalledVersion(__bundleDir, ".codex-plugin") ?? "";
 
 /** Create a placeholder summary via the shared race-safe writer (see placeholder-summary.ts). */
-async function createPlaceholder(api: DeeplakeApi, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
+async function createPlaceholder(api: StorageBackend, table: string, sessionId: string, cwd: string, userName: string, orgName: string, workspaceId: string): Promise<void> {
   await createPlaceholderSummary(
     (sql) => api.query(sql),
-    { table, sessionId, cwd, userName, orgName, workspaceId, agent: "codex", pluginVersion: PLUGIN_VERSION },
+    { table, sessionId, cwd, userName, orgName, workspaceId, agent: "codex", pluginVersion: PLUGIN_VERSION, dialect: api.dialect },
     wikiLog,
   );
 }
@@ -61,10 +62,12 @@ async function main(): Promise<void> {
   spawnDetachedNodeWorker(join(__bundleDir, "graph-deps-worker.js"));
 
   const creds = loadCredentials();
-  if (!creds?.token) { log("no credentials"); return; }
+  const baseStorageConfig = loadConfig();
+  const storageAvailable = Boolean(baseStorageConfig && ((baseStorageConfig.storage?.kind ?? "deeplake") !== "deeplake" || creds?.token));
+  if (!storageAvailable) { log(creds?.token ? "no storage configuration" : "no credentials"); return; }
 
   // Backfill userName if missing
-  if (!creds.userName) {
+  if (creds && !creds.userName) {
     try {
       const { userInfo } = await import("node:os");
       creds.userName = userInfo().username ?? "unknown";
@@ -83,12 +86,12 @@ async function main(): Promise<void> {
   const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
   if (input.session_id) {
     try {
-      const base = loadConfig();
+      const base = baseStorageConfig;
       if (base) {
         const dirRes = resolveDirConfig(base, input.cwd ?? process.cwd());
         const config = dirRes.config;
         if (captureEnabled && dirRes.collect) {
-          const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+          const api = createStorageBackend(config, config.tableName);
           await api.ensureTable();
           await api.ensureSessionsTable(config.sessionsTableName);
           await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);

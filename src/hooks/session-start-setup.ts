@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../commands/auth.js";
 import { loadRoutedConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
 import { makeWikiLogger } from "../utils/wiki-log.js";
@@ -45,10 +45,12 @@ async function main(): Promise<void> {
   spawnDetachedNodeWorker(join(__bundleDir, "graph-deps-worker.js"));
 
   const creds = loadCredentials();
-  if (!creds?.token) { log("no credentials"); return; }
+  const storageConfig = loadRoutedConfig(input.cwd ?? process.cwd());
+  const storageAvailable = Boolean(storageConfig && ((storageConfig.storage?.kind ?? "deeplake") !== "deeplake" || creds?.token));
+  if (!storageAvailable) { log(creds?.token ? "no storage configuration" : "no credentials"); return; }
 
   // Backfill userName if missing
-  if (!creds.userName) {
+  if (creds && !creds.userName) {
     try {
       const { userInfo } = await import("node:os");
       creds.userName = userInfo().username ?? "unknown";
@@ -66,9 +68,9 @@ async function main(): Promise<void> {
 
   if (input.session_id) {
     try {
-      const config = loadRoutedConfig(input.cwd ?? process.cwd());
+      const config = storageConfig;
       if (config) {
-        const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
+        const api = createStorageBackend(config, config.tableName);
         await api.ensureTable();
         await api.ensureSessionsTable(config.sessionsTableName);
         log("setup complete");

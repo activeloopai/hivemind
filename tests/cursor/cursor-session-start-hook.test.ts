@@ -162,7 +162,7 @@ describe("cursor session-start hook — additional_context payload", () => {
     await runHook();
     const json = consoleLogMock.mock.calls[0][0] as string;
     const payload = JSON.parse(json);
-    expect(payload.additional_context).toContain("DEEPLAKE MEMORY");
+    expect(payload.additional_context).toContain("HIVEMIND MEMORY");
     expect(payload.additional_context).toContain("Logged in to Deeplake as org: acme");
     expect(payload.additional_context).toContain("Hivemind v0.7.0");
   });

@@ -292,7 +292,7 @@ HIVEMIND_DEBUG=1 claude
 
 ## ⚠️ Data collection notice
 
-This plugin captures session activity and stores it in your Deeplake workspace:
+This plugin captures session activity and stores it in your selected Hivemind backend:
 
 | Data                  | What's captured                    |
 |-----------------------|------------------------------------|
@@ -303,7 +303,7 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | Subagent activity     | Subagent tool calls and responses  |
 | Codified skills       | Patterns extracted from traces     |
 
-**All users in your Deeplake workspace can read this data.** That's the design. Shared capability requires shared substrate. A DATA NOTICE is displayed at the start of every session. Workspace-level isolation prevents data leakage between orgs.
+**All users with access to the selected workspace can read this data.** That's the design. Shared capability requires shared substrate. A DATA NOTICE is displayed at the start of every session. Deeplake isolates by workspace; SQLite isolates by database file; PostgreSQL isolates by schema.
 
 ## Configuration
 
@@ -313,6 +313,11 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | `HIVEMIND_ORG_ID`         | _(none)_                  | Organization ID (auto-set by login)        |
 | `HIVEMIND_WORKSPACE_ID`   | `default`                 | Workspace name                             |
 | `HIVEMIND_API_URL`        | `https://api.deeplake.ai` | API endpoint                               |
+| `HIVEMIND_BACKEND`        | `deeplake`                | Storage provider: `deeplake`, `sqlite`, or `postgres` |
+| `HIVEMIND_SQLITE_PATH`    | `~/.deeplake/hivemind.sqlite3` | SQLite database path                 |
+| `HIVEMIND_POSTGRES_URL`   | _(none)_                  | PostgreSQL connection URL; never persisted or printed |
+| `HIVEMIND_POSTGRES_SCHEMA`| `hivemind`                | PostgreSQL schema used as the workspace boundary |
+| `HIVEMIND_VECTOR_SCAN_LIMIT` | `2000`                 | Maximum locally scored embedded rows per search |
 | `HIVEMIND_TABLE`          | `memory`                  | SQL table for summaries and virtual FS     |
 | `HIVEMIND_SESSIONS_TABLE` | `sessions`                | SQL table for per-event session capture    |
 | `HIVEMIND_MEMORY_PATH`    | `~/.deeplake/memory`      | Path that triggers interception            |
@@ -328,6 +333,25 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | `HIVEMIND_RECALL_MIN_OVERLAP` | `2`                   | Proactive recall (lexical mode): min distinct prompt keywords a summary must share to be injected. Higher = stricter. |
 | `HIVEMIND_RECALL_TIMEOUT_MS` | `1000`                 | Proactive recall: hard cap on the synchronous search path; on timeout it skips rather than delay the turn. |
 | `HIVEMIND_DEBUG`          | _(none)_                  | Set to `1` for verbose hook debug logs     |
+
+### Storage backends
+
+Deeplake remains the default and continues to support hosted and BYOC workspaces. Local SQLite needs no account or token:
+
+```bash
+hivemind backend use sqlite
+hivemind backend check
+```
+
+To use PostgreSQL, supply the connection only through the environment. Hivemind validates it before saving the non-secret provider and schema selection:
+
+```bash
+HIVEMIND_POSTGRES_URL='postgresql://user:password@host/database' \
+  hivemind backend use postgres --schema hivemind
+hivemind backend status
+```
+
+Use `hivemind backend use deeplake` to switch back. Switching providers does not migrate data. A SQLite file or PostgreSQL schema represents one workspace, while `.hivemind` org/workspace routing applies only to Deeplake. The compatibility VFS remains mounted at `~/.deeplake/memory` for every provider.
 
 ## Per-directory config (`.hivemind`)
 
@@ -609,4 +633,3 @@ npm run shell
 ## License
 
 Apache License 2.0, © Activeloop, Inc. See [LICENSE](LICENSE) for details.
-

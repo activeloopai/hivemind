@@ -12,6 +12,7 @@
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
+import { realpathSync } from "node:fs";
 
 /**
  * Default port per scheme. If the URL carries `:<defaultPort>` explicitly,
@@ -82,7 +83,7 @@ export function normalizeGitRemoteUrl(url: string): string {
  * `git config` from inside the repo). CodeRabbit P1 fix.
  */
 export function deriveProjectKey(cwd: string): { key: string; project: string } {
-  const absCwd = resolve(cwd);
+  const absCwd = canonicalPath(cwd);
   const project = basename(absCwd) || "unknown";
   let signature: string | null = null;
   try {
@@ -98,4 +99,9 @@ export function deriveProjectKey(cwd: string): { key: string; project: string } 
   const input = signature ?? absCwd;
   const key = createHash("sha1").update(input).digest("hex").slice(0, 16);
   return { key, project };
+}
+
+export function canonicalPath(path: string): string {
+  const resolvedPath = resolve(path);
+  try { return realpathSync.native(resolvedPath); } catch { return resolvedPath; }
 }

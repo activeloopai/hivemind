@@ -162,7 +162,7 @@ describe("hermes session-start hook — context payload", () => {
   it("logged-in branch: emits {context: ...} with the org line + version notice", async () => {
     await runHook();
     const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
-    expect(payload.context).toContain("DEEPLAKE MEMORY");
+    expect(payload.context).toContain("HIVEMIND MEMORY");
     expect(payload.context).toContain("Logged in to Deeplake as org: acme");
     expect(payload.context).toContain("Hivemind v0.7.0");
     // Hermes uses 'context' not 'additional_context' (Cursor's key).

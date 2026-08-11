@@ -14,8 +14,11 @@
  *   3. refineGrepMatches: line-by-line regex match with the usual grep flags.
  */
 
-import type { DeeplakeApi } from "../deeplake-api.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { sqlStr, sqlLike, sqlIdent } from "../utils/sql.js";
+import { scoreVectorRows, vectorScanLimit } from "../storage/vector-search.js";
+import type { StorageDialect } from "../deeplake-schema.js";
+import { likeOperator, textExpression } from "../storage/sql-dialect.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -306,7 +309,7 @@ function buildPathCondition(targetPath: string): string {
  * maps to one round-trip.
  */
 export async function searchDeeplakeTables(
-  api: DeeplakeApi,
+  api: StorageBackend,
   memoryTable: string,
   sessionsTable: string,
   opts: SearchOptions,
@@ -320,6 +323,59 @@ export async function searchDeeplakeTables(
 ): Promise<ContentRow[]> {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, multiWordPatterns } = opts;
   const limit = opts.limit ?? 100;
+
+  // SQLite and vanilla PostgreSQL have no vector operator. Query each source
+  // independently (also avoiding SQLite's compound-select limitations), then
+  // score the bounded embedded candidate set in application code.
+  if (api.capabilities && !api.capabilities.serverVectorSearch) {
+    const textSummary = textExpression("summary", api.dialect);
+    const textMessage = textExpression("message", api.dialect);
+    const localLike = likeOperator(likeOp, api.dialect);
+    const filterPatterns = contentScanOnly
+      ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
+      : (multiWordPatterns && multiWordPatterns.length > 1 ? multiWordPatterns : [escapedPattern]);
+    const memFilter = buildContentFilter(textSummary, localLike, filterPatterns);
+    const sessFilter = buildContentFilter(textMessage, localLike, filterPatterns);
+    const lexicalLimit = Math.min(limit, Number(process.env.HIVEMIND_HYBRID_LEXICAL_LIMIT ?? "20"));
+    const lexicalRows = (await Promise.all([
+      api.query(`SELECT path, ${textSummary} AS content FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${queryEmbedding ? lexicalLimit : limit}`),
+      api.query(`SELECT path, ${textMessage} AS content FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${queryEmbedding ? lexicalLimit : limit}`),
+    ])).flat();
+
+    const ranked: Array<{ path: string; content: string; score: number }> = lexicalRows.map(row => ({
+      path: String(row.path ?? ""),
+      content: typeof row.content === "string" ? row.content : JSON.stringify(row.content ?? ""),
+      score: 2,
+    }));
+    if (queryEmbedding && queryEmbedding.length > 0) {
+      const scanLimit = vectorScanLimit();
+      const [memoryRows, sessionRows] = await Promise.all([
+        api.query(`SELECT path, ${textSummary} AS content, summary_embedding FROM "${memoryTable}" WHERE 1=1${pathFilter} AND summary_embedding IS NOT NULL LIMIT ${scanLimit}`),
+        api.query(`SELECT path, ${textMessage} AS content, message_embedding FROM "${sessionsTable}" WHERE 1=1${pathFilter} AND message_embedding IS NOT NULL LIMIT ${scanLimit}`),
+      ]);
+      for (const { row, score } of scoreVectorRows(memoryRows, "summary_embedding", queryEmbedding)) {
+        ranked.push({ path: String(row.path ?? ""), content: String(row.content ?? ""), score });
+      }
+      for (const { row, score } of scoreVectorRows(sessionRows, "message_embedding", queryEmbedding)) {
+        ranked.push({
+          path: String(row.path ?? ""),
+          content: typeof row.content === "string" ? row.content : JSON.stringify(row.content ?? ""),
+          score,
+        });
+      }
+    }
+    ranked.sort((a, b) => b.score - a.score);
+    const seen = new Set<string>();
+    const result: ContentRow[] = [];
+    for (const row of ranked) {
+      if (!row.path || seen.has(row.path)) continue;
+      seen.add(row.path);
+      result.push({ path: row.path, content: row.content });
+      if (result.length >= limit) break;
+    }
+    if (meta && (lexicalRows.length >= limit || ranked.length > result.length)) meta.truncated = true;
+    return result;
+  }
 
   // ── Hybrid (lexical + semantic) branch ───────────────────────────────────
   // Runs both halves in a single UNION ALL query so each grep = one round-
@@ -461,6 +517,7 @@ export async function searchDocs(
   query: (sql: string) => Promise<Record<string, unknown>[]>,
   docsTable: string,
   opts: SearchOptions,
+  dialect: StorageDialect = "deeplake",
 ): Promise<ContentRow[]> {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, multiWordPatterns } = opts;
   const safeDocsTable = sqlIdent(docsTable);
@@ -468,6 +525,8 @@ export async function searchDocs(
   // Legacy rows carry project '' and stay visible to every project.
   const projFilter = opts.project !== undefined ? ` AND (project = '${sqlStr(opts.project)}' OR project = '')` : "";
   const active = ` AND status = 'active'${projFilter}`;
+  const textContent = textExpression("content", dialect);
+  const localLike = likeOperator(likeOp, dialect);
   const dedup = (rows: Record<string, unknown>[]): ContentRow[] => {
     const seen = new Set<string>();
     const out: ContentRow[] = [];
@@ -487,31 +546,63 @@ export async function searchDocs(
     const filterPatternsForLex = contentScanOnly
       ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
       : [escapedPattern];
-    const lexFilter = buildContentFilter("content::text", likeOp, filterPatternsForLex);
+    const lexFilter = buildContentFilter(textContent, localLike, filterPatternsForLex);
     const lexQuery = lexFilter
-      ? `SELECT doc_id AS path, content::text AS content, 1.0 AS score ` +
+      ? `SELECT doc_id AS path, ${textContent} AS content, 1.0 AS score ` +
         `FROM "${safeDocsTable}" WHERE 1=1${pathFilter}${active}${lexFilter} LIMIT ${lexicalLimit}`
       : null;
+    if (dialect !== "deeplake") {
+      const lexicalRows = lexQuery ? await query(lexQuery) : [];
+      const candidates = await query(
+        `SELECT doc_id AS path, ${textContent} AS content, content_embedding ` +
+        `FROM "${safeDocsTable}" WHERE content_embedding IS NOT NULL${pathFilter}${active} ` +
+        `LIMIT ${vectorScanLimit()}`,
+      );
+      const semanticRows = scoreVectorRows(candidates, "content_embedding", queryEmbedding)
+        .slice(0, semanticLimit)
+        .map(({ row, score }) => ({ ...row, score }));
+      return dedup([
+        ...lexicalRows.map(row => ({ ...row, score: 2 })),
+        ...semanticRows,
+      ].sort((a, b) => Number(b.score ?? 0) - Number(a.score ?? 0)));
+    }
     const semQuery =
-      `SELECT doc_id AS path, content::text AS content, (content_embedding <#> ${vecLit}) AS score ` +
+      `SELECT doc_id AS path, ${textContent} AS content, (content_embedding <#> ${vecLit}) AS score ` +
       `FROM "${safeDocsTable}" WHERE ARRAY_LENGTH(content_embedding, 1) > 0${pathFilter}${active} ` +
       `ORDER BY score DESC LIMIT ${semanticLimit}`;
     const parts = [semQuery];
     if (lexQuery) parts.push(lexQuery);
     const unionSql = parts.map(q => `(${q})`).join(" UNION ALL ");
-    const rows = await query(
-      `SELECT path, content, score FROM (${unionSql}) AS combined ORDER BY score DESC LIMIT ${semanticLimit + lexicalLimit}`,
-    );
-    return dedup(rows);
+    try {
+      const rows = await query(
+        `SELECT path, content, score FROM (${unionSql}) AS combined ORDER BY score DESC LIMIT ${semanticLimit + lexicalLimit}`,
+      );
+      return dedup(rows);
+    } catch (serverError) {
+      // Local providers score a bounded vector candidate set in-process.
+      const lexicalRows = lexQuery ? await query(lexQuery) : [];
+      const candidates = await query(
+        `SELECT doc_id AS path, ${textContent} AS content, content_embedding ` +
+        `FROM "${safeDocsTable}" WHERE content_embedding IS NOT NULL${pathFilter}${active} ` +
+        `LIMIT ${vectorScanLimit()}`,
+      ).catch(() => { throw serverError; });
+      const semanticRows = scoreVectorRows(candidates, "content_embedding", queryEmbedding)
+        .slice(0, semanticLimit)
+        .map(({ row, score }) => ({ ...row, score }));
+      return dedup([
+        ...lexicalRows.map(row => ({ ...row, score: 2 })),
+        ...semanticRows,
+      ].sort((a, b) => Number(b.score ?? 0) - Number(a.score ?? 0)));
+    }
   }
 
   // Lexical-only (no query embedding available — daemon off / disabled).
   const filterPatterns = contentScanOnly
     ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
     : (multiWordPatterns && multiWordPatterns.length > 1 ? multiWordPatterns : [escapedPattern]);
-  const filter = buildContentFilter("content::text", likeOp, filterPatterns);
+  const filter = buildContentFilter(textContent, localLike, filterPatterns);
   const rows = await query(
-    `SELECT doc_id AS path, content::text AS content ` +
+    `SELECT doc_id AS path, ${textContent} AS content ` +
     `FROM "${safeDocsTable}" WHERE 1=1${pathFilter}${active}${filter} LIMIT ${limit}`,
   );
   return dedup(rows);
@@ -716,7 +807,7 @@ export function refineGrepMatches(
 
 /** Convenience: search both tables, normalize session JSON, then refine. */
 export async function grepBothTables(
-  api: DeeplakeApi,
+  api: StorageBackend,
   memoryTable: string,
   sessionsTable: string,
   params: GrepMatchParams,

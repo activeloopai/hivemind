@@ -23,7 +23,8 @@
  */
 
 import { loadRoutedConfig } from "../dir-config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { getVersion } from "../cli/version.js";
 import {
   insertRule,
@@ -62,14 +63,8 @@ function requireConfig(): ReturnType<typeof loadRoutedConfig> & object {
   return cfg;
 }
 
-function makeApi(cfg: NonNullable<ReturnType<typeof loadRoutedConfig>>): DeeplakeApi {
-  return new DeeplakeApi(
-    cfg.token,
-    cfg.apiUrl,
-    cfg.orgId,
-    cfg.workspaceId,
-    cfg.tableName, // unused by ensureRulesTable but the constructor needs it
-  );
+function makeApi(cfg: NonNullable<ReturnType<typeof loadRoutedConfig>>): StorageBackend {
+  return createStorageBackend(cfg, cfg.rulesTableName);
 }
 
 function parseScope(args: string[]): "team" | null {
@@ -176,7 +171,7 @@ export async function runRulesCommand(args: string[]): Promise<void> {
         text,
         assigned_by: cfg.userName,
         plugin_version: pluginVersion,
-      });
+      }, api.dialect);
       console.log(`Added rule ${out.rule_id} (v${out.version}).`);
     } catch (err) {
       console.error(`Add failed: ${(err as Error).message}`);
@@ -237,7 +232,7 @@ export async function runRulesCommand(args: string[]): Promise<void> {
         text: newText,
         assigned_by: cfg.userName,
         plugin_version: pluginVersion,
-      });
+      }, api.dialect);
       console.log(`Edited rule ${out.rule_id} → v${out.version}.`);
     } catch (err) {
       console.error(`Edit failed: ${(err as Error).message}`);
@@ -259,7 +254,7 @@ export async function runRulesCommand(args: string[]): Promise<void> {
         rule_id: ruleId,
         assigned_by: cfg.userName,
         plugin_version: pluginVersion,
-      });
+      }, api.dialect);
       console.log(`Marked rule ${out.rule_id} done (v${out.version}).`);
     } catch (err) {
       console.error(`Done failed: ${(err as Error).message}`);

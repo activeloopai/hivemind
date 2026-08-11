@@ -1,4 +1,6 @@
 import { sqlIdent, sqlStr } from "../../utils/sql.js";
+import type { StorageDialect } from "../../deeplake-schema.js";
+import { jsonLiteral } from "../../storage/sql-dialect.js";
 
 /**
  * Fields for one session-event row written by the capture hooks. All string
@@ -43,12 +45,16 @@ export interface DirectSessionInsertParams {
  * still recognised by isSessionInsertQuery() in deeplake-api.ts (which enables
  * the transient-403 retry path for session writes).
  */
-export function buildDirectSessionInsertSql(sessionsTable: string, p: DirectSessionInsertParams): string {
+export function buildDirectSessionInsertSql(
+  sessionsTable: string,
+  p: DirectSessionInsertParams,
+  dialect: StorageDialect = "deeplake",
+): string {
   const table = sqlIdent(sessionsTable);
   const id = sqlStr(p.id);
   return (
     `INSERT INTO "${table}" (id, path, filename, message, message_embedding, author, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
-    `SELECT '${id}', '${sqlStr(p.sessionPath)}', '${sqlStr(p.filename)}', '${p.jsonForSql}'::jsonb, ${p.embeddingSql}, '${sqlStr(p.userName)}', ` +
+    `SELECT '${id}', '${sqlStr(p.sessionPath)}', '${sqlStr(p.filename)}', ${jsonLiteral(p.jsonForSql, dialect)}, ${p.embeddingSql}, '${sqlStr(p.userName)}', ` +
     `${p.sizeBytes}, '${sqlStr(p.projectName)}', '${sqlStr(p.description)}', '${sqlStr(p.agent)}', '${sqlStr(p.pluginVersion)}', '${sqlStr(p.timestamp)}', '${sqlStr(p.timestamp)}' ` +
     `WHERE NOT EXISTS (SELECT 1 FROM "${table}" WHERE id = '${id}')`
   );

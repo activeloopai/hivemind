@@ -25,7 +25,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { loadConfig } from "../config.js";
-import { DeeplakeApi } from "../deeplake-api.js";
+import { createStorageBackend } from "../storage/factory.js";
+import type { StorageBackend } from "../storage/backend.js";
 import { getVersion } from "../cli/version.js";
 import {
   setDoc,
@@ -67,6 +68,7 @@ import { defaultGit } from "../docs/candidates.js";
 import { currentScope } from "../docs/branch-scope.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
 import { makeDocEmbedder } from "../docs/embed.js";
+import { storageQuery } from "../docs/read.js";
 import { backfillDocEmbeddings } from "../docs/backfill.js";
 import { loadCurrentSnapshot } from "../graph/load-current.js";
 import { isMissingTableError } from "../deeplake-schema.js";
@@ -204,8 +206,8 @@ function requireConfig(): NonNullable<ReturnType<typeof loadConfig>> {
   return cfg;
 }
 
-function makeApi(cfg: NonNullable<ReturnType<typeof loadConfig>>): DeeplakeApi {
-  return new DeeplakeApi(cfg.token, cfg.apiUrl, cfg.orgId, cfg.workspaceId, cfg.tableName);
+function makeApi(cfg: NonNullable<ReturnType<typeof loadConfig>>): StorageBackend {
+  return createStorageBackend(cfg, cfg.tableName);
 }
 
 function flagValue(args: string[], name: string): string | undefined {
@@ -386,7 +388,7 @@ export async function runDocsCommand(args: string[]): Promise<void> {
   const cfg = requireConfig();
   const api = makeApi(cfg);
   const tableName = cfg.docsTableName;
-  const query = api.query.bind(api);
+  const query = storageQuery(api);
   const pluginVersion = getVersion();
 
   // Only write subcommands need DDL — read-only show/list (and refresh

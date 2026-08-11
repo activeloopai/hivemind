@@ -22,7 +22,7 @@
 
 import { readStdin } from "../../utils/stdin.js";
 import { loadRoutedConfig } from "../../dir-config.js";
-import { DeeplakeApi } from "../../deeplake-api.js";
+import { createStorageBackend } from "../../storage/factory.js";
 import { log as _log } from "../../utils/debug.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
 import { touchesMemory, rewritePaths } from "../memory-path-utils.js";
@@ -73,13 +73,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const api = new DeeplakeApi(
-    config.token,
-    config.apiUrl,
-    config.orgId,
-    config.workspaceId,
-    config.tableName,
-  );
+  const api = createStorageBackend(config, config.tableName);
 
   try {
     const result = await handleGrepDirect(api, config.tableName, config.sessionsTableName, grepParams);

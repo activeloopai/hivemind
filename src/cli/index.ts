@@ -38,6 +38,7 @@ import { docsInstallLines, docsHintShown, markDocsHintShown } from "../docs/inst
 import { runUpdate } from "./update.js";
 import { renderCliHelpBlock } from "./skillify-spec.js";
 import { maybeAutoMineLocal } from "../skillify/spawn-mine-local-worker.js";
+import { runBackendCommand, selectedBackend } from "../commands/backend.js";
 
 const AUTH_SUBCOMMANDS = new Set([
   "whoami",
@@ -87,6 +88,13 @@ Usage:
                             Run device-flow login (open browser). --ref
                             attributes a new signup to a referrer code.
   hivemind status           Show which assistants are wired up.
+  hivemind backend status
+  hivemind backend use deeplake
+  hivemind backend use sqlite [--path <file>]
+  hivemind backend use postgres [--schema <name>]
+  hivemind backend check
+      Select and validate the persistence provider. PostgreSQL reads its
+      connection URL only from HIVEMIND_POSTGRES_URL.
   hivemind update [--dry-run]
       Check npm for a newer @deeplake/hivemind, upgrade the CLI, and refresh
       every detected agent bundle. Single command for all agents.
@@ -144,7 +152,7 @@ Codebase graph (per-repo AST snapshot + cloud sync):
                                              snapshot for HEAD into local.
   hivemind graph uninstall                   Remove the managed post-commit
                                              hook.
-  Agents query the local snapshot via the Deeplake mount at
+  Agents query the local snapshot via the Hivemind memory mount at
   ~/.deeplake/memory/graph/{index.md,find/<pattern>,show/<handle-or-pattern>}.
 
 Skill management (mine + share reusable Claude skills across the org):
@@ -373,7 +381,7 @@ async function runInstallAll(args: string[]): Promise<void> {
   log(`Installing hivemind ${getVersion()} for: ${targets.join(", ")}`);
   log("");
 
-  if (!skipAuth && !isLoggedIn()) {
+  if (!skipAuth && selectedBackend() === "deeplake" && !isLoggedIn()) {
     await runAuthGate(args);
   }
 
@@ -410,7 +418,10 @@ async function runInstallAll(args: string[]): Promise<void> {
   await runInstallDocsOnboarding({
     cwd: process.cwd(),
     interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
-    loggedIn: isLoggedIn(),
+    // Local providers are fully usable without Deeplake credentials. The
+    // onboarding helper's legacy `loggedIn` flag really means "storage is
+    // available", so base the gate on provider-neutral configuration.
+    loggedIn: loadConfig() !== null,
     home: homedir(),
     gitTopLevel: (cwd) => tryGitTopLevel(cwd),
     loadCfg: () => loadConfig(),
@@ -510,8 +521,17 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (cmd === "login") { await ensureLoggedIn(parseRef(args.slice(1))); return; }
+  if (cmd === "login") {
+    if (selectedBackend() !== "deeplake") throw new Error("hivemind login is only available with the deeplake backend");
+    await ensureLoggedIn(parseRef(args.slice(1)));
+    return;
+  }
   if (cmd === "status") { runStatus(); return; }
+  if (cmd === "backend") {
+    const code = await runBackendCommand(args.slice(1));
+    if (code !== 0) process.exit(code);
+    return;
+  }
   if (cmd === "update") {
     const code = await runUpdate({ dryRun: hasFlag(args.slice(1), "--dry-run") });
     process.exit(code);
@@ -617,6 +637,9 @@ async function main(): Promise<void> {
 
   // Account / org / workspace subcommands — passthrough to the auth-login dispatcher.
   if (AUTH_SUBCOMMANDS.has(cmd)) {
+    if (selectedBackend() !== "deeplake" && cmd !== "autoupdate") {
+      throw new Error(`hivemind ${cmd} is only available with the deeplake backend`);
+    }
     await runAuthCommand(args);
     return;
   }

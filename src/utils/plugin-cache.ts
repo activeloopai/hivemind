@@ -1,4 +1,4 @@
-import { cpSync, existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { homedir, platform } from "node:os";
 
@@ -36,9 +36,13 @@ export function resolveVersionedPluginDir(bundleDir: string): {
   const version = basename(pluginDir);
   if (!isSemver(version)) return null;
   if (basename(versionsRoot) !== "hivemind") return null;
-  const expectedPrefix = resolve(homedir(), ".claude", "plugins", "cache") + sep;
-  if (!resolve(versionsRoot).startsWith(expectedPrefix)) return null;
-  return { pluginDir, versionsRoot, version };
+  const cacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
+  let canonicalRoot = resolve(versionsRoot);
+  let canonicalCache = cacheRoot;
+  try { canonicalRoot = realpathSync.native(canonicalRoot); } catch { /* keep resolved path */ }
+  try { canonicalCache = realpathSync.native(canonicalCache); } catch { /* keep resolved path */ }
+  if (!canonicalRoot.startsWith(canonicalCache + sep)) return null;
+  return { pluginDir: join(canonicalRoot, version), versionsRoot: canonicalRoot, version };
 }
 
 function snapshotPath(pluginDir: string, pid: number): string {

@@ -6,6 +6,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { MEMORY_COLUMNS, SESSIONS_COLUMNS, renderColumnSql } from "../../src/deeplake-schema.js";
 
 const BUNDLE_DIRS = [
   "harnesses/claude-code/bundle",
@@ -40,21 +41,20 @@ describe("src-level schema includes new embedding columns", () => {
   // Schemas moved from inline strings in deeplake-api.ts to structured
   // arrays in deeplake-schema.ts. The bundles still need to inline these
   // columns, but the source of truth is now the new module.
-  const schemaSrc = read("src/deeplake-schema.ts");
-
-  // Scope each regex to a single object literal (`[^}]*`) so a later
-  // entry's SQL can't accidentally satisfy the match.
-
   it("MEMORY_COLUMNS includes summary_embedding FLOAT4[]", () => {
-    expect(schemaSrc).toMatch(/name:\s*"summary_embedding"[^}]*FLOAT4\[\]/);
+    const column = MEMORY_COLUMNS.find(item => item.name === "summary_embedding");
+    expect(column?.type).toBe("vector");
+    expect(renderColumnSql(column!, "deeplake")).toBe("FLOAT4[]");
   });
 
   it("SESSIONS_COLUMNS includes message_embedding FLOAT4[]", () => {
-    expect(schemaSrc).toMatch(/name:\s*"message_embedding"[^}]*FLOAT4\[\]/);
+    const column = SESSIONS_COLUMNS.find(item => item.name === "message_embedding");
+    expect(column?.type).toBe("vector");
+    expect(renderColumnSql(column!, "deeplake")).toBe("FLOAT4[]");
   });
 
   it("embedding columns do NOT use TEXT (regression guard)", () => {
-    expect(schemaSrc).not.toMatch(/name:\s*"summary_embedding"[^}]*TEXT/);
-    expect(schemaSrc).not.toMatch(/name:\s*"message_embedding"[^}]*TEXT/);
+    expect(renderColumnSql(MEMORY_COLUMNS.find(item => item.name === "summary_embedding")!, "deeplake")).not.toBe("TEXT");
+    expect(renderColumnSql(SESSIONS_COLUMNS.find(item => item.name === "message_embedding")!, "deeplake")).not.toBe("TEXT");
   });
 });
