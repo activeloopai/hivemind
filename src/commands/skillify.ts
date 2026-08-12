@@ -12,6 +12,7 @@
  *   hivemind skillify team remove <username>       — remove a username from the team list
  *   hivemind skillify team list                    — list current team members
  *   hivemind skillify pull [skill-name] [opts]     — fetch skills from Deeplake to local FS
+ *   hivemind skillify push <skill-name> --review   — inspect a candidate without publishing
  *   hivemind skillify status                       — show counter + per-project state
  *
  * The team list is consumed by the worker when scope=team: SQL filter
@@ -274,6 +275,7 @@ async function pushSkills(args: string[]): Promise<void> {
   // Parse flags first so the remaining positional is the required skill name.
   const work = [...args];
   const fromRaw = takeFlagValue(work, "--from") ?? "project";
+  const review = takeBooleanFlag(work, "--review");
   const dryRun = takeBooleanFlag(work, "--dry-run");
   const skillName = work[0];
 
@@ -283,7 +285,7 @@ async function pushSkills(args: string[]): Promise<void> {
     throw new Error(`Invalid --from '${fromRaw}'. Use 'project' or 'global'.`);
   }
   if (!skillName) {
-    throw new Error("Usage: hivemind skillify push <skill-name> [--from project|global] [--dry-run]");
+    throw new Error("Usage: hivemind skillify push <skill-name> [--from project|global] [--dry-run] [--review]");
   }
 
   const config = loadRoutedConfig();
@@ -306,7 +308,7 @@ async function pushSkills(args: string[]): Promise<void> {
     pusher: config.userName,
     scope: scopeCfg.scope,
     agent: "cli",
-    dryRun,
+    dryRun: dryRun || review,
   });
 
   const src = fromRaw === "global"
@@ -315,6 +317,19 @@ async function pushSkills(args: string[]): Promise<void> {
   const verDesc = summary.previousVersion === null
     ? `v${summary.version} (new)`
     : `v${summary.previousVersion} → v${summary.version}`;
+
+  if (review) {
+    console.log(`Review candidate: ${summary.name} (proposed v${summary.version})`);
+    console.log(`File:         ${summary.localPath}`);
+    console.log(`Author:       ${summary.author}`);
+    console.log(`Scope:        ${summary.scope}`);
+    console.log("--- BEGIN SKILL.md ---");
+    console.log(readFileSync(summary.localPath, "utf-8").trimEnd());
+    console.log("--- END SKILL.md ---");
+    console.log("Review mode — nothing written. Rerun without --review to publish.");
+    return;
+  }
+
   const tag = summary.action === "pushed" ? "✓ pushed" : "→ would push";
   console.log(`Source:      ${src}`);
   console.log(`  ${tag.padEnd(15)} ${summary.name.padEnd(40)} ${verDesc.padEnd(18)} (${summary.author}, scope=${summary.scope})`);

@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 
+const { apiQueries } = vi.hoisted(() => ({ apiQueries: [] as string[] }));
+
 // Logged paths use the native separator (product builds them with path.join).
 // Compare against join(...) substrings rather than "/"-literal regexes so the
 // assertions hold on Windows too.
@@ -16,7 +18,8 @@ vi.mock("../../src/config.js", () => ({
 }));
 vi.mock("../../src/deeplake-api.js", () => ({
   DeeplakeApi: class {
-    async query(_sql: string) {
+    async query(sql: string) {
+      apiQueries.push(sql);
       return [{
         name: "fake-skill", project: "p", project_key: "pk",
         body: "body", version: 1, source_agent: "claude_code",
@@ -57,6 +60,7 @@ beforeEach(() => {
   else configBackup = null;
   try { rmSync(CONFIG_PATH); } catch { /* nothing */ }
   logged = []; erred = [];
+  apiQueries.length = 0;
   // Default: logged in. Individual tests can `loadConfigMock.mockReturnValueOnce(null)`
   // to exercise the unauthenticated path of unpull (no login needed) vs --not-mine
   // (which still requires myUsername).
@@ -338,6 +342,20 @@ describe("push", () => {
     expect(out).toContain("Dry run — nothing written to the org skills table.");
   });
 
+  it("--review prints the exact candidate and proposed version without writing", async () => {
+    writeProjectSkill("demo-skill");
+    runSkillifyCommand(["push", "demo-skill", "--review"]);
+    await new Promise(r => setImmediate(r));
+    const out = logged.join("\n");
+
+    expect(out).toContain("Review candidate: demo-skill (proposed v2)");
+    expect(out).toContain("--- BEGIN SKILL.md ---");
+    expect(out).toContain("## Body");
+    expect(out).toContain("--- END SKILL.md ---");
+    expect(out).toContain("Review mode — nothing written");
+    expect(apiQueries.some(sql => sql.includes("INSERT INTO"))).toBe(false);
+  });
+
   it("real push reports the published version (remote v1 → v2)", async () => {
     writeProjectSkill("demo-skill");
     runSkillifyCommand(["push", "demo-skill"]);
@@ -364,7 +382,7 @@ describe("push", () => {
   it("missing skill name is rejected with the exact usage line", async () => {
     runSkillifyCommand(["push"]);
     await new Promise(r => setImmediate(r));
-    expect(erred.join("\n")).toContain("Usage: hivemind skillify push <skill-name> [--from project|global] [--dry-run]");
+    expect(erred.join("\n")).toContain("Usage: hivemind skillify push <skill-name> [--from project|global] [--dry-run] [--review]");
   });
 
   it("requires login with the exact message", async () => {
