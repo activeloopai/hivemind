@@ -373,6 +373,33 @@ describe("push", () => {
     expect(apiQueries.some(sql => sql.includes("INSERT INTO"))).toBe(false);
   });
 
+  it("--review rejects bidirectional formatting controls", async () => {
+    const path = writeProjectSkill("bidi-skill");
+    writeFileSync(path, `${readFileSync(path, "utf-8")}\nvisible \u202Ehidden`);
+
+    runSkillifyCommand(["push", "bidi-skill", "--review"]);
+    await new Promise(r => setImmediate(r));
+
+    expect(erred.join("\n")).toContain("push error: cannot review 'bidi-skill': SKILL.md contains terminal control character U+202E at offset");
+    expect(logged.join("\n")).not.toContain("hidden");
+    expect(apiQueries.some(sql => sql.includes("INSERT INTO"))).toBe(false);
+  });
+
+  it("--review escapes formatting controls in the displayed source path", async () => {
+    const unsafeDir = join(pushDir, "path\u202Espoof");
+    mkdirSync(unsafeDir, { recursive: true });
+    process.chdir(unsafeDir);
+    writeProjectSkill("path-skill");
+
+    runSkillifyCommand(["push", "path-skill", "--review"]);
+    await new Promise(r => setImmediate(r));
+    const out = logged.join("\n");
+
+    expect(out).not.toContain("\u202E");
+    expect(out).toContain("\\u202E");
+    expect(apiQueries.some(sql => sql.includes("INSERT INTO"))).toBe(false);
+  });
+
   it("real push reports the published version (remote v1 → v2)", async () => {
     writeProjectSkill("demo-skill");
     runSkillifyCommand(["push", "demo-skill"]);

@@ -62,6 +62,39 @@ describe("loadScopeConfig", () => {
     }
   });
 
+  it("ignores legacy config when the current state directory already exists", async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "skillify-scope-review-current-"));
+    const previousHome = process.env.HOME;
+    const previousOverride = process.env.HIVEMIND_STATE_DIR;
+    process.env.HOME = fakeHome;
+    delete process.env.HIVEMIND_STATE_DIR;
+
+    const legacyDir = join(fakeHome, ".deeplake", "state", "skilify");
+    const currentDir = join(fakeHome, ".deeplake", "state", "skillify");
+    mkdirSync(legacyDir, { recursive: true });
+    mkdirSync(currentDir, { recursive: true });
+    writeFileSync(join(legacyDir, "config.json"), JSON.stringify({
+      scope: "team", team: ["alice"], install: "global",
+    }));
+
+    try {
+      vi.resetModules();
+      const { loadScopeConfig: loadFresh } = await import("../../src/skillify/scope-config.js");
+      expect(loadFresh({ migrateLegacy: false })).toEqual({
+        scope: "me", team: [], install: "project",
+      });
+      expect(existsSync(legacyDir)).toBe(true);
+      expect(existsSync(currentDir)).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousOverride === undefined) delete process.env.HIVEMIND_STATE_DIR;
+      else process.env.HIVEMIND_STATE_DIR = previousOverride;
+      rmSync(fakeHome, { recursive: true, force: true });
+      vi.resetModules();
+    }
+  });
+
   it("returns the default when config file is malformed JSON", () => {
     mkdirSync(STATE_DIR, { recursive: true });
     writeFileSync(CONFIG_PATH, "{this isn't json");

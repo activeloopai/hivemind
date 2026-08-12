@@ -200,15 +200,40 @@ function takeBooleanFlag(args: string[], flag: string): boolean {
   return true;
 }
 
+function isBidirectionalControl(code: number): boolean {
+  return code === 0x061c ||
+    code === 0x200e ||
+    code === 0x200f ||
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2066 && code <= 0x2069);
+}
+
 function assertTerminalSafeReview(name: string, text: string): void {
   for (let offset = 0; offset < text.length; offset++) {
     const code = text.charCodeAt(offset);
     const allowedWhitespace = code === 0x09 || code === 0x0a || code === 0x0d;
-    if ((!allowedWhitespace && code < 0x20) || (code >= 0x7f && code <= 0x9f)) {
+    if (
+      (!allowedWhitespace && code < 0x20) ||
+      (code >= 0x7f && code <= 0x9f) ||
+      isBidirectionalControl(code)
+    ) {
       const point = `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
       throw new Error(`cannot review '${name}': SKILL.md contains terminal control character ${point} at offset ${offset}`);
     }
   }
+}
+
+function escapeTerminalMetadata(text: string): string {
+  let escaped = "";
+  for (let offset = 0; offset < text.length; offset++) {
+    const code = text.charCodeAt(offset);
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f) || isBidirectionalControl(code)) {
+      escaped += `\\u${code.toString(16).toUpperCase().padStart(4, "0")}`;
+    } else {
+      escaped += text[offset];
+    }
+  }
+  return escaped;
 }
 
 async function pullSkills(args: string[]): Promise<void> {
@@ -332,8 +357,8 @@ async function pushSkills(args: string[]): Promise<void> {
   if (review) {
     assertTerminalSafeReview(summary.name, summary.sourceText);
     console.log(`Review candidate: ${summary.name} (proposed v${summary.version})`);
-    console.log(`File:         ${summary.localPath}`);
-    console.log(`Author:       ${summary.author}`);
+    console.log(`File:         ${escapeTerminalMetadata(summary.localPath)}`);
+    console.log(`Author:       ${escapeTerminalMetadata(summary.author)}`);
     console.log(`Scope:        ${summary.scope}`);
     console.log("--- BEGIN SKILL.md ---");
     console.log(summary.sourceText);

@@ -52,9 +52,15 @@ export function loadScopeConfig(options: LoadScopeConfigOptions = {}): ScopeConf
   const shouldMigrate = options.migrateLegacy ?? true;
   if (shouldMigrate) migrateLegacyStateDir();
 
+  const currentStateDir = getStateDir();
   let CONFIG_PATH = configPath();
-  if (!shouldMigrate && !existsSync(CONFIG_PATH) && !process.env.HIVEMIND_STATE_DIR?.trim()) {
-    const legacyPath = join(dirname(getStateDir()), "skilify", "config.json");
+  if (
+    !shouldMigrate &&
+    !existsSync(CONFIG_PATH) &&
+    !existsSync(currentStateDir) &&
+    !process.env.HIVEMIND_STATE_DIR?.trim()
+  ) {
+    const legacyPath = join(dirname(currentStateDir), "skilify", "config.json");
     if (existsSync(legacyPath)) CONFIG_PATH = legacyPath;
   }
   if (!existsSync(CONFIG_PATH)) return DEFAULT;
