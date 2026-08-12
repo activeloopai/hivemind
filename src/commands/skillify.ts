@@ -200,6 +200,7 @@ function takeBooleanFlag(args: string[], flag: string): boolean {
   return true;
 }
 
+/** Identifies Unicode formatting controls that can visually reorder terminal output. */
 function isBidirectionalControl(code: number): boolean {
   return code === 0x061c ||
     code === 0x200e ||
@@ -208,6 +209,7 @@ function isBidirectionalControl(code: number): boolean {
     (code >= 0x2066 && code <= 0x2069);
 }
 
+/** Rejects skill content that could alter or disguise the review shown in a terminal. */
 function assertTerminalSafeReview(name: string, text: string): void {
   for (let offset = 0; offset < text.length; offset++) {
     const code = text.charCodeAt(offset);
@@ -223,6 +225,7 @@ function assertTerminalSafeReview(name: string, text: string): void {
   }
 }
 
+/** Renders untrusted metadata visibly without changing its underlying value. */
 function escapeTerminalMetadata(text: string): string {
   let escaped = "";
   for (let offset = 0; offset < text.length; offset++) {
