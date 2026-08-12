@@ -363,24 +363,30 @@ describe("push", () => {
 
   it("--review rejects terminal control sequences without publishing", async () => {
     const path = writeProjectSkill("unsafe-skill");
-    writeFileSync(path, `${readFileSync(path, "utf-8")}\n\u001b]8;;https://example.com\u0007spoof\u001b]8;;\u0007`);
+    const candidate = `${readFileSync(path, "utf-8")}\n\u001b]8;;https://example.com\u0007spoof\u001b]8;;\u0007`;
+    writeFileSync(path, candidate);
 
     runSkillifyCommand(["push", "unsafe-skill", "--review"]);
     await new Promise(r => setImmediate(r));
 
-    expect(erred.join("\n")).toContain("push error: cannot review 'unsafe-skill': SKILL.md contains terminal control character U+001B at offset");
+    expect(erred).toEqual([
+      `push error: cannot review 'unsafe-skill': SKILL.md contains terminal control character U+001B at offset ${candidate.indexOf("\u001b")}`,
+    ]);
     expect(logged.join("\n")).not.toContain("spoof");
     expect(apiQueries.some(sql => sql.includes("INSERT INTO"))).toBe(false);
   });
 
   it("--review rejects bidirectional formatting controls", async () => {
     const path = writeProjectSkill("bidi-skill");
-    writeFileSync(path, `${readFileSync(path, "utf-8")}\nvisible \u202Ehidden`);
+    const candidate = `${readFileSync(path, "utf-8")}\nvisible \u202Ehidden`;
+    writeFileSync(path, candidate);
 
     runSkillifyCommand(["push", "bidi-skill", "--review"]);
     await new Promise(r => setImmediate(r));
 
-    expect(erred.join("\n")).toContain("push error: cannot review 'bidi-skill': SKILL.md contains terminal control character U+202E at offset");
+    expect(erred).toEqual([
+      `push error: cannot review 'bidi-skill': SKILL.md contains terminal control character U+202E at offset ${candidate.indexOf("\u202E")}`,
+    ]);
     expect(logged.join("\n")).not.toContain("hidden");
     expect(apiQueries.some(sql => sql.includes("INSERT INTO"))).toBe(false);
   });
