@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -12,6 +12,9 @@ import { storageQuery } from "../../src/docs/read.js";
 import { upsertDoc } from "../../src/docs/write.js";
 import { insertRule } from "../../src/rules/write.js";
 import { buildPlaceholderInsertSql } from "../../src/hooks/shared/placeholder-summary.js";
+import { configFromStorage, type SqliteStorageConfig } from "../../src/config.js";
+import { createStorageBackend } from "../../src/storage/factory.js";
+import { registerSqlStorageFeatureParity } from "./helpers/sql-storage-feature-parity.js";
 
 const names = {
   memory: "memory",
@@ -150,4 +153,56 @@ describe("SQLite feature parity smoke", () => {
     expect(await backend.query(`SELECT text FROM "hivemind_rules" WHERE rule_id = $1`, [rule.rule_id]))
       .toEqual([{ text: "Use the local backend" }]);
   });
+});
+
+registerSqlStorageFeatureParity("SQLite", true, async () => {
+  const parityRoot = mkdtempSync(join(tmpdir(), "hivemind-sqlite-parity-"));
+  const databasePath = join(parityRoot, "memory.sqlite3");
+  const configPath = join(parityRoot, "config.json");
+  mkdirSync(join(parityRoot, ".deeplake"), { recursive: true });
+  writeFileSync(join(parityRoot, ".deeplake", "credentials.json"), JSON.stringify({
+    token: "unused-local-token",
+    orgId: "local",
+    userName: "alice",
+    workspaceId: "default",
+  }));
+  const storage: SqliteStorageConfig = {
+    kind: "sqlite",
+    path: databasePath,
+    orgId: "local",
+    orgName: "local",
+    userName: "alice",
+    workspaceId: "default",
+    tableName: "memory",
+    sessionsTableName: "sessions",
+    skillsTableName: "skills",
+    rulesTableName: "hivemind_rules",
+    goalsTableName: "hivemind_goals",
+    kpisTableName: "hivemind_kpis",
+    docsTableName: "hivemind_docs",
+    codebaseTableName: "codebase",
+    memoryPath: join(parityRoot, "memory"),
+    vectorScanLimit: 100,
+  };
+  const parityBackend = createStorageBackend(storage);
+  return {
+    backend: parityBackend,
+    config: configFromStorage(storage),
+    root: parityRoot,
+    childEnv: {
+      ...process.env,
+      HOME: parityRoot,
+      USERPROFILE: parityRoot,
+      HIVEMIND_BACKEND: "sqlite",
+      HIVEMIND_SQLITE_PATH: databasePath,
+      HIVEMIND_CONFIG_PATH: configPath,
+      HIVEMIND_EMBEDDINGS: "false",
+      HIVEMIND_MEMORY_PATH: storage.memoryPath,
+    },
+    malformedVector: "not-json",
+    cleanup: async () => {
+      await parityBackend.close();
+      rmSync(parityRoot, { recursive: true, force: true });
+    },
+  };
 });

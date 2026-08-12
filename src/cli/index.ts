@@ -637,7 +637,10 @@ async function main(): Promise<void> {
 
   // Account / org / workspace subcommands — passthrough to the auth-login dispatcher.
   if (AUTH_SUBCOMMANDS.has(cmd)) {
-    if (selectedBackend() !== "deeplake" && cmd !== "autoupdate") {
+    // `sessions prune` operates through the provider-neutral StorageBackend
+    // and is valid for SQLite/PostgreSQL. The other account-management
+    // commands still require Deeplake's auth and organization APIs.
+    if (selectedBackend() !== "deeplake" && cmd !== "autoupdate" && cmd !== "sessions") {
       throw new Error(`hivemind ${cmd} is only available with the deeplake backend`);
     }
     await runAuthCommand(args);

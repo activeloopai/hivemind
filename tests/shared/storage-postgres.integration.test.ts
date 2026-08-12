@@ -1,5 +1,11 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { configFromStorage, type PostgresStorageConfig } from "../../src/config.js";
+import { createStorageBackend } from "../../src/storage/factory.js";
 import { PostgresBackend } from "../../src/storage/postgres.js";
+import { registerSqlStorageFeatureParity } from "./helpers/sql-storage-feature-parity.js";
 
 const connectionUrl = process.env.HIVEMIND_TEST_POSTGRES_URL;
 const run = connectionUrl ? describe : describe.skip;
@@ -36,4 +42,62 @@ run("PostgreSQL storage contract", () => {
       await backend.close();
     }
   }, 30_000);
+});
+
+registerSqlStorageFeatureParity("PostgreSQL", Boolean(connectionUrl), async () => {
+  const root = mkdtempSync(join(tmpdir(), "hivemind-postgres-parity-"));
+  const schema = `hivemind_parity_${process.pid}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const configPath = join(root, "config.json");
+  mkdirSync(join(root, ".deeplake"), { recursive: true });
+  writeFileSync(join(root, ".deeplake", "credentials.json"), JSON.stringify({
+    token: "unused-local-token",
+    orgId: "local",
+    userName: "alice",
+    workspaceId: "default",
+  }));
+  const storage: PostgresStorageConfig = {
+    kind: "postgres",
+    connectionUrl: connectionUrl!,
+    schema,
+    orgId: "local",
+    orgName: "local",
+    userName: "alice",
+    workspaceId: "default",
+    tableName: "memory",
+    sessionsTableName: "sessions",
+    skillsTableName: "skills",
+    rulesTableName: "hivemind_rules",
+    goalsTableName: "hivemind_goals",
+    kpisTableName: "hivemind_kpis",
+    docsTableName: "hivemind_docs",
+    codebaseTableName: "codebase",
+    memoryPath: join(root, "memory"),
+    vectorScanLimit: 100,
+  };
+  const backend = createStorageBackend(storage);
+  return {
+    backend,
+    config: configFromStorage(storage),
+    root,
+    childEnv: {
+      ...process.env,
+      HOME: root,
+      USERPROFILE: root,
+      HIVEMIND_BACKEND: "postgres",
+      HIVEMIND_POSTGRES_URL: connectionUrl!,
+      HIVEMIND_POSTGRES_SCHEMA: schema,
+      HIVEMIND_CONFIG_PATH: configPath,
+      HIVEMIND_EMBEDDINGS: "false",
+      HIVEMIND_MEMORY_PATH: storage.memoryPath,
+    },
+    malformedVector: [1],
+    cleanup: async () => {
+      try {
+        await backend.execute(`DROP SCHEMA "${schema}" CASCADE`);
+      } finally {
+        await backend.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  };
 });

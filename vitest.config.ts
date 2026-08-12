@@ -75,6 +75,51 @@ export default defineConfig({
       // on the new code without having to first bring the whole
       // (~500-file) codebase up to 80%.
       thresholds: {
+        // SQL storage providers — exercised against real SQLite files on
+        // every run, a PostgreSQL 16 service in CI, plus pool/factory unit
+        // boundaries so local coverage does not depend on a live server.
+        "src/storage/backend.ts": {
+          statements: 80,
+          branches: 80,
+          functions: 80,
+          lines: 80,
+        },
+        "src/storage/factory.ts": {
+          statements: 80,
+          branches: 80,
+          functions: 80,
+          lines: 80,
+        },
+        "src/storage/postgres.ts": {
+          statements: 80,
+          branches: 80,
+          functions: 80,
+          lines: 80,
+        },
+        "src/storage/sqlite.ts": {
+          statements: 80,
+          branches: 80,
+          functions: 80,
+          lines: 80,
+        },
+        "src/storage/sql-dialect.ts": {
+          statements: 80,
+          branches: 80,
+          functions: 80,
+          lines: 80,
+        },
+        "src/storage/vector-search.ts": {
+          statements: 80,
+          branches: 80,
+          functions: 80,
+          lines: 80,
+        },
+        "src/commands/backend.ts": {
+          statements: 80,
+          branches: 80,
+          functions: 80,
+          lines: 80,
+        },
         // PR #302 — feat: per-directory .hivemind config. The resolver is
         // fully unit-tested; the hook gate is exercised via the capture/
         // session-start wiring tests. Lock both at 90.

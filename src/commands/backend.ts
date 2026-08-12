@@ -68,6 +68,10 @@ async function checkSelected(): Promise<void> {
   }
   const backend = createStorageBackend(config);
   try {
+    // A successful selection should leave a usable backend, not merely prove
+    // that the database socket/file opens. Initialization is additive and
+    // idempotent, so this also heals older local schemas during `check`.
+    await backend.initializeSchema();
     await backend.query("SELECT 1 AS ok");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
