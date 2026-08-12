@@ -16,7 +16,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { migrateLegacyStateDir } from "./legacy-migration.js";
 import { getStateDir } from "./state-dir.js";
 
@@ -43,9 +43,20 @@ function configPath(): string {
 
 const DEFAULT: ScopeConfig = { scope: "me", team: [], install: "project" };
 
-export function loadScopeConfig(): ScopeConfig {
-  migrateLegacyStateDir();
-  const CONFIG_PATH = configPath();
+export interface LoadScopeConfigOptions {
+  /** Set false for read-only commands that must not rename the legacy state directory. */
+  migrateLegacy?: boolean;
+}
+
+export function loadScopeConfig(options: LoadScopeConfigOptions = {}): ScopeConfig {
+  const shouldMigrate = options.migrateLegacy ?? true;
+  if (shouldMigrate) migrateLegacyStateDir();
+
+  let CONFIG_PATH = configPath();
+  if (!shouldMigrate && !existsSync(CONFIG_PATH) && !process.env.HIVEMIND_STATE_DIR?.trim()) {
+    const legacyPath = join(dirname(getStateDir()), "skilify", "config.json");
+    if (existsSync(legacyPath)) CONFIG_PATH = legacyPath;
+  }
   if (!existsSync(CONFIG_PATH)) return DEFAULT;
   try {
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));

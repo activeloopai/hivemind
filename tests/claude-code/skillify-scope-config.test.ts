@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadScopeConfig, saveScopeConfig } from "../../src/skillify/scope-config.js";
 
@@ -28,6 +28,38 @@ describe("loadScopeConfig", () => {
   it("returns the default when no config file exists", () => {
     const cfg = loadScopeConfig();
     expect(cfg).toEqual({ scope: "me", team: [], install: "project" });
+  });
+
+  it("can read a legacy config without migrating either state directory", async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "skillify-scope-review-"));
+    const previousHome = process.env.HOME;
+    const previousOverride = process.env.HIVEMIND_STATE_DIR;
+    process.env.HOME = fakeHome;
+    delete process.env.HIVEMIND_STATE_DIR;
+
+    const legacyDir = join(fakeHome, ".deeplake", "state", "skilify");
+    const currentDir = join(fakeHome, ".deeplake", "state", "skillify");
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, "config.json"), JSON.stringify({
+      scope: "team", team: ["alice"], install: "global",
+    }));
+
+    try {
+      vi.resetModules();
+      const { loadScopeConfig: loadFresh } = await import("../../src/skillify/scope-config.js");
+      expect(loadFresh({ migrateLegacy: false })).toEqual({
+        scope: "team", team: ["alice"], install: "global",
+      });
+      expect(existsSync(legacyDir)).toBe(true);
+      expect(existsSync(currentDir)).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousOverride === undefined) delete process.env.HIVEMIND_STATE_DIR;
+      else process.env.HIVEMIND_STATE_DIR = previousOverride;
+      rmSync(fakeHome, { recursive: true, force: true });
+      vi.resetModules();
+    }
   });
 
   it("returns the default when config file is malformed JSON", () => {

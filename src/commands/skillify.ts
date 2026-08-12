@@ -200,6 +200,17 @@ function takeBooleanFlag(args: string[], flag: string): boolean {
   return true;
 }
 
+function assertTerminalSafeReview(name: string, text: string): void {
+  for (let offset = 0; offset < text.length; offset++) {
+    const code = text.charCodeAt(offset);
+    const allowedWhitespace = code === 0x09 || code === 0x0a || code === 0x0d;
+    if ((!allowedWhitespace && code < 0x20) || (code >= 0x7f && code <= 0x9f)) {
+      const point = `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
+      throw new Error(`cannot review '${name}': SKILL.md contains terminal control character ${point} at offset ${offset}`);
+    }
+  }
+}
+
 async function pullSkills(args: string[]): Promise<void> {
   // Parse flags first so the remaining positional is the optional skill name
   const work = [...args];
@@ -296,7 +307,7 @@ async function pushSkills(args: string[]): Promise<void> {
     config.token, config.apiUrl, config.orgId, config.workspaceId, config.skillsTableName,
   );
   const query = (sql: string) => api.query(sql) as Promise<Record<string, unknown>[]>;
-  const scopeCfg = loadScopeConfig();
+  const scopeCfg = loadScopeConfig({ migrateLegacy: !review });
 
   const summary = await runPush({
     query,
@@ -319,14 +330,15 @@ async function pushSkills(args: string[]): Promise<void> {
     : `v${summary.previousVersion} → v${summary.version}`;
 
   if (review) {
+    assertTerminalSafeReview(summary.name, summary.sourceText);
     console.log(`Review candidate: ${summary.name} (proposed v${summary.version})`);
     console.log(`File:         ${summary.localPath}`);
     console.log(`Author:       ${summary.author}`);
     console.log(`Scope:        ${summary.scope}`);
     console.log("--- BEGIN SKILL.md ---");
-    console.log(readFileSync(summary.localPath, "utf-8").trimEnd());
+    console.log(summary.sourceText);
     console.log("--- END SKILL.md ---");
-    console.log("Review mode — nothing written. Rerun without --review to publish.");
+    console.log("Review mode — nothing published. Rerun without --review to publish.");
     return;
   }
 

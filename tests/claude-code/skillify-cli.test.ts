@@ -303,11 +303,12 @@ describe("push", () => {
   // The DeeplakeApi mock returns a fake row (version 1) for the version SELECT,
   // so a real push bumps to v2; the INSERT response is ignored.
   let pushDir: string;
-  function writeProjectSkill(name: string): void {
+  function writeProjectSkill(name: string): string {
     const dir = join(process.cwd(), ".claude", "skills", name);
     mkdirSync(dir, { recursive: true });
+    const path = join(dir, "SKILL.md");
     writeFileSync(
-      join(dir, "SKILL.md"),
+      path,
       [
         "---",
         `name: ${name}`,
@@ -321,6 +322,7 @@ describe("push", () => {
         "## Body",
       ].join("\n"),
     );
+    return path;
   }
   beforeEach(() => {
     pushDir = mkdtempSync(join(tmpdir(), "skillify-cli-push-"));
@@ -343,7 +345,9 @@ describe("push", () => {
   });
 
   it("--review prints the exact candidate and proposed version without writing", async () => {
-    writeProjectSkill("demo-skill");
+    const path = writeProjectSkill("demo-skill");
+    const candidate = `${readFileSync(path, "utf-8")}  \n\n`;
+    writeFileSync(path, candidate);
     runSkillifyCommand(["push", "demo-skill", "--review"]);
     await new Promise(r => setImmediate(r));
     const out = logged.join("\n");
@@ -352,7 +356,20 @@ describe("push", () => {
     expect(out).toContain("--- BEGIN SKILL.md ---");
     expect(out).toContain("## Body");
     expect(out).toContain("--- END SKILL.md ---");
-    expect(out).toContain("Review mode — nothing written");
+    expect(logged).toContain(candidate);
+    expect(out).toContain("Review mode — nothing published");
+    expect(apiQueries.some(sql => sql.includes("INSERT INTO"))).toBe(false);
+  });
+
+  it("--review rejects terminal control sequences without publishing", async () => {
+    const path = writeProjectSkill("unsafe-skill");
+    writeFileSync(path, `${readFileSync(path, "utf-8")}\n\u001b]8;;https://example.com\u0007spoof\u001b]8;;\u0007`);
+
+    runSkillifyCommand(["push", "unsafe-skill", "--review"]);
+    await new Promise(r => setImmediate(r));
+
+    expect(erred.join("\n")).toContain("push error: cannot review 'unsafe-skill': SKILL.md contains terminal control character U+001B at offset");
+    expect(logged.join("\n")).not.toContain("spoof");
     expect(apiQueries.some(sql => sql.includes("INSERT INTO"))).toBe(false);
   });
 
