@@ -601,8 +601,8 @@ npm run shell
 ## Star history
 
 <p align="center">
-  <a href="https://star-history.com/#activeloopai/hivemind&Date">
-    <img src="https://api.star-history.com/svg?repos=activeloopai/hivemind&type=Date" alt="Star History Chart" width="600">
+  <a href="https://star-history.dera.page/#activeloopai/hivemind&type=Date">
+    <img src="https://star-history.dera.page/svg?repos=activeloopai/hivemind&type=Date" alt="Star History Chart" width="600">
   </a>
 </p>
 
