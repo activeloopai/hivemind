@@ -155,8 +155,15 @@ export function appendQueuedSessionRow(
  *   - writeSync is looped, because it is allowed to write fewer bytes than
  *     asked for;
  *   - a write that throws part-way is truncated back to where it started, so
- *     the queue never holds half a JSON line (which would fail every later
- *     drain).
+ *     the queue never holds half a JSON line.
+ *
+ * Rollback is what makes this single-writer: truncating while another process
+ * appends would destroy its rows, so the rollback is skipped unless the file is
+ * exactly as this call left it. The Cowork ingest — the only caller — holds an
+ * exclusive lock (~/.deeplake/.cowork-ingest.lock) for the whole tick, so two
+ * appenders do not overlap in practice. A malformed tail that survives anyway
+ * (failed rollback, a crash mid-write, an older build) is skipped by
+ * readQueuedRows rather than wedging the drain forever.
  */
 export function appendQueuedSessionRows(
   rows: QueuedSessionRow[],
@@ -181,12 +188,17 @@ export function appendQueuedSessionRows(
         written += writeSync(fd, payload, written, payload.length - written);
       }
     } catch (e: unknown) {
+      // A throwing writeSync does not report how much it wrote, so bound the
+      // rollback by what this call could possibly have written: if the file has
+      // grown past startedAt + payload.length, another writer appended in the
+      // meantime and truncating would destroy its rows. Leave it alone then —
+      // readQueuedRows skips the malformed tail instead of wedging the drain.
       try {
-        ftruncateSync(fd, startedAt);
+        if (fstatSync(fd).size <= startedAt + payload.length) ftruncateSync(fd, startedAt);
       } catch {
-        /* nothing better to do — the drain will report the bad line */
+        /* rollback failed — the malformed line is skipped at read time */
       }
-      log("session-queue", `append failed, rolled back ${rows.length} row(s): ${e instanceof Error ? e.message : String(e)}`);
+      log("session-queue", `append failed after ${written}/${payload.length} bytes: ${e instanceof Error ? e.message : String(e)}`);
       return { queuePath, appended: false };
     }
   } finally {
@@ -511,11 +523,22 @@ async function flushInflightFile(
 
 function readQueuedRows(path: string): QueuedSessionRow[] {
   const raw = readFileSync(path, "utf-8");
-  return raw
-    .split("\n")
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as QueuedSessionRow);
+  const rows: QueuedSessionRow[] = [];
+  let malformed = 0;
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      rows.push(JSON.parse(trimmed) as QueuedSessionRow);
+    } catch {
+      // A half-written record — a crash mid-append, a rollback that could not
+      // run. Skipping it costs one message; throwing would fail this flush and
+      // every flush after it, stranding the whole queue permanently.
+      malformed += 1;
+    }
+  }
+  if (malformed > 0) log("session-queue", `skipped ${malformed} malformed row(s) in ${path}`);
+  return rows;
 }
 
 function requeueInflight(queuePath: string, inflightPath: string): void {
