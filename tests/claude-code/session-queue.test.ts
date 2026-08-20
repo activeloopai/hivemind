@@ -89,7 +89,7 @@ describe("session queue", () => {
     const queueDir = makeQueueDir();
     const row = makeRow("session-append", 1);
 
-    const queuePath = appendQueuedSessionRow(row, queueDir);
+    const { queuePath } = appendQueuedSessionRow(row, queueDir);
     const lines = readFileSync(queuePath, "utf-8").trim().split("\n");
 
     expect(lines).toHaveLength(1);
@@ -600,7 +600,7 @@ describe("session queue", () => {
 describe("oversized queue files", () => {
   it("rejects an append that would push the file past the ceiling", () => {
     const queueDir = makeQueueDir();
-    const queuePath = appendQueuedSessionRow(makeRow("s-edge", 0), queueDir);
+    const { queuePath } = appendQueuedSessionRow(makeRow("s-edge", 0), queueDir);
     const existing = readFileSync(queuePath, "utf-8");
 
     // Ceiling one byte above the current size: the file is below the limit,
@@ -611,7 +611,7 @@ describe("oversized queue files", () => {
 
   it("stops appending once the queue file reaches the size ceiling", () => {
     const queueDir = makeQueueDir();
-    const queuePath = appendQueuedSessionRow(makeRow("s-cap", 0), queueDir, 10_000);
+    const { queuePath } = appendQueuedSessionRow(makeRow("s-cap", 0), queueDir, 10_000);
     const afterFirst = readFileSync(queuePath, "utf-8");
 
     // Simulate a queue that has already reached the ceiling.
@@ -627,17 +627,22 @@ describe("oversized queue files", () => {
 
   it("drops queue and inflight files past the ceiling and leaves the rest alone", () => {
     const queueDir = makeQueueDir();
-    const small = appendQueuedSessionRow(makeRow("s-small", 0), queueDir);
+    const { queuePath: small } = appendQueuedSessionRow(makeRow("s-small", 0), queueDir);
     const big = join(queueDir, "s-big.jsonl");
     const bigInflight = join(queueDir, "s-big-2.inflight");
-    writeFileSync(big, "x".repeat(4096));
-    writeFileSync(bigInflight, "x".repeat(4096));
+    const atCeiling = join(queueDir, "s-exact.jsonl");
+    writeFileSync(big, "x".repeat(4097));
+    writeFileSync(bigInflight, "x".repeat(5000));
+    writeFileSync(atCeiling, "x".repeat(4096));
 
     const reclaimed = gcOversizedQueueFiles(queueDir, 4096);
 
-    expect(reclaimed).toBe(8192);
+    expect(reclaimed).toBe(9097);
     expect(existsSync(big)).toBe(false);
     expect(existsSync(bigInflight)).toBe(false);
+    // A file sitting exactly at the ceiling is legitimate — appends stop there,
+    // so it still holds rows the backend has not taken. It must survive.
+    expect(existsSync(atCeiling)).toBe(true);
     expect(existsSync(small)).toBe(true);
   });
 

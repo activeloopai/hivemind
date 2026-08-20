@@ -19,11 +19,16 @@ import { tmpdir } from "node:os";
 
 const SESSION_ID = "b27efa59-a8bc-4ea3-8b02-18cbc608ae17";
 
-// Every upload fails, the way it does on a disconnected network filesystem.
+// The upload fails while `offline` is true, the way it does on a disconnected
+// network filesystem, and succeeds once it flips back.
+const uploads: string[] = [];
+let offline = true;
 vi.mock("../../src/deeplake-api.js", () => ({
   DeeplakeApi: class {
-    async query(): Promise<never> {
-      throw new Error("fetch failed: ECONNREFUSED");
+    async query(sql: string): Promise<never[]> {
+      if (offline) throw new Error("fetch failed: ECONNREFUSED");
+      uploads.push(sql);
+      return [];
     }
     async ensureSessionsTable(): Promise<void> {}
   },
@@ -70,6 +75,8 @@ beforeEach(() => {
   prevHome = process.env.HOME;
   home = mkdtempSync(join(tmpdir(), "cowork-leak-"));
   process.env.HOME = home;
+  offline = true;
+  uploads.length = 0;
   mkdirSync(join(home, ".deeplake"), { recursive: true });
   writeFileSync(
     join(home, ".deeplake", "credentials.json"),
@@ -118,5 +125,25 @@ describe("cowork queue growth when uploads fail", () => {
 
     // The second tick queues the one new message, not the whole transcript.
     expect(queuedRows()).toBe(2);
+  });
+
+  it("uploads the queue left by an outage on a later tick, with no new transcript content", async () => {
+    const path = transcriptPath();
+    writeFileSync(path, line("queued while offline"));
+
+    const { ingestCoworkSessions } = await import("../../src/mcp/cowork-ingest.js");
+    await ingestCoworkSessions();
+    expect(queuedRows()).toBe(1);
+    expect(uploads).toHaveLength(0);
+
+    // Network is back. The transcript has NOT changed, so this tick appends
+    // nothing — the queued row must still be uploaded and the file cleared.
+    offline = false;
+    await ingestCoworkSessions();
+
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]).toContain("queued while offline");
+    expect(queuedRows()).toBe(0);
+    expect(queueBytes()).toBe(0);
   });
 });

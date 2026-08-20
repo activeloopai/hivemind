@@ -20,6 +20,7 @@
  * several concurrent MCP processes Cowork spawns from double-inserting.
  */
 import {
+  appendFileSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -60,6 +61,7 @@ const STATE_PATH = join(DEEPLAKE_DIR, "cowork-ingest-state.json");
 const LOCK_PATH = join(DEEPLAKE_DIR, ".cowork-ingest.lock");
 const COWORK_QUEUE_DIR = join(DEEPLAKE_DIR, "queue-cowork");
 const NOTICE_MARKER = join(DEEPLAKE_DIR, ".cowork-data-notice-shown");
+const DROPPED_MARKER = join(COWORK_QUEUE_DIR, ".dropped-rows.jsonl");
 const LOCK_STALE_MS = 60_000;
 // Refresh the held lock's mtime well inside LOCK_STALE_MS so a long ingest is
 // never mistaken for a dead run and stolen mid-flight by a second process.
@@ -152,6 +154,33 @@ function findTranscripts(root: string): string[] {
   };
   walk(root);
   return out;
+}
+
+/** True when the Cowork queue still holds rows the backend has not taken. */
+function hasQueuedRows(): boolean {
+  try {
+    return readdirSync(COWORK_QUEUE_DIR).some(n => n.endsWith(".jsonl") || n.endsWith(".inflight"));
+  } catch {
+    return false; // no queue dir yet
+  }
+}
+
+/**
+ * Note rows the queue ceiling refused. The transcript watermark has already
+ * moved past them, so they will never be uploaded; this file is the only
+ * durable trace of that loss.
+ */
+function recordDroppedRows(count: number): void {
+  try {
+    mkdirSync(COWORK_QUEUE_DIR, { recursive: true });
+    appendFileSync(
+      DROPPED_MARKER,
+      `${JSON.stringify({ at: new Date().toISOString(), droppedRows: count })}\n`,
+    );
+  } catch {
+    /* best effort */
+  }
+  log("cowork-ingest", `dropped ${count} row(s): the session queue is at its size ceiling`);
 }
 
 function loadState(): IngestState {
@@ -370,6 +399,7 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
     const state = loadState();
     const transcripts = findTranscripts(root);
     let appendedAny = false;
+    let dropped = 0;
 
     for (const path of transcripts) {
       let lines: string[];
@@ -400,9 +430,13 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
             pluginVersion: getVersion(),
             timestamp: String(entry.timestamp),
           });
-          appendQueuedSessionRow(row, COWORK_QUEUE_DIR);
-          appendedAny = true;
-          ingested += 1;
+          const { appended } = appendQueuedSessionRow(row, COWORK_QUEUE_DIR);
+          if (appended) {
+            appendedAny = true;
+            ingested += 1;
+          } else {
+            dropped += 1;
+          }
         }
       }
       state.processedLines[path] = lines.length;
@@ -419,7 +453,18 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
     // ~5 GB/day (2026-08-19).
     if (appendedAny) saveState(state);
 
-    if (appendedAny) {
+    if (dropped > 0) {
+      // The watermark advanced past these lines, so they are gone for good.
+      // Record it where support can find it — a debug log nobody has enabled
+      // is not a record. Only reachable after a very long upload outage.
+      recordDroppedRows(dropped);
+    }
+
+    // Drain whenever anything is queued — not only when this tick appended.
+    // Before the watermark fix, the replay itself kept appendedAny true and so
+    // kept retrying; without it, a queue left behind by an outage would never
+    // be uploaded if the Cowork session had meanwhile gone quiet.
+    if (appendedAny || hasQueuedRows()) {
       const api = new DeeplakeApi(
         config.token,
         config.apiUrl,

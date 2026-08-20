@@ -125,11 +125,17 @@ export function buildQueuedSessionRow(args: {
   };
 }
 
+export interface AppendQueuedRowResult {
+  queuePath: string;
+  /** false when the row was dropped because the file sits at its ceiling. */
+  appended: boolean;
+}
+
 export function appendQueuedSessionRow(
   row: QueuedSessionRow,
   queueDir = DEFAULT_QUEUE_DIR,
   maxQueueBytes = MAX_SESSION_QUEUE_BYTES,
-): string {
+): AppendQueuedRowResult {
   mkdirSync(queueDir, { recursive: true });
   const sessionId = extractSessionId(row.path);
   const queuePath = getQueuePath(queueDir, sessionId);
@@ -138,10 +144,10 @@ export function appendQueuedSessionRow(
   // "the last row may overshoot it by however large that row happened to be".
   if (fileSize(queuePath) + Buffer.byteLength(payload, "utf-8") > maxQueueBytes) {
     log("session-queue", `queue file at the ${maxQueueBytes}-byte ceiling, dropping row: ${queuePath}`);
-    return queuePath;
+    return { queuePath, appended: false };
   }
   appendFileSync(queuePath, payload);
-  return queuePath;
+  return { queuePath, appended: true };
 }
 
 /**
@@ -162,7 +168,11 @@ export function gcOversizedQueueFiles(queueDir = DEFAULT_QUEUE_DIR, maxQueueByte
     if (!name.endsWith(".jsonl") && !name.endsWith(".inflight")) continue;
     const path = join(queueDir, name);
     const size = fileSize(path);
-    if (size < maxQueueBytes) continue;
+    // Strictly ABOVE the ceiling. appendQueuedSessionRow never lets a file
+    // exceed it, so anything caught here is residue from a build that predates
+    // the ceiling — not rows the backend is still waiting for. A file sitting
+    // exactly at the ceiling is legitimate and is left alone to be flushed.
+    if (size <= maxQueueBytes) continue;
     try {
       rmSync(path, { force: true });
       reclaimed += size;
