@@ -637,9 +637,13 @@ describe("oversized queue files", () => {
     writeFileSync(bigInflight, "x".repeat(5000));
     writeFileSync(atCeiling, "x".repeat(4096));
 
-    const reclaimed = gcOversizedQueueFiles(queueDir, 4096);
+    const losses: Array<[string, number]> = [];
+    const reclaimed = gcOversizedQueueFiles(queueDir, 4096, (path, size) => losses.push([path, size]));
 
     expect(reclaimed).toBe(9097);
+    // The caller is told exactly what was thrown away, so the loss can be
+    // recorded durably instead of only in a debug log.
+    expect(losses.sort()).toEqual([[big, 4097], [bigInflight, 5000]].sort());
     expect(existsSync(big)).toBe(false);
     expect(existsSync(bigInflight)).toBe(false);
     // A file sitting exactly at the ceiling is legitimate — appends stop there,

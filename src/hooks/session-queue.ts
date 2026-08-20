@@ -156,7 +156,11 @@ export function appendQueuedSessionRow(
  * would otherwise sit on disk forever — it is the residue of an upload outage,
  * not data the backend is still waiting for. Returns the bytes reclaimed.
  */
-export function gcOversizedQueueFiles(queueDir = DEFAULT_QUEUE_DIR, maxQueueBytes = MAX_SESSION_QUEUE_BYTES): number {
+export function gcOversizedQueueFiles(
+  queueDir = DEFAULT_QUEUE_DIR,
+  maxQueueBytes = MAX_SESSION_QUEUE_BYTES,
+  onDropped?: (path: string, sizeBytes: number) => void,
+): number {
   let reclaimed = 0;
   let names: string[];
   try {
@@ -180,6 +184,10 @@ export function gcOversizedQueueFiles(queueDir = DEFAULT_QUEUE_DIR, maxQueueByte
       rmSync(path, { force: true });
       reclaimed += size;
       log("session-queue", `dropped oversized queue file (${size} bytes): ${path}`);
+      // The rows in it were never acknowledged by the backend. Hand the caller
+      // the loss so it can be recorded somewhere durable rather than only in a
+      // debug log nobody has enabled.
+      onDropped?.(path, size);
     } catch {
       /* best effort */
     }

@@ -139,9 +139,15 @@ describe("cowork queue growth when uploads fail", () => {
     // Network is back. The transcript has NOT changed, so this tick appends
     // nothing — the queued row must still be uploaded and the file cleared.
     offline = false;
-    await ingestCoworkSessions();
+    const result = await ingestCoworkSessions();
 
+    // ingested === 0 is what separates this from the old behaviour: on
+    // origin/main the tick only uploaded because it had re-appended the
+    // transcript first, which would show up here as ingested > 0.
+    expect(result).toEqual({ ingested: 0 });
     expect(uploads).toHaveLength(1);
+    // Exactly one row in that statement — one VALUES tuple, not a replayed batch.
+    expect(uploads[0].match(/::jsonb/g)).toHaveLength(1);
     // Assert the row that actually went up, not a substring of the statement.
     const jsonb = uploads[0].match(/'(\{.*?\})'::jsonb/)?.[1];
     expect(jsonb).toBeDefined();

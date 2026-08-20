@@ -173,17 +173,18 @@ function hasQueuedRows(): boolean {
  * moved past them, so they will never be uploaded; this file is the only
  * durable trace of that loss.
  */
-function recordDroppedRows(count: number): void {
+function recordLoss(detail: Record<string, unknown>): void {
   try {
     mkdirSync(DEEPLAKE_DIR, { recursive: true });
-    appendFileSync(
-      DROPPED_MARKER,
-      `${JSON.stringify({ at: new Date().toISOString(), droppedRows: count })}\n`,
-    );
+    appendFileSync(DROPPED_MARKER, `${JSON.stringify({ at: new Date().toISOString(), ...detail })}\n`);
   } catch {
     /* best effort */
   }
-  log("cowork-ingest", `dropped ${count} row(s): the session queue is at its size ceiling`);
+  log("cowork-ingest", `recorded queue loss: ${JSON.stringify(detail)}`);
+}
+
+function recordDroppedRows(count: number): void {
+  recordLoss({ droppedRows: count, reason: "session queue at its size ceiling" });
 }
 
 function loadState(): IngestState {
@@ -398,7 +399,9 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
   try {
     // Reclaim any queue file left oversized by an earlier upload outage before
     // writing more rows — such a file can no longer be flushed.
-    gcOversizedQueueFiles(COWORK_QUEUE_DIR);
+    gcOversizedQueueFiles(COWORK_QUEUE_DIR, undefined, (path, sizeBytes) =>
+      recordLoss({ droppedQueueFile: path, sizeBytes }),
+    );
     const state = loadState();
     const transcripts = findTranscripts(root);
     let appendedAny = false;
