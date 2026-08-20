@@ -631,6 +631,8 @@ describe("oversized queue files", () => {
     const big = join(queueDir, "s-big.jsonl");
     const bigInflight = join(queueDir, "s-big-2.inflight");
     const atCeiling = join(queueDir, "s-exact.jsonl");
+    const journal = join(queueDir, ".dropped-rows.jsonl");
+    writeFileSync(journal, "x".repeat(9000));
     writeFileSync(big, "x".repeat(4097));
     writeFileSync(bigInflight, "x".repeat(5000));
     writeFileSync(atCeiling, "x".repeat(4096));
@@ -644,6 +646,9 @@ describe("oversized queue files", () => {
     // so it still holds rows the backend has not taken. It must survive.
     expect(existsSync(atCeiling)).toBe(true);
     expect(existsSync(small)).toBe(true);
+    // Dot-prefixed entries are queue metadata, not rows owed to the backend —
+    // GC must never collect them, however large they get.
+    expect(existsSync(journal)).toBe(true);
   });
 
   it("defaults the ceiling to 256 MB", () => {

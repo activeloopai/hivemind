@@ -165,6 +165,9 @@ export function gcOversizedQueueFiles(queueDir = DEFAULT_QUEUE_DIR, maxQueueByte
     return 0;
   }
   for (const name of names) {
+    // Skip queue metadata (drain lock, disabled marker, any journal a caller
+    // parks here): it is bookkeeping, never rows the backend is owed.
+    if (name.startsWith(".")) continue;
     if (!name.endsWith(".jsonl") && !name.endsWith(".inflight")) continue;
     const path = join(queueDir, name);
     const size = fileSize(path);

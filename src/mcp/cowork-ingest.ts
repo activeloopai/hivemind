@@ -61,7 +61,7 @@ const STATE_PATH = join(DEEPLAKE_DIR, "cowork-ingest-state.json");
 const LOCK_PATH = join(DEEPLAKE_DIR, ".cowork-ingest.lock");
 const COWORK_QUEUE_DIR = join(DEEPLAKE_DIR, "queue-cowork");
 const NOTICE_MARKER = join(DEEPLAKE_DIR, ".cowork-data-notice-shown");
-const DROPPED_MARKER = join(COWORK_QUEUE_DIR, ".dropped-rows.jsonl");
+const DROPPED_MARKER = join(DEEPLAKE_DIR, "cowork-dropped-rows.jsonl");
 const LOCK_STALE_MS = 60_000;
 // Refresh the held lock's mtime well inside LOCK_STALE_MS so a long ingest is
 // never mistaken for a dead run and stolen mid-flight by a second process.
@@ -159,7 +159,10 @@ function findTranscripts(root: string): string[] {
 /** True when the Cowork queue still holds rows the backend has not taken. */
 function hasQueuedRows(): boolean {
   try {
-    return readdirSync(COWORK_QUEUE_DIR).some(n => n.endsWith(".jsonl") || n.endsWith(".inflight"));
+    // Dot-prefixed entries are queue metadata (drain lock, disabled marker),
+    // never rows owed to the backend.
+    return readdirSync(COWORK_QUEUE_DIR)
+      .some(n => !n.startsWith(".") && (n.endsWith(".jsonl") || n.endsWith(".inflight")));
   } catch {
     return false; // no queue dir yet
   }
@@ -172,7 +175,7 @@ function hasQueuedRows(): boolean {
  */
 function recordDroppedRows(count: number): void {
   try {
-    mkdirSync(COWORK_QUEUE_DIR, { recursive: true });
+    mkdirSync(DEEPLAKE_DIR, { recursive: true });
     appendFileSync(
       DROPPED_MARKER,
       `${JSON.stringify({ at: new Date().toISOString(), droppedRows: count })}\n`,

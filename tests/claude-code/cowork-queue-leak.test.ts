@@ -142,7 +142,16 @@ describe("cowork queue growth when uploads fail", () => {
     await ingestCoworkSessions();
 
     expect(uploads).toHaveLength(1);
-    expect(uploads[0]).toContain("queued while offline");
+    // Assert the row that actually went up, not a substring of the statement.
+    const jsonb = uploads[0].match(/'(\{.*?\})'::jsonb/)?.[1];
+    expect(jsonb).toBeDefined();
+    expect(JSON.parse(jsonb!.replace(/''/g, "'"))).toMatchObject({
+      session_id: SESSION_ID,
+      type: "user_message",
+      content: "queued while offline",
+      agent: "claude_cowork",
+      cwd: "/cowork",
+    });
     expect(queuedRows()).toBe(0);
     expect(queueBytes()).toBe(0);
   });
