@@ -18,7 +18,9 @@ import {
   clearSessionWriteDisabled,
   drainSessionQueues,
   flushSessionQueue,
+  gcOversizedQueueFiles,
   isSessionWriteDisabled,
+  MAX_SESSION_QUEUE_BYTES,
   isSessionWriteAuthError,
   markSessionWriteDisabled,
   type QueuedSessionRow,
@@ -592,5 +594,43 @@ describe("session queue", () => {
     reclaimed?.();
     expect(existsSync(join(queueDir, ".sessions.drain.lock"))).toBe(false);
     release?.();
+  });
+});
+
+describe("oversized queue files", () => {
+  it("stops appending once the queue file reaches the size ceiling", () => {
+    const queueDir = makeQueueDir();
+    const queuePath = appendQueuedSessionRow(makeRow("s-cap", 0), queueDir, 10_000);
+    const afterFirst = readFileSync(queuePath, "utf-8");
+
+    // Simulate a queue that has already reached the ceiling.
+    writeFileSync(queuePath, "x".repeat(10_000));
+    appendQueuedSessionRow(makeRow("s-cap", 1), queueDir, 10_000);
+    expect(readFileSync(queuePath, "utf-8").length).toBe(10_000);
+
+    // Below the ceiling it appends as usual.
+    writeFileSync(queuePath, afterFirst);
+    appendQueuedSessionRow(makeRow("s-cap", 2), queueDir, 10_000);
+    expect(readFileSync(queuePath, "utf-8").split("\n").filter(Boolean)).toHaveLength(2);
+  });
+
+  it("drops queue and inflight files past the ceiling and leaves the rest alone", () => {
+    const queueDir = makeQueueDir();
+    const small = appendQueuedSessionRow(makeRow("s-small", 0), queueDir);
+    const big = join(queueDir, "s-big.jsonl");
+    const bigInflight = join(queueDir, "s-big-2.inflight");
+    writeFileSync(big, "x".repeat(4096));
+    writeFileSync(bigInflight, "x".repeat(4096));
+
+    const reclaimed = gcOversizedQueueFiles(queueDir, 4096);
+
+    expect(reclaimed).toBe(8192);
+    expect(existsSync(big)).toBe(false);
+    expect(existsSync(bigInflight)).toBe(false);
+    expect(existsSync(small)).toBe(true);
+  });
+
+  it("defaults the ceiling to 256 MB", () => {
+    expect(MAX_SESSION_QUEUE_BYTES).toBe(256 * 1024 * 1024);
   });
 });

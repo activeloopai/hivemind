@@ -14,6 +14,7 @@ import {
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
+import { log } from "../utils/debug.js";
 
 export interface SessionQueueApi {
   query(sql: string): Promise<Record<string, unknown>[]>;
@@ -67,6 +68,14 @@ export interface DrainSessionQueueResult {
 }
 
 const DEFAULT_QUEUE_DIR = join(homedir(), ".deeplake", "queue");
+// Hard ceiling for a single session's queue file. The queue is a retry buffer
+// for rows the backend has not accepted yet, so it only reaches this size when
+// uploads have been failing for a very long time (offline host, disconnected
+// network filesystem). Past the ceiling we stop appending instead of filling
+// the user's disk: a customer running Cowork hit a single 39.9 GB queue file
+// growing ~5 GB/day (2026-08-19). A file this large is also unflushable —
+// readQueuedRows() reads it whole — so gcOversizedQueueFiles() drops it.
+export const MAX_SESSION_QUEUE_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_BATCH_ROWS = 50;
 const DEFAULT_STALE_INFLIGHT_MS = 60_000;
 const DEFAULT_AUTH_FAILURE_TTL_MS = 5 * 60_000;
@@ -116,12 +125,58 @@ export function buildQueuedSessionRow(args: {
   };
 }
 
-export function appendQueuedSessionRow(row: QueuedSessionRow, queueDir = DEFAULT_QUEUE_DIR): string {
+export function appendQueuedSessionRow(
+  row: QueuedSessionRow,
+  queueDir = DEFAULT_QUEUE_DIR,
+  maxQueueBytes = MAX_SESSION_QUEUE_BYTES,
+): string {
   mkdirSync(queueDir, { recursive: true });
   const sessionId = extractSessionId(row.path);
   const queuePath = getQueuePath(queueDir, sessionId);
+  if (fileSize(queuePath) >= maxQueueBytes) {
+    log("session-queue", `queue file at the ${maxQueueBytes}-byte ceiling, dropping row: ${queuePath}`);
+    return queuePath;
+  }
   appendFileSync(queuePath, `${JSON.stringify(row)}\n`);
   return queuePath;
+}
+
+/**
+ * Delete queue/inflight files that have grown past the ceiling. Such a file
+ * cannot be flushed anyway (readQueuedRows reads it into a single string) and
+ * would otherwise sit on disk forever — it is the residue of an upload outage,
+ * not data the backend is still waiting for. Returns the bytes reclaimed.
+ */
+export function gcOversizedQueueFiles(queueDir = DEFAULT_QUEUE_DIR, maxQueueBytes = MAX_SESSION_QUEUE_BYTES): number {
+  let reclaimed = 0;
+  let names: string[];
+  try {
+    names = readdirSync(queueDir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".jsonl") && !name.endsWith(".inflight")) continue;
+    const path = join(queueDir, name);
+    const size = fileSize(path);
+    if (size < maxQueueBytes) continue;
+    try {
+      rmSync(path, { force: true });
+      reclaimed += size;
+      log("session-queue", `dropped oversized queue file (${size} bytes): ${path}`);
+    } catch {
+      /* best effort */
+    }
+  }
+  return reclaimed;
+}
+
+function fileSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
 }
 
 export function buildSessionInsertSql(sessionsTable: string, rows: QueuedSessionRow[]): string {
