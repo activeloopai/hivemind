@@ -13,7 +13,7 @@
  * to the queue again — forever, growing without bound.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, appendFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -203,4 +203,26 @@ describe("cowork queue growth when uploads fail", () => {
     ]);
     expect(queuedRows()).toBe(0);
   });
+
+  it("does not journal anything while the queue is merely full", async () => {
+    const path = transcriptPath();
+    writeFileSync(path, line("first"));
+
+    const { ingestCoworkSessions } = await import("../../src/mcp/cowork-ingest.js");
+    const { MAX_SESSION_QUEUE_BYTES } = await import("../../src/hooks/session-queue.js");
+    await ingestCoworkSessions();
+
+    const queued = readFileSync(queuePath(), "utf-8");
+    writeFileSync(queuePath(), queued + "x".repeat(MAX_SESSION_QUEUE_BYTES - queued.length));
+    appendFileSync(path, line("held back"));
+
+    // Three full-queue ticks in a row: nothing is lost, so nothing is written
+    // to the loss journal — otherwise it would grow on every 30s tick forever.
+    await ingestCoworkSessions();
+    await ingestCoworkSessions();
+    await ingestCoworkSessions();
+
+    expect(existsSync(join(home, ".deeplake", "cowork-dropped-rows.jsonl"))).toBe(false);
+    // Each tick re-reads a 256 MB queue file, so this is slower than the rest.
+  }, 60_000);
 });

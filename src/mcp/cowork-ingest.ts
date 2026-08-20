@@ -65,6 +65,7 @@ const LOCK_PATH = join(DEEPLAKE_DIR, ".cowork-ingest.lock");
 const COWORK_QUEUE_DIR = join(DEEPLAKE_DIR, "queue-cowork");
 const NOTICE_MARKER = join(DEEPLAKE_DIR, ".cowork-data-notice-shown");
 const DROPPED_MARKER = join(DEEPLAKE_DIR, "cowork-dropped-rows.jsonl");
+const MAX_LOSS_JOURNAL_BYTES = 1024 * 1024;
 const LOCK_STALE_MS = 60_000;
 // Refresh the held lock's mtime well inside LOCK_STALE_MS so a long ingest is
 // never mistaken for a dead run and stolen mid-flight by a second process.
@@ -176,9 +177,23 @@ function hasQueuedRows(): boolean {
  * moved past them, so they will never be uploaded; this file is the only
  * durable trace of that loss.
  */
+/**
+ * Record a real, irreversible loss. Only reachable for a queue file dropped by
+ * the GC or a transcript line larger than the whole ceiling — both rare and
+ * one-shot. The journal carries its own ceiling so it can never become the next
+ * unbounded file.
+ */
 function recordLoss(detail: Record<string, unknown>): void {
   try {
     mkdirSync(DEEPLAKE_DIR, { recursive: true });
+    try {
+      if (statSync(DROPPED_MARKER).size >= MAX_LOSS_JOURNAL_BYTES) {
+        log("cowork-ingest", "loss journal is at its ceiling, not recording further entries");
+        return;
+      }
+    } catch {
+      /* no journal yet */
+    }
     appendFileSync(DROPPED_MARKER, `${JSON.stringify({ at: new Date().toISOString(), ...detail })}\n`);
   } catch {
     /* best effort */
@@ -484,7 +499,10 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
     if (appendedAny) saveState(state);
 
     if (queueFull) {
-      recordLoss({ queueFull: true, note: "ingestion paused at the queue ceiling; no rows dropped" });
+      // Debug log only, deliberately: nothing is lost here, ingestion is just
+      // paused until the drain frees room, and this state repeats on every
+      // 30s tick — journalling it would itself grow without bound.
+      log("cowork-ingest", "ingestion paused at the queue ceiling; no rows dropped");
     }
 
     // Drain whenever anything is queued — not only when this tick appended.
