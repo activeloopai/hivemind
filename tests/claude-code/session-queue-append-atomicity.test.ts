@@ -8,7 +8,7 @@
  * stranded the whole queue.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -86,27 +86,57 @@ describe("appendQueuedSessionRows failure paths", () => {
     expect(JSON.parse(lines[0]).message).toContain("msg-0");
   });
 
-  it("does not truncate over a concurrent appender's rows when rolling back", () => {
+  it("does not truncate over a concurrent appender's rows when rolling back", async () => {
     const queuePath = appendQueuedSessionRows([makeRow("s3", 0)], queueDir).queuePath;
     const before = readFileSync(queuePath, "utf-8");
-    const otherWriter = `${JSON.stringify(makeRow("s3", 99))}\n`;
-
-    // Fail, and have somebody else append while we are down: rolling back to
-    // our start offset would destroy their row, so it must be skipped.
+    // Fail, and have a real second writer append through the same API while we
+    // are down: rolling back to our start offset would destroy its row.
     writeHook = (fd, buf, off, len) => {
       (realFs.writeSync as any)(fd, buf, off, Math.floor(len / 2));
-      appendFileSync(queuePath, otherWriter);
+      const hook = writeHook;
+      writeHook = null;
+      appendQueuedSessionRows([makeRow("s3", 99)], queueDir);
+      writeHook = hook;
       throw new Error("EIO");
     };
     expect(appendQueuedSessionRows([makeRow("s3", 1)], queueDir).appended).toBe(false);
 
     const after = readFileSync(queuePath, "utf-8");
     expect(after.startsWith(before)).toBe(true);
-    expect(after).toContain(otherWriter.trim());
+    expect(after).toContain("msg-99");
+
+    // Surviving the truncate is not enough: the other writer's row must still
+    // be parseable and actually reach the backend, with the half-written bytes
+    // dropped along the way.
+    writeHook = null;
+    const sent: string[] = [];
+    const result = await flushSessionQueue(
+      { query: async (sql: string) => { sent.push(sql); return []; }, ensureSessionsTable: async () => {} },
+      { sessionId: "s3", sessionsTable: "sessions", queueDir },
+    );
+
+    expect(result.status).toBe("flushed");
+    expect(result.rows).toBe(2); // the pre-existing row + the concurrent one
+    expect(sent.join(" ")).toContain("msg-99");
+    expect(sent.join(" ")).toContain("msg-0");
   });
 });
 
 describe("a malformed record does not strand the queue", () => {
+  it("starts a new line when the file ends mid-record", () => {
+    const { queuePath } = appendQueuedSessionRows([makeRow("s5", 0)], queueDir);
+    appendFileSync(queuePath, '{"id":"half-written","path":"/sess');
+
+    // Without the healing newline this row would be glued onto the fragment
+    // and skipped along with it.
+    appendQueuedSessionRows([makeRow("s5", 1)], queueDir);
+
+    const lines = readFileSync(queuePath, "utf-8").split("\n").filter(Boolean);
+    expect(lines).toHaveLength(3);
+    expect(lines[1]).toBe('{"id":"half-written","path":"/sess');
+    expect(JSON.parse(lines[2]).message).toContain("msg-1");
+  });
+
   it("skips the bad line and flushes the good ones", async () => {
     const good = appendQueuedSessionRows([makeRow("s4", 0), makeRow("s4", 1)], queueDir);
     // A half-written record, the way a crash mid-append leaves one.

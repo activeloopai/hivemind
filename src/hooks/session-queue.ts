@@ -7,6 +7,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -173,11 +174,20 @@ export function appendQueuedSessionRows(
   if (rows.length === 0) throw new Error("appendQueuedSessionRows: rows must not be empty");
   mkdirSync(queueDir, { recursive: true });
   const queuePath = getQueuePath(queueDir, extractSessionId(rows[0].path));
-  const payload = Buffer.from(rows.map(row => `${JSON.stringify(row)}\n`).join(""), "utf-8");
+  const rowsPayload = Buffer.from(rows.map(row => `${JSON.stringify(row)}\n`).join(""), "utf-8");
 
-  const fd = openSync(queuePath, "a");
+  // "a+" (not "a"): appends, but is also readable, so endsWithNewline() below
+  // can inspect the last byte. With "a" the descriptor is write-only and that
+  // read fails with EBADF.
+  const fd = openSync(queuePath, "a+");
   try {
     const startedAt = fstatSync(fd).size;
+    // If the file does not end in a newline, a previous append died half-way.
+    // Start on a fresh line so THESE rows stay parseable — otherwise they are
+    // glued onto the broken fragment and skipped with it at read time.
+    const payload = endsWithNewline(fd, startedAt)
+      ? rowsPayload
+      : Buffer.concat([Buffer.from("\n", "utf-8"), rowsPayload]);
     if (startedAt + payload.length > maxQueueBytes) {
       log("session-queue", `queue file at the ${maxQueueBytes}-byte ceiling, refusing ${rows.length} row(s): ${queuePath}`);
       return { queuePath, appended: false };
@@ -268,6 +278,18 @@ export function sessionQueueRoomBytes(
   maxQueueBytes = MAX_SESSION_QUEUE_BYTES,
 ): number {
   return Math.max(0, maxQueueBytes - fileSize(getQueuePath(queueDir, sessionId)));
+}
+
+/** True when the file is empty or its last byte is a newline. */
+function endsWithNewline(fd: number, size: number): boolean {
+  if (size === 0) return true;
+  try {
+    const tail = Buffer.alloc(1);
+    readSync(fd, tail, 0, 1, size - 1);
+    return tail[0] === 0x0a;
+  } catch {
+    return true; // cannot tell — do not inject a stray newline
+  }
 }
 
 function fileSize(path: string): number {
