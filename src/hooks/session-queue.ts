@@ -2,6 +2,7 @@ import {
   appendFileSync,
   closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -10,6 +11,7 @@ import {
   rmSync,
   statSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -142,11 +144,19 @@ export function appendQueuedSessionRow(
   const payload = `${JSON.stringify(row)}\n`;
   // Project the post-append size, so the ceiling is a real ceiling rather than
   // "the last row may overshoot it by however large that row happened to be".
-  if (fileSize(queuePath) + Buffer.byteLength(payload, "utf-8") > maxQueueBytes) {
-    log("session-queue", `queue file at the ${maxQueueBytes}-byte ceiling, dropping row: ${queuePath}`);
-    return { queuePath, appended: false };
+  // Checked and written through ONE descriptor: a stat-then-append on the path
+  // is a file-system race (CodeQL js/file-system-race), and several Cowork MCP
+  // processes write this file concurrently.
+  const fd = openSync(queuePath, "a");
+  try {
+    if (fstatSync(fd).size + Buffer.byteLength(payload, "utf-8") > maxQueueBytes) {
+      log("session-queue", `queue file at the ${maxQueueBytes}-byte ceiling, dropping row: ${queuePath}`);
+      return { queuePath, appended: false };
+    }
+    writeSync(fd, payload);
+  } finally {
+    closeSync(fd);
   }
-  appendFileSync(queuePath, payload);
   return { queuePath, appended: true };
 }
 

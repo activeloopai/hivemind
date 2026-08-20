@@ -20,9 +20,9 @@
  * several concurrent MCP processes Cowork spawns from double-inserting.
  */
 import {
-  appendFileSync,
   closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -31,6 +31,7 @@ import {
   statSync,
   utimesSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -186,15 +187,19 @@ function hasQueuedRows(): boolean {
 function recordLoss(detail: Record<string, unknown>): void {
   try {
     mkdirSync(DEEPLAKE_DIR, { recursive: true });
+    // Size-check and write through ONE descriptor: a stat-then-append on the
+    // path is a file-system race (CodeQL js/file-system-race), and this file is
+    // written by several concurrent Cowork MCP processes.
+    const fd = openSync(DROPPED_MARKER, "a");
     try {
-      if (statSync(DROPPED_MARKER).size >= MAX_LOSS_JOURNAL_BYTES) {
+      if (fstatSync(fd).size >= MAX_LOSS_JOURNAL_BYTES) {
         log("cowork-ingest", "loss journal is at its ceiling, not recording further entries");
         return;
       }
-    } catch {
-      /* no journal yet */
+      writeSync(fd, `${JSON.stringify({ at: new Date().toISOString(), ...detail })}\n`);
+    } finally {
+      closeSync(fd);
     }
-    appendFileSync(DROPPED_MARKER, `${JSON.stringify({ at: new Date().toISOString(), ...detail })}\n`);
   } catch {
     /* best effort */
   }
