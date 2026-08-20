@@ -598,6 +598,17 @@ describe("session queue", () => {
 });
 
 describe("oversized queue files", () => {
+  it("rejects an append that would push the file past the ceiling", () => {
+    const queueDir = makeQueueDir();
+    const queuePath = appendQueuedSessionRow(makeRow("s-edge", 0), queueDir);
+    const existing = readFileSync(queuePath, "utf-8");
+
+    // Ceiling one byte above the current size: the file is below the limit,
+    // but the next row crosses it, so the file must be left byte-identical.
+    appendQueuedSessionRow(makeRow("s-edge", 1), queueDir, existing.length + 1);
+    expect(readFileSync(queuePath, "utf-8")).toBe(existing);
+  });
+
   it("stops appending once the queue file reaches the size ceiling", () => {
     const queueDir = makeQueueDir();
     const queuePath = appendQueuedSessionRow(makeRow("s-cap", 0), queueDir, 10_000);

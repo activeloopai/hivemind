@@ -133,11 +133,14 @@ export function appendQueuedSessionRow(
   mkdirSync(queueDir, { recursive: true });
   const sessionId = extractSessionId(row.path);
   const queuePath = getQueuePath(queueDir, sessionId);
-  if (fileSize(queuePath) >= maxQueueBytes) {
+  const payload = `${JSON.stringify(row)}\n`;
+  // Project the post-append size, so the ceiling is a real ceiling rather than
+  // "the last row may overshoot it by however large that row happened to be".
+  if (fileSize(queuePath) + Buffer.byteLength(payload, "utf-8") > maxQueueBytes) {
     log("session-queue", `queue file at the ${maxQueueBytes}-byte ceiling, dropping row: ${queuePath}`);
     return queuePath;
   }
-  appendFileSync(queuePath, `${JSON.stringify(row)}\n`);
+  appendFileSync(queuePath, payload);
   return queuePath;
 }
 

@@ -13,7 +13,7 @@
  * to the queue again — forever, growing without bound.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, statSync, appendFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -51,6 +51,16 @@ function line(text: string): string {
 function queueBytes(): number {
   try {
     return statSync(join(home, ".deeplake", "queue-cowork", `${SESSION_ID}.jsonl`)).size;
+  } catch {
+    return 0;
+  }
+}
+
+function queuedRows(): number {
+  try {
+    return readFileSync(join(home, ".deeplake", "queue-cowork", `${SESSION_ID}.jsonl`), "utf-8")
+      .split("\n")
+      .filter(Boolean).length;
   } catch {
     return 0;
   }
@@ -101,14 +111,12 @@ describe("cowork queue growth when uploads fail", () => {
 
     const { ingestCoworkSessions } = await import("../../src/mcp/cowork-ingest.js");
     await ingestCoworkSessions();
-    const afterOne = queueBytes();
+    expect(queuedRows()).toBe(1);
 
     appendFileSync(path, line("two"));
     await ingestCoworkSessions();
-    const afterTwo = queueBytes();
 
-    // Growth for the second tick is one message, not the whole transcript.
-    expect(afterTwo - afterOne).toBeLessThan(afterOne * 1.5);
-    expect(afterTwo).toBeGreaterThan(afterOne);
+    // The second tick queues the one new message, not the whole transcript.
+    expect(queuedRows()).toBe(2);
   });
 });
