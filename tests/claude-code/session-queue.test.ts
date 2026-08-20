@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   appendQueuedSessionRow,
+  appendQueuedSessionRows,
   buildQueuedSessionRow,
   buildSessionInsertSql,
   buildSessionPath,
@@ -21,6 +22,7 @@ import {
   gcOversizedQueueFiles,
   isSessionWriteDisabled,
   MAX_SESSION_QUEUE_BYTES,
+  queuedRowBytes,
   isSessionWriteAuthError,
   markSessionWriteDisabled,
   type QueuedSessionRow,
@@ -653,6 +655,23 @@ describe("oversized queue files", () => {
     // Dot-prefixed entries are queue metadata, not rows owed to the backend —
     // GC must never collect them, however large they get.
     expect(existsSync(journal)).toBe(true);
+  });
+
+  it("appends a group of rows all-or-nothing", () => {
+    const queueDir = makeQueueDir();
+    const rows = [makeRow("s-group", 0), makeRow("s-group", 1), makeRow("s-group", 2)];
+    const bytes = rows.reduce((n, r) => n + queuedRowBytes(r), 0);
+
+    // One byte short of what the group needs: nothing at all may be written.
+    const refused = appendQueuedSessionRows(rows, queueDir, bytes - 1);
+    expect(refused.appended).toBe(false);
+    expect(existsSync(refused.queuePath)).toBe(true);
+    expect(readFileSync(refused.queuePath, "utf-8")).toBe("");
+
+    // Exactly enough room: all three land together.
+    const accepted = appendQueuedSessionRows(rows, queueDir, bytes);
+    expect(accepted.appended).toBe(true);
+    expect(readFileSync(accepted.queuePath, "utf-8").split("\n").filter(Boolean)).toHaveLength(3);
   });
 
   it("defaults the ceiling to 256 MB", () => {

@@ -41,13 +41,12 @@ import { DeeplakeApi } from "../deeplake-api.js";
 import { claudeDesktopConfigDir } from "../cli/util.js";
 import { getVersion } from "../cli/version.js";
 import {
-  appendQueuedSessionRow,
+  appendQueuedSessionRows,
   buildQueuedSessionRow,
   buildSessionPath,
   drainSessionQueues,
   gcOversizedQueueFiles,
   queuedRowBytes,
-  sessionQueueRoomBytes,
   MAX_SESSION_QUEUE_BYTES,
 } from "../hooks/session-queue.js";
 import { spawnWikiWorker, bundleDirFromImportMeta } from "../hooks/spawn-wiki-worker.js";
@@ -192,11 +191,15 @@ function recordLoss(detail: Record<string, unknown>): void {
     // written by several concurrent Cowork MCP processes.
     const fd = openSync(DROPPED_MARKER, "a");
     try {
-      if (fstatSync(fd).size >= MAX_LOSS_JOURNAL_BYTES) {
+      // Project the record's own size, so the journal cannot step over its
+      // ceiling on the last write.
+      const record = Buffer.from(`${JSON.stringify({ at: new Date().toISOString(), ...detail })}\n`, "utf-8");
+      if (fstatSync(fd).size + record.length > MAX_LOSS_JOURNAL_BYTES) {
         log("cowork-ingest", "loss journal is at its ceiling, not recording further entries");
         return;
       }
-      writeSync(fd, `${JSON.stringify({ at: new Date().toISOString(), ...detail })}\n`);
+      let written = 0;
+      while (written < record.length) written += writeSync(fd, record, written, record.length - written);
     } finally {
       closeSync(fd);
     }
@@ -465,28 +468,28 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
           continue;
         }
 
-        const sessionId = String(parsed.sessionId);
-        const needed = rows.reduce((n, row) => n + queuedRowBytes(row), 0);
-        if (needed > sessionQueueRoomBytes(sessionId, COWORK_QUEUE_DIR)) {
+        // All-or-nothing: the group either lands whole or not at all, so the
+        // watermark below is never left pointing past a half-queued line.
+        const { appended } = appendQueuedSessionRows(rows, COWORK_QUEUE_DIR);
+        if (!appended) {
+          const needed = rows.reduce((n, row) => n + queuedRowBytes(row), 0);
           if (needed > MAX_SESSION_QUEUE_BYTES) {
             // Bigger than the whole ceiling — it can never be queued, and
             // stalling here would freeze this transcript forever. Skip it, on
             // the record.
-            recordLoss({ skippedTranscriptLine: path, sessionId, neededBytes: needed });
+            recordLoss({ skippedTranscriptLine: path, sessionId: String(parsed.sessionId), neededBytes: needed });
             processed += 1;
             continue;
           }
-          // The queue is full. Stop here; the watermark keeps this line for the
-          // next tick, once the drain below has made room.
+          // Queue full, or the write failed and was rolled back. Stop here; the
+          // watermark keeps this line for the next tick, once the drain below
+          // has made room.
           queueFull = true;
           break;
         }
 
-        for (const row of rows) {
-          appendQueuedSessionRow(row, COWORK_QUEUE_DIR);
-          appendedAny = true;
-          ingested += 1;
-        }
+        appendedAny = true;
+        ingested += rows.length;
         processed += 1;
       }
       state.processedLines[path] = processed;

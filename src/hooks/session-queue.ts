@@ -3,6 +3,7 @@ import {
   closeSync,
   existsSync,
   fstatSync,
+  ftruncateSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -138,22 +139,56 @@ export function appendQueuedSessionRow(
   queueDir = DEFAULT_QUEUE_DIR,
   maxQueueBytes = MAX_SESSION_QUEUE_BYTES,
 ): AppendQueuedRowResult {
+  return appendQueuedSessionRows([row], queueDir, maxQueueBytes);
+}
+
+/**
+ * Append a group of rows to one session's queue file, all-or-nothing.
+ *
+ * The caller uses the group to keep a transcript line atomic: either every row
+ * for that line is queued, or none is and the caller can retry the whole line
+ * later. Three things make that hold:
+ *   - the size check and the write share ONE descriptor, so the size the check
+ *     saw is the size the write extends (a stat-then-append on the path is
+ *     CodeQL's js/file-system-race, and several Cowork MCP processes write
+ *     these files);
+ *   - writeSync is looped, because it is allowed to write fewer bytes than
+ *     asked for;
+ *   - a write that throws part-way is truncated back to where it started, so
+ *     the queue never holds half a JSON line (which would fail every later
+ *     drain).
+ */
+export function appendQueuedSessionRows(
+  rows: QueuedSessionRow[],
+  queueDir = DEFAULT_QUEUE_DIR,
+  maxQueueBytes = MAX_SESSION_QUEUE_BYTES,
+): AppendQueuedRowResult {
+  if (rows.length === 0) throw new Error("appendQueuedSessionRows: rows must not be empty");
   mkdirSync(queueDir, { recursive: true });
-  const sessionId = extractSessionId(row.path);
-  const queuePath = getQueuePath(queueDir, sessionId);
-  const payload = `${JSON.stringify(row)}\n`;
-  // Project the post-append size, so the ceiling is a real ceiling rather than
-  // "the last row may overshoot it by however large that row happened to be".
-  // Checked and written through ONE descriptor: a stat-then-append on the path
-  // is a file-system race (CodeQL js/file-system-race), and several Cowork MCP
-  // processes write this file concurrently.
+  const queuePath = getQueuePath(queueDir, extractSessionId(rows[0].path));
+  const payload = Buffer.from(rows.map(row => `${JSON.stringify(row)}\n`).join(""), "utf-8");
+
   const fd = openSync(queuePath, "a");
   try {
-    if (fstatSync(fd).size + Buffer.byteLength(payload, "utf-8") > maxQueueBytes) {
-      log("session-queue", `queue file at the ${maxQueueBytes}-byte ceiling, dropping row: ${queuePath}`);
+    const startedAt = fstatSync(fd).size;
+    if (startedAt + payload.length > maxQueueBytes) {
+      log("session-queue", `queue file at the ${maxQueueBytes}-byte ceiling, refusing ${rows.length} row(s): ${queuePath}`);
       return { queuePath, appended: false };
     }
-    writeSync(fd, payload);
+    let written = 0;
+    try {
+      while (written < payload.length) {
+        written += writeSync(fd, payload, written, payload.length - written);
+      }
+    } catch (e: unknown) {
+      try {
+        ftruncateSync(fd, startedAt);
+      } catch {
+        /* nothing better to do — the drain will report the bad line */
+      }
+      log("session-queue", `append failed, rolled back ${rows.length} row(s): ${e instanceof Error ? e.message : String(e)}`);
+      return { queuePath, appended: false };
+    }
   } finally {
     closeSync(fd);
   }
