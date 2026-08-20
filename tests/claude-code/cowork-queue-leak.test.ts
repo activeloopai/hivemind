@@ -61,6 +61,10 @@ function queueBytes(): number {
   }
 }
 
+function queuePath(): string {
+  return join(home, ".deeplake", "queue-cowork", `${SESSION_ID}.jsonl`);
+}
+
 function queuedRows(): number {
   try {
     return readFileSync(join(home, ".deeplake", "queue-cowork", `${SESSION_ID}.jsonl`), "utf-8")
@@ -160,5 +164,43 @@ describe("cowork queue growth when uploads fail", () => {
     });
     expect(queuedRows()).toBe(0);
     expect(queueBytes()).toBe(0);
+  });
+
+  it("holds the watermark when the queue is full, then ingests those lines exactly once", async () => {
+    const path = transcriptPath();
+    writeFileSync(path, line("first") + line("second"));
+
+    const { ingestCoworkSessions } = await import("../../src/mcp/cowork-ingest.js");
+    const { MAX_SESSION_QUEUE_BYTES } = await import("../../src/hooks/session-queue.js");
+
+    // First tick queues both lines while offline.
+    await ingestCoworkSessions();
+    expect(queuedRows()).toBe(2);
+
+    // Fill the queue file to its ceiling: the next tick cannot append anything.
+    const queued = readFileSync(queuePath(), "utf-8");
+    writeFileSync(queuePath(), queued + "x".repeat(MAX_SESSION_QUEUE_BYTES - queued.length));
+    appendFileSync(path, line("third while full"));
+    const full = await ingestCoworkSessions();
+
+    // Nothing queued, and — the point of the test — the line is NOT lost.
+    expect(full).toEqual({ ingested: 0 });
+
+    // Make room and come back online: the held line is ingested exactly once,
+    // and the two earlier ones are not queued a second time.
+    writeFileSync(queuePath(), queued);
+    offline = false;
+    const recovered = await ingestCoworkSessions();
+
+    expect(recovered).toEqual({ ingested: 1 });
+    const jsonbs = uploads.join(" ").match(/::jsonb/g) ?? [];
+    expect(jsonbs).toHaveLength(3);
+    const contents = uploads.join(" ").match(/"content":"[^"]*"/g) ?? [];
+    expect(contents.sort()).toEqual([
+      '"content":"first"',
+      '"content":"second"',
+      '"content":"third while full"',
+    ]);
+    expect(queuedRows()).toBe(0);
   });
 });

@@ -45,6 +45,9 @@ import {
   buildSessionPath,
   drainSessionQueues,
   gcOversizedQueueFiles,
+  queuedRowBytes,
+  sessionQueueRoomBytes,
+  MAX_SESSION_QUEUE_BYTES,
 } from "../hooks/session-queue.js";
 import { spawnWikiWorker, bundleDirFromImportMeta } from "../hooks/spawn-wiki-worker.js";
 import { forceSessionEndTrigger } from "../skillify/triggers.js";
@@ -181,10 +184,6 @@ function recordLoss(detail: Record<string, unknown>): void {
     /* best effort */
   }
   log("cowork-ingest", `recorded queue loss: ${JSON.stringify(detail)}`);
-}
-
-function recordDroppedRows(count: number): void {
-  recordLoss({ droppedRows: count, reason: "session queue at its size ceiling" });
 }
 
 function loadState(): IngestState {
@@ -405,7 +404,7 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
     const state = loadState();
     const transcripts = findTranscripts(root);
     let appendedAny = false;
-    let dropped = 0;
+    let queueFull = false;
 
     for (const path of transcripts) {
       let lines: string[];
@@ -417,35 +416,60 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
       const already = state.processedLines[path] ?? 0;
       if (lines.length <= already) continue;
 
+      // Advance the watermark one transcript line at a time. A line's rows are
+      // queued all-or-nothing: if they do not all fit under the queue ceiling,
+      // the watermark stays put and the line is retried once the queue drains,
+      // rather than being half-queued or silently dropped.
+      let processed = already;
       for (const raw of lines.slice(already)) {
         let parsed: TranscriptLine;
         try {
           parsed = JSON.parse(raw);
         } catch {
+          processed += 1;
           continue;
         }
-        for (const entry of entriesForLine(parsed)) {
-          const serialized = JSON.stringify(entry);
-          const row = buildQueuedSessionRow({
-            sessionPath: buildSessionPath(config, String(entry.session_id)),
-            line: serialized,
-            userName: config.userName,
-            projectName: COWORK_PROJECT,
-            description: String(entry.type ?? ""),
-            agent: COWORK_AGENT,
-            pluginVersion: getVersion(),
-            timestamp: String(entry.timestamp),
-          });
-          const { appended } = appendQueuedSessionRow(row, COWORK_QUEUE_DIR);
-          if (appended) {
-            appendedAny = true;
-            ingested += 1;
-          } else {
-            dropped += 1;
-          }
+
+        const rows = entriesForLine(parsed).map(entry => buildQueuedSessionRow({
+          sessionPath: buildSessionPath(config, String(entry.session_id)),
+          line: JSON.stringify(entry),
+          userName: config.userName,
+          projectName: COWORK_PROJECT,
+          description: String(entry.type ?? ""),
+          agent: COWORK_AGENT,
+          pluginVersion: getVersion(),
+          timestamp: String(entry.timestamp),
+        }));
+        if (rows.length === 0) {
+          processed += 1;
+          continue;
         }
+
+        const sessionId = String(parsed.sessionId);
+        const needed = rows.reduce((n, row) => n + queuedRowBytes(row), 0);
+        if (needed > sessionQueueRoomBytes(sessionId, COWORK_QUEUE_DIR)) {
+          if (needed > MAX_SESSION_QUEUE_BYTES) {
+            // Bigger than the whole ceiling — it can never be queued, and
+            // stalling here would freeze this transcript forever. Skip it, on
+            // the record.
+            recordLoss({ skippedTranscriptLine: path, sessionId, neededBytes: needed });
+            processed += 1;
+            continue;
+          }
+          // The queue is full. Stop here; the watermark keeps this line for the
+          // next tick, once the drain below has made room.
+          queueFull = true;
+          break;
+        }
+
+        for (const row of rows) {
+          appendQueuedSessionRow(row, COWORK_QUEUE_DIR);
+          appendedAny = true;
+          ingested += 1;
+        }
+        processed += 1;
       }
-      state.processedLines[path] = lines.length;
+      state.processedLines[path] = processed;
     }
 
     // Persist the watermark as soon as the rows are in the on-disk queue, and
@@ -459,11 +483,8 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
     // ~5 GB/day (2026-08-19).
     if (appendedAny) saveState(state);
 
-    if (dropped > 0) {
-      // The watermark advanced past these lines, so they are gone for good.
-      // Record it where support can find it — a debug log nobody has enabled
-      // is not a record. Only reachable after a very long upload outage.
-      recordDroppedRows(dropped);
+    if (queueFull) {
+      recordLoss({ queueFull: true, note: "ingestion paused at the queue ceiling; no rows dropped" });
     }
 
     // Drain whenever anything is queued — not only when this tick appended.

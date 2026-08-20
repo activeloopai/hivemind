@@ -195,6 +195,24 @@ export function gcOversizedQueueFiles(
   return reclaimed;
 }
 
+/** Bytes one row occupies in a queue file, newline included. */
+export function queuedRowBytes(row: QueuedSessionRow): number {
+  return Buffer.byteLength(`${JSON.stringify(row)}\n`, "utf-8");
+}
+
+/**
+ * Bytes still available in a session's queue file before it hits the ceiling.
+ * Lets a caller check that a whole group of rows fits BEFORE appending any of
+ * them, so it never leaves half a transcript line queued.
+ */
+export function sessionQueueRoomBytes(
+  sessionId: string,
+  queueDir = DEFAULT_QUEUE_DIR,
+  maxQueueBytes = MAX_SESSION_QUEUE_BYTES,
+): number {
+  return Math.max(0, maxQueueBytes - fileSize(getQueuePath(queueDir, sessionId)));
+}
+
 function fileSize(path: string): number {
   try {
     return statSync(path).size;
