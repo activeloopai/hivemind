@@ -43,6 +43,7 @@ import {
   buildQueuedSessionRow,
   buildSessionPath,
   drainSessionQueues,
+  gcOversizedQueueFiles,
 } from "../hooks/session-queue.js";
 import { spawnWikiWorker, bundleDirFromImportMeta } from "../hooks/spawn-wiki-worker.js";
 import { forceSessionEndTrigger } from "../skillify/triggers.js";
@@ -363,6 +364,9 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
 
   let ingested = 0;
   try {
+    // Reclaim any queue file left oversized by an earlier upload outage before
+    // writing more rows — such a file can no longer be flushed.
+    gcOversizedQueueFiles(COWORK_QUEUE_DIR);
     const state = loadState();
     const transcripts = findTranscripts(root);
     let appendedAny = false;
@@ -404,6 +408,17 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
       state.processedLines[path] = lines.length;
     }
 
+    // Persist the watermark as soon as the rows are in the on-disk queue, and
+    // BEFORE the upload. The queue file — not this watermark — is what owes the
+    // backend those rows, and it retries them on the next tick with the same
+    // row ids (the INSERT is idempotent). Saving after the upload instead meant
+    // that any upload failure lost the watermark, so the next tick re-read the
+    // same transcript lines and appended the whole transcript to the queue
+    // again, every 30s, without bound: a customer running Cowork with a
+    // flapping network filesystem reached a single 39.9 GB queue file growing
+    // ~5 GB/day (2026-08-19).
+    if (appendedAny) saveState(state);
+
     if (appendedAny) {
       const api = new DeeplakeApi(
         config.token,
@@ -412,15 +427,16 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
         config.workspaceId,
         config.sessionsTableName,
       );
-      await drainSessionQueues(api, {
-        sessionsTable: config.sessionsTableName,
-        queueDir: COWORK_QUEUE_DIR,
-      });
-      // Persist the line watermark immediately after the upload, before the
-      // slow summarize step below. Rows carry random ids, so a crash between
-      // the insert and a later saveState would replay these lines under fresh
-      // ids and duplicate them. Saving here shrinks that window to this write.
-      saveState(state);
+      try {
+        await drainSessionQueues(api, {
+          sessionsTable: config.sessionsTableName,
+          queueDir: COWORK_QUEUE_DIR,
+        });
+      } catch (e: unknown) {
+        // Upload failure is expected while offline. The rows stay queued and
+        // the next tick retries them; do not let it abort the summarize pass.
+        log("cowork-ingest", `queue drain failed, rows stay queued: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
 
     // Summarize sessions that have gone idle — Cowork has no SessionEnd hook,
