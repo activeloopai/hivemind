@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
-import { mkdtempSync, mkdirSync, existsSync, rmSync, lstatSync, readlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, rmSync, lstatSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
@@ -50,6 +50,16 @@ function freshHome(): void {
   mkdirSync(join(HOME_DIR, ".deeplake"), { recursive: true });
 }
 
+/** The embed-deps install: bare `npm install` (flags only, no package specs —
+ *  deps come from the shared package.json) run in SHARED_DIR. Distinguishes it
+ *  from the graph-parser install, which passes tree-sitter specs in argv. */
+function isEmbedDepsInstall(c: unknown[]): boolean {
+  return c[0] === "npm"
+    && Array.isArray(c[1]) && c[1][0] === "install"
+    && c[1].slice(1).every((a) => String(a).startsWith("--"))
+    && (c[2] as { cwd?: string } | undefined)?.cwd === mod.SHARED_DIR;
+}
+
 describe("installEmbeddings (sandboxed HOME, mocked npm)", () => {
   beforeEach(() => { freshHome(); });
   afterEach(() => { cfg._resetUserConfigForTesting(); });
@@ -59,7 +69,10 @@ describe("installEmbeddings (sandboxed HOME, mocked npm)", () => {
     vi.mocked(cp.execFileSync).mockClear();
     mod.installEmbeddings();
     // ensureSharedDeps ran its npm install (mocked) into the sandbox shared dir.
-    expect(vi.mocked(cp.execFileSync).mock.calls.some((c) => c[0] === "npm")).toBe(true);
+    // The graph-parser install also runs npm in SHARED_DIR but passes package
+    // specs in argv; the embed-deps install is a bare `npm install` (flags only,
+    // deps come from the shared package.json) — assert on that shape.
+    expect(vi.mocked(cp.execFileSync).mock.calls.some(isEmbedDepsInstall)).toBe(true);
     // A shared package.json was laid down under the tmp HOME.
     expect(existsSync(join(HOME_DIR, ".hivemind", "embed-deps", "package.json"))).toBe(true);
     // Config flag flipped on regardless of whether any agent was detected.
@@ -73,12 +86,10 @@ describe("installEmbeddings (sandboxed HOME, mocked npm)", () => {
     const cp = await import("node:child_process");
     vi.mocked(cp.execFileSync).mockClear();
     mod.installEmbeddings();
-    // No transformers `npm install` — the only npm call (if any) is the graph
-    // parsers, never the transformers one.
-    const transformersInstall = vi.mocked(cp.execFileSync).mock.calls.some(
-      (c) => c[0] === "npm" && Array.isArray(c[1]) && c[1].includes(mod.TRANSFORMERS_PKG),
-    );
-    expect(transformersInstall).toBe(false);
+    // No embed-deps `npm install` — transformers is declared via the shared
+    // package.json (never in npm argv), so a spec-carrying graph-parser npm call
+    // may still run; only the bare flags-only install in SHARED_DIR must not.
+    expect(vi.mocked(cp.execFileSync).mock.calls.some(isEmbedDepsInstall)).toBe(false);
     expect(cfg.getEmbeddingsEnabled()).toBe(true);
   });
 
@@ -153,5 +164,105 @@ describe("statusEmbeddings (sandboxed HOME)", () => {
     // Shared deps present + codex symlinked → the "installed" + linked arms.
     expect(out).toContain("Installed:     yes");
     expect(out).toMatch(/codex\s+✓ linked → shared/);
+  });
+
+  function capture(fn: () => void): string {
+    const lines: string[] = [];
+    const outSpy = vi.spyOn(process.stdout, "write").mockImplementation((c: unknown) => { lines.push(String(c)); return true; });
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation((c: unknown) => { lines.push(String(c)); return true; });
+    try { fn(); } finally { outSpy.mockRestore(); errSpy.mockRestore(); }
+    return lines.join("\n");
+  }
+
+  it("disabled config → prints the DISABLED help block", () => {
+    cfg.setEmbeddingsEnabled(false);
+    const out = capture(() => mod.statusEmbeddings());
+    expect(out).toContain("Embeddings are DISABLED in user config");
+  });
+
+  it("enabled but shared deps missing → warns deps are missing", () => {
+    cfg.setEmbeddingsEnabled(true);
+    // No <shared>/node_modules/@huggingface/transformers laid down.
+    const out = capture(() => mod.statusEmbeddings());
+    expect(out).toContain("enabled in config but shared deps are missing");
+  });
+
+  it("no agent installs detected → prints '(none detected)' and returns early", () => {
+    // freshHome() already removed every agent dir → findHivemindInstalls == [].
+    const out = capture(() => mod.statusEmbeddings());
+    expect(out).toContain("(none detected)");
+  });
+
+  it("agent owns its own node_modules → prints the has-its-own label", () => {
+    mkdirSync(join(HOME_DIR, ".codex", "hivemind", "bundle"), { recursive: true });
+    mkdirSync(join(HOME_DIR, ".codex", "hivemind", "node_modules"), { recursive: true });
+    const out = capture(() => mod.statusEmbeddings());
+    expect(out).toMatch(/codex\s+△ has its own node_modules/);
+  });
+
+  it("agent linked elsewhere → prints the linked-→-other label", () => {
+    mkdirSync(join(HOME_DIR, ".codex", "hivemind", "bundle"), { recursive: true });
+    const elsewhere = join(HOME_DIR, "some-other-nm");
+    mkdirSync(elsewhere, { recursive: true });
+    symlinkSync(elsewhere, join(HOME_DIR, ".codex", "hivemind", "node_modules"));
+    const out = capture(() => mod.statusEmbeddings());
+    expect(out).toContain(`△ linked → ${elsewhere}`);
+  });
+
+  it("daemon bundle present → prints its path instead of '(not present)'", () => {
+    // Lay the daemon file down at SHARED_DAEMON_PATH so the existsSync arm at
+    // the "Daemon:" line takes the present branch.
+    mkdirSync(mod.SHARED_DIR, { recursive: true });
+    writeFileSync(mod.SHARED_DAEMON_PATH, "// daemon");
+    const out = capture(() => mod.statusEmbeddings());
+    expect(out).toContain(`Daemon:        ${mod.SHARED_DAEMON_PATH}`);
+    expect(out).not.toContain("Daemon:        (not present)");
+  });
+});
+
+describe("enableEmbeddings (sandboxed HOME)", () => {
+  beforeEach(() => { freshHome(); });
+  afterEach(() => { cfg._resetUserConfigForTesting(); vi.restoreAllMocks(); });
+
+  function capture(fn: () => void): string {
+    const lines: string[] = [];
+    const outSpy = vi.spyOn(process.stdout, "write").mockImplementation((c: unknown) => { lines.push(String(c)); return true; });
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation((c: unknown) => { lines.push(String(c)); return true; });
+    try { fn(); } finally { outSpy.mockRestore(); errSpy.mockRestore(); }
+    return lines.join("\n");
+  }
+
+  it("shared deps absent → flips flag on and warns to run install", () => {
+    const out = capture(() => mod.enableEmbeddings());
+    expect(cfg.getEmbeddingsEnabled()).toBe(true);
+    expect(out).toContain("shared deps not installed yet");
+  });
+
+  it("shared deps present → flips flag on and reports deps present", () => {
+    mkdirSync(join(mod.SHARED_NODE_MODULES, mod.TRANSFORMERS_PKG), { recursive: true });
+    const out = capture(() => mod.enableEmbeddings());
+    expect(cfg.getEmbeddingsEnabled()).toBe(true);
+    expect(out).toContain("shared deps present");
+  });
+});
+
+describe("uninstallEmbeddings — unlinks a symlink into the shared deps (sandboxed HOME)", () => {
+  beforeEach(() => { freshHome(); });
+  afterEach(() => { cfg._resetUserConfigForTesting(); });
+
+  it("removes an agent node_modules symlink pointing at SHARED_NODE_MODULES", () => {
+    const pluginDir = join(HOME_DIR, ".codex", "hivemind");
+    mkdirSync(join(pluginDir, "bundle"), { recursive: true });
+    // isSymlinkToSharedDeps() calls existsSync(link) first, which FOLLOWS the
+    // symlink — so the shared target must actually exist for the true arm to
+    // fire and the unlinkSync to run.
+    mkdirSync(mod.SHARED_NODE_MODULES, { recursive: true });
+    const link = join(pluginDir, "node_modules");
+    symlinkSync(mod.SHARED_NODE_MODULES, link);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    mod.uninstallEmbeddings();
+    // The shared symlink was removed by uninstall.
+    expect(lstatSync(link, { throwIfNoEntry: false })).toBeUndefined();
+    expect(cfg.getEmbeddingsEnabled()).toBe(false);
   });
 });
