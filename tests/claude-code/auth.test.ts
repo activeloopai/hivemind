@@ -15,6 +15,7 @@ const fetchMock = vi.fn();
 const saveCredentialsMock = vi.fn();
 const loadCredentialsMock = vi.fn();
 const installIDHeaderMock = vi.fn();
+const osHeaderMock = vi.fn();
 
 vi.stubGlobal("fetch", fetchMock);
 vi.mock("../../src/commands/auth-creds.js", () => ({
@@ -32,6 +33,12 @@ vi.mock("../../src/utils/client-header.js", () => ({
 vi.mock("../../src/commands/install-id.js", () => ({
   hivemindInstallIDHeader: () => installIDHeaderMock(),
 }));
+// Mock the OS header for the same reason as install-id: the real helper reads
+// process.platform, so without this every assertion below would depend on which
+// machine CI runs on. client-os.test.ts covers the real mapping.
+vi.mock("../../src/utils/client-os.js", () => ({
+  hivemindOsHeader: () => osHeaderMock(),
+}));
 
 async function importAuth() {
   vi.resetModules();
@@ -47,6 +54,8 @@ beforeEach(() => {
   saveCredentialsMock.mockReset();
   loadCredentialsMock.mockReset();
   installIDHeaderMock.mockReset();
+  osHeaderMock.mockReset();
+  osHeaderMock.mockReturnValue({});
   // Default: install-id helper returns the empty object, so the header
   // is omitted (matches the graceful-degradation path). Individual tests
   // override this to assert the happy path.
@@ -108,6 +117,31 @@ describe("requestDeviceCode", () => {
     await requestDeviceCode("https://api.example");
     const [, init] = fetchMock.mock.calls[0];
     expect(init.headers["X-Hivemind-Install-Id"]).toBe("uuid-from-helper");
+  });
+
+  it("includes X-Hivemind-OS header on the device-code request", async () => {
+    osHeaderMock.mockReturnValueOnce({ "X-Hivemind-OS": "windows" });
+    fetchMock.mockResolvedValueOnce(
+      ok({ device_code: "d", user_code: "u", verification_uri: "v", verification_uri_complete: "vc", expires_in: 1, interval: 1 }),
+    );
+    const { requestDeviceCode } = await importAuth();
+    await requestDeviceCode("https://api.example");
+    const init = fetchMock.mock.calls[0][1];
+    expect(init.headers["X-Hivemind-OS"]).toBe("windows");
+  });
+
+  it("omits X-Hivemind-OS on an unsupported platform without dropping the other headers", async () => {
+    osHeaderMock.mockReturnValueOnce({});
+    installIDHeaderMock.mockReturnValueOnce({ "X-Hivemind-Install-Id": "uuid-x" });
+    fetchMock.mockResolvedValueOnce(
+      ok({ device_code: "d", user_code: "u", verification_uri: "v", verification_uri_complete: "vc", expires_in: 1, interval: 1 }),
+    );
+    const { requestDeviceCode } = await importAuth();
+    await requestDeviceCode("https://api.example");
+    const init = fetchMock.mock.calls[0][1];
+    expect(init.headers["X-Hivemind-OS"]).toBeUndefined();
+    expect(init.headers["X-Hivemind-Install-Id"]).toBe("uuid-x");
+    expect(init.headers["X-Deeplake-Client"]).toBe("hivemind/test");
   });
 
   it("omits X-Hivemind-Install-Id header when install-id helper returns empty (graceful-degrade path)", async () => {
@@ -228,6 +262,24 @@ describe("listOrgs / listWorkspaces", () => {
     expect(init.headers["X-Deeplake-Client"]).toBe("hivemind/test");
     // listOrgs is a GET — no method override means default GET (no method key).
     expect(init.method).toBeUndefined();
+  });
+
+  // Regression guard for the reason the OS header rides the authenticated
+  // helpers at all. The backend often cannot build the user at
+  // /auth/device/token (Auth0 access tokens usually omit the email claim), so
+  // it defers signup_completed to the first authenticated API call
+  // (auth_analytics.go withAuthTracking). listOrgs is that call in the install
+  // flow — maybeShowOrgChoice runs right after the auth gate. If the header
+  // rode only the two device endpoints, the deferred signup would carry no OS
+  // and acceptance item 1 would fail for the majority of real users.
+  it("listOrgs forwards X-Hivemind-OS so the deferred signup capture still sees it", async () => {
+    osHeaderMock.mockReturnValueOnce({ "X-Hivemind-OS": "macos" });
+    fetchMock.mockResolvedValueOnce(ok([{ id: "o1", name: "acme" }]));
+    const { listOrgs } = await importAuth();
+    await listOrgs("tok", "https://api.example");
+    const init = fetchMock.mock.calls[0][1];
+    expect(init.headers["X-Hivemind-OS"]).toBe("macos");
+    expect(init.headers.Authorization).toBe("Bearer tok");
   });
 
   it("listOrgs returns [] when API gives a non-array body", async () => {

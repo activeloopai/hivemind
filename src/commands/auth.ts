@@ -5,6 +5,7 @@
 
 import { deeplakeClientHeader } from "../utils/client-header.js";
 import { hivemindInstallIDHeader } from "./install-id.js";
+import { hivemindOsHeader } from "../utils/client-os.js";
 import { openInBrowser } from "../dashboard/open.js";
 import {
   type Credentials,
@@ -59,6 +60,7 @@ async function apiGet(path: string, token: string, apiUrl: string, orgId?: strin
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
     ...deeplakeClientHeader(),
+    ...hivemindOsHeader(),
   };
   if (orgId) headers["X-Activeloop-Org-Id"] = orgId;
   const resp = await fetch(`${apiUrl}${path}`, { headers });
@@ -71,6 +73,7 @@ async function apiPost(path: string, body: unknown, token: string, apiUrl: strin
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
     ...deeplakeClientHeader(),
+    ...hivemindOsHeader(),
   };
   if (orgId) headers["X-Activeloop-Org-Id"] = orgId;
   const resp = await fetch(`${apiUrl}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
@@ -83,6 +86,7 @@ async function apiDelete(path: string, token: string, apiUrl: string, orgId?: st
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
     ...deeplakeClientHeader(),
+    ...hivemindOsHeader(),
   };
   if (orgId) headers["X-Activeloop-Org-Id"] = orgId;
   const resp = await fetch(`${apiUrl}${path}`, { method: "DELETE", headers });
@@ -115,6 +119,7 @@ export async function requestDeviceCode(apiUrl = DEFAULT_API_URL, ref?: string):
     headers: {
       "Content-Type": "application/json",
       ...deeplakeClientHeader(),
+      ...hivemindOsHeader(),
       ...hivemindInstallIDHeader(),
       ...hivemindReferrerHeader(ref),
       ...signupFlowHeader(),
@@ -130,6 +135,7 @@ export async function pollForToken(deviceCode: string, apiUrl = DEFAULT_API_URL)
     headers: {
       "Content-Type": "application/json",
       ...deeplakeClientHeader(),
+      ...hivemindOsHeader(),
       ...hivemindInstallIDHeader(),
       // The backend resolves/creates the user on this poll (trackDeviceFlowAuth),
       // so the flow header must ride along here too — the /auth/device/code
