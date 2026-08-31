@@ -11,6 +11,9 @@ import { hivemindOsValue, hivemindOsHeader, HIVEMIND_OS_HEADER } from "../../src
  */
 
 const REAL_PLATFORM = Object.getOwnPropertyDescriptor(process, "platform")!;
+// Captured before any stubbing, so the real-platform test below cannot be
+// fooled by a leaked redefinition from an earlier case.
+const REAL_PLATFORM_NAME = process.platform;
 
 function setPlatform(value: string): void {
   Object.defineProperty(process, "platform", { value, configurable: true });
@@ -45,6 +48,23 @@ describe("hivemindOsValue", () => {
       const v = hivemindOsValue();
       expect(v === "" || ["macos", "windows", "linux"].includes(v)).toBe(true);
     }
+  });
+});
+
+// The only assertion here that runs against a REAL machine rather than a
+// redefined property. It is why this file is in ci.yaml's windows-smoke suite
+// list: on windows-latest it proves win32 -> "windows" on genuine Windows,
+// which is the CLI half of what PLA-498's acceptance asks for and what we
+// otherwise had no machine to check.
+describe("the platform this process actually runs on", () => {
+  it("maps the real platform, unstubbed", () => {
+    const expected: Record<string, string> = { darwin: "macos", win32: "windows", linux: "linux" };
+    expect(hivemindOsValue()).toBe(expected[REAL_PLATFORM_NAME] ?? "");
+  });
+
+  it("emits a header on the three platforms we publish an installer for", () => {
+    if (!["darwin", "win32", "linux"].includes(REAL_PLATFORM_NAME)) return;
+    expect(hivemindOsHeader()[HIVEMIND_OS_HEADER]).toBeTruthy();
   });
 });
 
