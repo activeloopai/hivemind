@@ -7,11 +7,16 @@
  * the server would see its own GOOS, and the CLI's HTTP client sends no OS
  * token in its User-Agent.
  *
- * Normalized here rather than server-side so PostHog and the CRM share one
- * vocabulary and neither has to guess at Node's platform names. Platforms we
- * do not ship an installer for omit the header entirely — an absent property
- * is more honest than a bucket named "other", and it matches how the
- * install-id header degrades.
+ * Normalized here so the wire value is already the vocabulary the CRM reads.
+ * The backend normalizes again on ingest (normalizeOS in auth_analytics.go)
+ * because two other producers exist and disagree — hivemind.ps1 sends
+ * "Windows" and hivemind.sh sends raw `uname -s` — so the canonical mapping
+ * has to live at the backend boundary regardless. Sending the canonical name
+ * from here keeps this CLI from being a third dialect.
+ *
+ * Platforms we do not ship an installer for omit the header entirely — an
+ * absent property is more honest than a bucket named "other", and it matches
+ * how the install-id header degrades.
  *
  * Header, not a dimension on X-Deeplake-Client: that header's value is a
  * parsed contract (product, optionally product/version) and overloading it

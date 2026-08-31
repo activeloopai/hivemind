@@ -264,15 +264,15 @@ describe("listOrgs / listWorkspaces", () => {
     expect(init.method).toBeUndefined();
   });
 
-  // Regression guard for the reason the OS header rides the authenticated
-  // helpers at all. The backend often cannot build the user at
-  // /auth/device/token (Auth0 access tokens usually omit the email claim), so
-  // it defers signup_completed to the first authenticated API call
-  // (auth_analytics.go withAuthTracking). listOrgs is that call in the install
-  // flow — maybeShowOrgChoice runs right after the auth gate. If the header
-  // rode only the two device endpoints, the deferred signup would carry no OS
-  // and acceptance item 1 would fail for the majority of real users.
-  it("listOrgs forwards X-Hivemind-OS so the deferred signup capture still sees it", async () => {
+  // Regression guard for why the OS header rides the authenticated helpers at
+  // all. signup_completed fires from whichever request provisions the user: if
+  // that is not /auth/device/token, it is the CLI's first authenticated call,
+  // which is GET /me inside saveCredentialsFromToken (listOrgs follows it).
+  // Both go through apiGet, so asserting on listOrgs covers the shared helper —
+  // but if /me ever moves to its own fetch, it must carry the header too, or it
+  // consumes the one-time signup capture without an OS and nothing later can
+  // repair it.
+  it("apiGet forwards X-Hivemind-OS so a middleware-path signup still sees it", async () => {
     osHeaderMock.mockReturnValueOnce({ "X-Hivemind-OS": "macos" });
     fetchMock.mockResolvedValueOnce(ok([{ id: "o1", name: "acme" }]));
     const { listOrgs } = await importAuth();
@@ -795,6 +795,25 @@ describe("saveCredentialsFromToken — org-pinning", () => {
 
   afterEach(() => {
     delete process.env.HIVEMIND_ORG_ID;
+  });
+
+  // Pins the request that actually matters. GET /me is the CLI's FIRST
+  // authenticated call, so it is the one that can trigger the middleware's
+  // one-time signup capture. If /me ever moves off apiGet to its own fetch
+  // without the OS header, it consumes that capture with no OS and no later
+  // request can repair it — this asserts on /me by URL, not on the helper.
+  it("sends X-Hivemind-OS on the first authenticated call, GET /me", async () => {
+    osHeaderMock.mockReturnValue({ "X-Hivemind-OS": "windows" });
+    const token = makeToken({ org_id: "o1", user_id: "u1" });
+    fetchMock
+      .mockResolvedValueOnce(ok({ id: "u1", name: "Alice" }))
+      .mockResolvedValueOnce(ok([{ id: "o1", name: "acme" }]));
+    const { saveCredentialsFromToken } = await importAuth();
+    await saveCredentialsFromToken(token, "https://api.example", { skipTokenMint: true });
+
+    const [meUrl, meInit] = fetchMock.mock.calls[0];
+    expect(meUrl).toBe("https://api.example/me");
+    expect(meInit.headers["X-Hivemind-OS"]).toBe("windows");
   });
 
   it("skipTokenMint=true honors the org_id claim from the token JWT (multi-org user)", async () => {
