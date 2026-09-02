@@ -68,6 +68,12 @@ jobs:
     # fail on a Windows runner for reasons unrelated to these fixes.
     # The wiki-worker suites mock execFileSync entirely (no real spawning,
     # no POSIX-only paths), so they run cleanly on windows-latest.
+    #
+    # client-os.test.ts is here for a different reason: it is the only suite
+    # whose result DEPENDS on running on real Windows. It asserts the unstubbed
+    # process.platform maps to the OS name the backend records, so this leg is
+    # what proves win32 -> "windows" on a genuine Windows machine instead of a
+    # redefined property (PLA-498).
     name: Windows smoke (spawn + hook dedup + wiki-worker)
     runs-on: windows-latest
     steps:
@@ -88,7 +94,7 @@ jobs:
         run: npm install
 
       - name: Run Windows-relevant suites
-        run: npx vitest run tests/shared/spawn-detached.test.ts tests/cli/install-helpers.test.ts tests/codex/codex-wiki-worker.test.ts tests/cursor/cursor-wiki-worker.test.ts tests/pi/pi-wiki-worker.test.ts tests/hermes/hermes-wiki-worker.test.ts
+        run: npx vitest run tests/shared/spawn-detached.test.ts tests/cli/install-helpers.test.ts tests/codex/codex-wiki-worker.test.ts tests/cursor/cursor-wiki-worker.test.ts tests/pi/pi-wiki-worker.test.ts tests/hermes/hermes-wiki-worker.test.ts tests/claude-code/client-os.test.ts
 
   test:
     name: Typecheck and Test
