@@ -40,13 +40,20 @@ describe("hivemindOsValue", () => {
     expect(hivemindOsValue()).toBe("");
   });
 
-  // The backend allowlists exactly these three; a value outside them would be
-  // dropped there, so a mismatch here would silently cost us the property.
-  it("never returns a value outside the backend allowlist", () => {
-    for (const p of ["darwin", "win32", "linux", "freebsd", "sunos", "android"]) {
-      setPlatform(p);
-      const v = hivemindOsValue();
-      expect(v === "" || ["macos", "windows", "linux"].includes(v)).toBe(true);
+  // Asserted value by value, not "is it in the allowlist": the loose form passes
+  // even when a platform maps to the WRONG allowed name — sunos returning
+  // "linux" would look fine — and the backend would then record a confident lie.
+  it("maps every platform to its exact value, supported or not", () => {
+    for (const [platform, want] of Object.entries({
+      darwin: "macos",
+      win32: "windows",
+      linux: "linux",
+      freebsd: "",
+      sunos: "",
+      android: "",
+    })) {
+      setPlatform(platform);
+      expect(hivemindOsValue()).toBe(want);
     }
   });
 });
@@ -62,9 +69,17 @@ describe("the platform this process actually runs on", () => {
     expect(hivemindOsValue()).toBe(expected[REAL_PLATFORM_NAME] ?? "");
   });
 
-  it("emits a header on the three platforms we publish an installer for", () => {
-    if (!["darwin", "win32", "linux"].includes(REAL_PLATFORM_NAME)) return;
-    expect(hivemindOsHeader()[HIVEMIND_OS_HEADER]).toBeTruthy();
+  // toBeTruthy() would accept any non-empty string, so on the Windows runner the
+  // header could read "macos" and this would still pass — defeating the only
+  // reason this file runs on windows-latest at all.
+  it("emits the canonical value for the real platform", () => {
+    const expected: Record<string, string> = { darwin: "macos", win32: "windows", linux: "linux" };
+    const want = expected[REAL_PLATFORM_NAME];
+    if (!want) {
+      expect(hivemindOsHeader()).toEqual({});
+      return;
+    }
+    expect(hivemindOsHeader()[HIVEMIND_OS_HEADER]).toBe(want);
   });
 });
 
