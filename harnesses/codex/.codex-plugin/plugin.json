@@ -1,6 +1,6 @@
 {
   "name": "hivemind",
-  "version": "0.7.148",
+  "version": "0.7.149",
   "description": "Cloud-backed persistent memory powered by Deeplake — read, write, and share memory across Codex sessions and agents",
   "author": {
     "name": "Activeloop",
