@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -423,11 +423,10 @@ describe("wiki-worker — happy path", () => {
     mkFetch(undefined, 1, true, 14);
     execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
       const summaryPath = args[1].match(/SUMMARY=(\S+)/)![1];
-      const identical = readFileSync(summaryPath, "utf-8");
-      // Ensure the mtime moves even on a fast filesystem clock.
-      utimesSync(summaryPath, new Date(Date.now() + 5000), new Date(Date.now() + 5000));
-      writeFileSync(summaryPath, identical);
-      utimesSync(summaryPath, new Date(Date.now() + 5000), new Date(Date.now() + 5000));
+      // A plain rewrite of the same bytes, with NO mtime manipulation — the
+      // worst case for a content-only check, and the case a coarse filesystem
+      // clock would hide if the guard compared against "just now".
+      writeFileSync(summaryPath, readFileSync(summaryPath, "utf-8"));
       return Buffer.from("");
     });
     await runWorker();

@@ -12,7 +12,7 @@
  * differs: codex shells `codex exec`, we shell `cursor-agent --print --model X`.
  */
 
-import { readFileSync, writeFileSync, existsSync, statSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, utimesSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { buildTrailingPromptInvocation } from "../wiki-worker-spawn.js";
 import { dirname, join } from "node:path";
@@ -274,6 +274,13 @@ async function main(): Promise<void> {
     wlog(`running cursor-agent --print (model=${cfg.cursorModel})`);
     let execSucceeded = false;
     const summaryBeforeExec = existsSync(tmpSummary) ? readFileSync(tmpSummary, "utf-8") : null;
+    // Backdate the pre-seeded file before handing it to the child. Comparing
+    // mtime against "a minute ago" instead of "just now" closes the only hole
+    // in the wrote-nothing check: on a coarse-resolution filesystem (FAT's 2s,
+    // say) a same-tick rewrite would otherwise keep the timestamp and read as
+    // "never written". Any write by the child lands far outside that window.
+    const MTIME_SENTINEL = new Date(Date.now() - 60_000);
+    if (existsSync(tmpSummary)) utimesSync(tmpSummary, MTIME_SENTINEL, MTIME_SENTINEL);
     const summaryMtimeBefore = existsSync(tmpSummary) ? statSync(tmpSummary).mtimeMs : 0;
     try {
       // cursor-agent --print is the non-interactive headless mode. --force
