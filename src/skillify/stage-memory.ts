@@ -18,10 +18,10 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { WIKI_PROMPT_TEMPLATE } from "../hooks/spawn-wiki-worker.js";
-import { buildClaudeInvocation } from "../hooks/wiki-worker-spawn.js";
+import { buildClaudeInvocation, type ClaudeGrants } from "../hooks/wiki-worker-spawn.js";
 import { resolveCliBin } from "../utils/resolve-cli-bin.js";
 import { EmbedClient } from "../embeddings/client.js";
 import { embeddingsDisabled } from "../embeddings/disable.js";
@@ -62,7 +62,12 @@ export interface StageOptions {
    * Injectable for tests; defaults to the real `claude -p` spawn. A real
    * agent writes the summary file named in the prompt as a side effect.
    */
-  runAgent?: (claudeBin: string, prompt: string, timeoutMs: number) => Promise<boolean>;
+  runAgent?: (
+    claudeBin: string,
+    prompt: string,
+    timeoutMs: number,
+    grants?: ClaudeGrants,
+  ) => Promise<boolean>;
   /** Embed `text` locally; null when unavailable. Injectable for tests. */
   embed?: (text: string) => Promise<number[] | null>;
 }
@@ -124,12 +129,17 @@ export function planClaudeSpawn(inv: ReturnType<typeof buildClaudeInvocation>): 
   };
 }
 
-function runClaude(claudeBin: string, prompt: string, timeoutMs: number): Promise<boolean> {
+function runClaude(
+  claudeBin: string,
+  prompt: string,
+  timeoutMs: number,
+  grants?: ClaudeGrants,
+): Promise<boolean> {
   // Reuse the live wiki-worker's invocation builder so the prompt-as-arg vs
   // prompt-over-stdin (Windows `.cmd` shim) handling stays identical to the
   // proven SessionEnd path. A bare `spawn(bin, ["-p", prompt, ...])` cannot
   // launch a `.cmd` shim and would blow the command-line length on Windows.
-  const plan = planClaudeSpawn(buildClaudeInvocation(claudeBin, prompt));
+  const plan = planClaudeSpawn(buildClaudeInvocation(claudeBin, prompt, grants));
   return new Promise((resolve) => {
     const child = spawn(plan.file, plan.args, {
       stdio: plan.stdio,
@@ -213,7 +223,13 @@ export async function stageSession(input: StageSessionInput, opts: StageOptions)
   }
 
   const runAgent = opts.runAgent ?? runClaude;
-  const ran = await runAgent(opts.claudeBin, prompt, opts.timeoutMs);
+  // The transcript and the staging dir both live outside the session cwd, so the
+  // agent needs them granted explicitly — bypassPermissions alone is silently
+  // ignored under an enterprise policy and every session stages as `no-summary`.
+  const ran = await runAgent(opts.claudeBin, prompt, opts.timeoutMs, {
+    addDirs: [dirname(input.jsonlPath), stagingDir],
+    allowedTools: ["Read", "Write"],
+  });
   if (!existsSync(summaryPath)) {
     return { sessionId: key, ok: false, embedded: false, reason: ran ? "no-summary" : "claude-failed" };
   }

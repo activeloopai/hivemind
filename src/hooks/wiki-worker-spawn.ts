@@ -2,18 +2,52 @@ import type { ExecFileSyncOptions } from "node:child_process";
 import { binNeedsShell, shellFile } from "../utils/resolve-cli-bin.js";
 
 /** Fixed flags for the summary-generation `claude -p` call (no user input). */
-const CLAUDE_FLAGS = [
-  "--no-session-persistence",
-  "--model",
-  "haiku",
-  "--permission-mode",
-  "bypassPermissions",
-] as const;
+const CLAUDE_BASE_FLAGS = ["--no-session-persistence", "--model", "haiku"] as const;
+
+/** Blanket grant, used only when the caller names no explicit grants. */
+const CLAUDE_BYPASS_FLAGS = ["--permission-mode", "bypassPermissions"] as const;
 
 export interface ClaudeInvocation {
   file: string;
   args: string[];
   options: ExecFileSyncOptions;
+}
+
+/**
+ * Explicit grants for call sites that read/write files OUTSIDE the session cwd.
+ *
+ * `bypassPermissions` is NOT honored under an enterprise policy that sets
+ * `"disableBypassPermissionsMode": "disable"` (macOS:
+ * /Library/Application Support/ClaudeCode/managed-settings.json). The child then
+ * falls back to normal permissioning, refuses every path outside the working
+ * directory — the wiki worker's `$TMPDIR/deeplake-wiki-*` scratch dir, or a
+ * backfill's transcript + staging dir — and exits 0 having written nothing. On
+ * such a machine every summary stays a header-only stub and every backfill
+ * reports `no-summary`.
+ *
+ * Naming the dirs and tools instead is both policy-proof and least-privilege
+ * (the summarizer only ever needs Read + Write), so a caller that supplies
+ * grants gets them INSTEAD of the bypass, not in addition to it.
+ */
+export interface ClaudeGrants {
+  /** Directories to expose to the child (each becomes `--add-dir <dir>`). */
+  addDirs?: string[];
+  /** Tools to pre-approve, e.g. `["Read", "Write"]`. */
+  allowedTools?: string[];
+}
+
+/**
+ * `quotePaths` is for the Windows `.cmd` branch, where args are re-joined into a
+ * shell command line: a temp dir there routinely contains spaces
+ * (`C:\Users\First Last\AppData\Local\Temp`) and would otherwise split.
+ */
+export function permissionFlags(grants: ClaudeGrants | undefined, quotePaths = false): string[] {
+  if (!grants) return [...CLAUDE_BYPASS_FLAGS];
+  const flags: string[] = [];
+  for (const dir of grants.addDirs ?? []) flags.push("--add-dir", quotePaths ? `"${dir}"` : dir);
+  if (grants.allowedTools?.length) flags.push("--allowedTools", ...grants.allowedTools);
+  // An empty grants object would otherwise leave the child with no grant at all.
+  return flags.length > 0 ? flags : [...CLAUDE_BYPASS_FLAGS];
 }
 
 /**
@@ -30,11 +64,15 @@ export interface ClaudeInvocation {
  * prompt as a positional arg, no shell — so the already-working path stays
  * byte-identical.
  */
-export function buildClaudeInvocation(claudeBin: string, prompt: string): ClaudeInvocation {
+export function buildClaudeInvocation(
+  claudeBin: string,
+  prompt: string,
+  grants?: ClaudeGrants,
+): ClaudeInvocation {
   if (binNeedsShell(claudeBin)) {
     return {
       file: shellFile(claudeBin),
-      args: ["-p", ...CLAUDE_FLAGS],
+      args: ["-p", ...CLAUDE_BASE_FLAGS, ...permissionFlags(grants, true)],
       // windowsHide: the wiki worker is a detached, console-less process, so
       // without CREATE_NO_WINDOW Windows allocates a visible console window
       // (titled after the CLI exe) for the child. No-op on POSIX.
@@ -43,7 +81,7 @@ export function buildClaudeInvocation(claudeBin: string, prompt: string): Claude
   }
   return {
     file: claudeBin,
-    args: ["-p", prompt, ...CLAUDE_FLAGS],
+    args: ["-p", prompt, ...CLAUDE_BASE_FLAGS, ...permissionFlags(grants)],
     options: { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
   };
 }
@@ -102,6 +140,14 @@ export function buildStdinPromptInvocation(bin: string, flags: string[], prompt:
 }
 
 /** Claude variant of {@link buildStdinPromptInvocation} (same fixed flags as the argv path). */
-export function buildClaudeStdinInvocation(claudeBin: string, prompt: string): ClaudeInvocation {
-  return buildStdinPromptInvocation(claudeBin, ["-p", ...CLAUDE_FLAGS], prompt);
+export function buildClaudeStdinInvocation(
+  claudeBin: string,
+  prompt: string,
+  grants?: ClaudeGrants,
+): ClaudeInvocation {
+  return buildStdinPromptInvocation(
+    claudeBin,
+    ["-p", ...CLAUDE_BASE_FLAGS, ...permissionFlags(grants)],
+    prompt,
+  );
 }
