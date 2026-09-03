@@ -385,8 +385,7 @@ describe("wiki-worker — happy path", () => {
   });
 
   it("does NOT upload or advance the offset when claude -p exits 0 having written nothing", async () => {
-    // The customer-reported failure, reproduced at the seam that made it
-    // permanent. Under an enterprise policy that disables bypassPermissions the
+    // The field failure, reproduced at the seam that made it permanent. Under an enterprise policy that disables bypassPermissions the
     // child cannot reach tmpDir, cannot prompt (print mode), and exits 0 with
     // the summary file untouched — leaving the pre-seeded prior summary on disk.
     // Treating that as success re-uploaded the placeholder verbatim AND stamped
