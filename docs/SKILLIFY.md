@@ -116,6 +116,17 @@ The skillify worker calls each agent's own headless CLI for the gate prompt — 
 
 For hermes via OpenRouter (the default), set `OPENROUTER_API_KEY` in the environment; the worker inherits the parent process env. Other providers (anthropic, openai, etc.) need their respective API keys.
 
+To route the hermes gate calls through [OrcaRouter](https://www.orcarouter.ai) instead, set `HIVEMIND_HERMES_PROVIDER=orcarouter` (plus a matching `HIVEMIND_HERMES_MODEL`, e.g. `anthropic/claude-haiku-4.5`) and register OrcaRouter as a named provider in `~/.hermes/config.yaml` so hermes knows its base URL and API key env var:
+
+```yaml
+providers:
+  orcarouter:
+    base_url: https://api.orcarouter.ai/v1
+    key_env: ORCAROUTER_API_KEY
+```
+
+OrcaRouter is an OpenAI-compatible gateway, so hermes talks to it like any other custom endpoint; set `ORCAROUTER_API_KEY` in the environment and the worker inherits it. It also runs gateway-level, zero-trust security for AI agents on the same endpoint — screening every prompt/response and governing every tool call on a default-deny basis, with no application code changes.
+
 ## Logs
 
 Worker activity logs to `~/.claude/hooks/skillify.log`. Each line shows which session pool was mined, what the gate decided, and whether a file was written.
