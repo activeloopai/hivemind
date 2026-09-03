@@ -263,6 +263,15 @@ async function main(): Promise<void> {
           : "pi --print failed without producing a new summary; skipping upload");
         return;
       }
+      // Exit 0 is not proof of work: a child that cannot reach tmpDir (or simply
+      // declines) exits 0 having written nothing, leaving the pre-seeded base
+      // summary in place. Uploading it unchanged would still advance the offset
+      // and slice those events away forever, which is how a session gets stuck
+      // as a header-only placeholder run after run.
+      if (!summaryChanged) {
+        wlog("pi --print exited 0 but left the pre-seeded summary unchanged; skipping upload to avoid advancing the offset");
+        return;
+      }
       if (raw.trim()) {
         // Stamp the offset ourselves so the persisted summary is authoritative
         // and never depends on the LLM echoing the bookkeeping line.
