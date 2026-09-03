@@ -38,6 +38,7 @@ import {
 import { extractPairs, type Pair } from "../skillify/extractors/index.js";
 import { findAgentBin, type Agent } from "../skillify/gate-runner.js";
 import { extractJsonBlock } from "../skillify/gate-parser.js";
+import { permissionFlags, type ClaudeGrants } from "../hooks/wiki-worker-spawn.js";
 import { resolveSkillsRoot, writeNewSkill, listSkills, parseFrontmatter } from "../skillify/skill-writer.js";
 import { detectAgentSkillsRoots } from "../skillify/agent-roots.js";
 import { fanOutSymlinks } from "../skillify/pull.js";
@@ -91,6 +92,12 @@ function runGateViaStdin(opts: {
   bin: string;
   prompt: string;
   timeoutMs: number;
+  /**
+   * Dirs/tools to grant explicitly instead of the blanket `bypassPermissions`,
+   * which an enterprise policy can disable. See ClaudeGrants in
+   * ../hooks/wiki-worker-spawn.ts.
+   */
+  grants?: ClaudeGrants;
 }): Promise<{ stdout: string; stderr: string; errored: boolean; errorMessage?: string }> {
   return new Promise((resolve) => {
     if (opts.agent !== "claude_code") {
@@ -116,7 +123,7 @@ function runGateViaStdin(opts: {
       "-p",
       "--no-session-persistence",
       "--model", "haiku",
-      "--permission-mode", "bypassPermissions",
+      ...permissionFlags(opts.grants),
     ];
     const child = spawn(opts.bin, args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -586,7 +593,16 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
     const prompt = buildSessionPrompt(tail, s, verdictPath);
     writeFileSync(join(sessionTmp, "prompt.txt"), prompt);
 
-    const gate = await runGateViaStdin({ agent: gateAgent, bin: gateBin, prompt, timeoutMs: GATE_TIMEOUT_MS });
+    // sessionTmp holds the verdict path named in the prompt and lives outside
+    // the session cwd, so grant it explicitly rather than relying on the
+    // bypass an enterprise policy can disable.
+    const gate = await runGateViaStdin({
+      agent: gateAgent,
+      bin: gateBin,
+      prompt,
+      timeoutMs: GATE_TIMEOUT_MS,
+      grants: { addDirs: [sessionTmp], allowedTools: ["Read", "Write"] },
+    });
     try {
       writeFileSync(join(sessionTmp, "gate-stdout.txt"), gate.stdout);
       if (gate.stderr) writeFileSync(join(sessionTmp, "gate-stderr.txt"), gate.stderr);
