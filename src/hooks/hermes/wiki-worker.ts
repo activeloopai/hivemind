@@ -12,7 +12,7 @@
  * differs: codex shells `codex exec`, we shell `hermes -z --provider X -m Y`.
  */
 
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -276,6 +276,7 @@ async function main(): Promise<void> {
     wlog(`running hermes -z (provider=${cfg.hermesProvider}, model=${cfg.hermesModel})`);
     let execSucceeded = false;
     const summaryBeforeExec = existsSync(tmpSummary) ? readFileSync(tmpSummary, "utf-8") : null;
+    const summaryMtimeBefore = existsSync(tmpSummary) ? statSync(tmpSummary).mtimeMs : 0;
     try {
       // hermes -z (--oneshot) is the non-interactive mode. --yolo
       // auto-approves tool use within the spawned hermes process.
@@ -329,8 +330,12 @@ async function main(): Promise<void> {
       // summary in place. Uploading it unchanged would still advance the offset
       // and slice those events away forever, which is how a session gets stuck
       // as a header-only placeholder run after run.
-      if (!summaryChanged) {
-        wlog("hermes -z exited 0 but left the pre-seeded summary unchanged; skipping upload to avoid advancing the offset");
+      // mtime, not just content: an agent that legitimately regenerates the
+      // SAME text still touched the file, and skipping that would freeze the
+      // offset and re-summarize those rows on every future run. Only a run
+      // that neither changed the bytes NOR touched the file wrote nothing.
+      if (!summaryChanged && statSync(tmpSummary).mtimeMs === summaryMtimeBefore) {
+        wlog("hermes -z exited 0 but never wrote the summary; skipping upload to avoid advancing the offset");
         return;
       }
       if (raw.trim()) {

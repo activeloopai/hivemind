@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -411,8 +411,28 @@ describe("wiki-worker — happy path", () => {
     expect(uploadSummaryMock).not.toHaveBeenCalled();
     expect(finalizeSummaryMock).not.toHaveBeenCalled();
     const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
-    expect(log).toContain("left the pre-seeded summary unchanged");
+    expect(log).toContain("never wrote the summary");
     expect(releaseLockMock).toHaveBeenCalledWith("sid-worker");
+  });
+
+  it("still uploads when the agent legitimately rewrites the summary to the SAME bytes", async () => {
+    // Content equality alone cannot tell "wrote nothing" from "correctly
+    // regenerated identical text". Treating the second as the first would
+    // freeze the offset and re-summarize those rows on every future run, so
+    // the guard also checks whether the file was touched.
+    mkFetch(undefined, 1, true, 14);
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const summaryPath = args[1].match(/SUMMARY=(\S+)/)![1];
+      const identical = readFileSync(summaryPath, "utf-8");
+      // Ensure the mtime moves even on a fast filesystem clock.
+      utimesSync(summaryPath, new Date(Date.now() + 5000), new Date(Date.now() + 5000));
+      writeFileSync(summaryPath, identical);
+      utimesSync(summaryPath, new Date(Date.now() + 5000), new Date(Date.now() + 5000));
+      return Buffer.from("");
+    });
+    await runWorker();
+    expect(uploadSummaryMock).toHaveBeenCalledTimes(1);
+    expect(finalizeSummaryMock).toHaveBeenCalledWith("sid-worker", 14);
   });
 
   it("still uploads and advances the offset when claude -p rewrites the pre-seeded summary", async () => {

@@ -282,7 +282,7 @@ describe("codex wiki-worker — happy path", () => {
     expect(uploadSummaryMock).not.toHaveBeenCalled();
     expect(finalizeSummaryMock).not.toHaveBeenCalled();
     const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
-    expect(log).toContain("left the pre-seeded summary unchanged");
+    expect(log).toContain("never wrote the summary");
     expect(releaseLockMock).toHaveBeenCalledWith("sid-codex");
   });
 
