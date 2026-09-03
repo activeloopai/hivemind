@@ -294,10 +294,13 @@ describe("wiki-worker — happy path", () => {
     // bypassPermissions, which an enterprise policy can disable.
     expect(calledArgs).not.toContain("--permission-mode");
     expect(calledArgs).not.toContain("bypassPermissions");
-    expect(calledArgs).toContain("--add-dir");
-    expect(calledArgs).toContain("--allowedTools");
-    expect(calledArgs).toContain("Read");
-    expect(calledArgs).toContain("Write");
+    // Pin the granted VALUES, not just the flag names: a grant naming the
+    // wrong directory reads identically to a correct one under a presence-only
+    // assertion, and would leave the child just as unable to reach tmpDir.
+    expect(calledArgs.slice(calledArgs.indexOf("--add-dir"))).toEqual([
+      "--add-dir", tmpDir,
+      "--allowedTools", "Read", "Write",
+    ]);
 
     // Prompt template was expanded with real values
     const prompt = calledArgs[1];
