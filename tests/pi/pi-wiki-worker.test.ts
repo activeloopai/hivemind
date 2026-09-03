@@ -198,7 +198,7 @@ describe("pi wiki-worker — behavior", () => {
     expect(uploadSummaryMock).not.toHaveBeenCalled();
     expect(finalizeSummaryMock).not.toHaveBeenCalled();
     const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
-    expect(log).toContain("never wrote the summary");
+    expect(log).toContain("pi --print exited 0 but never wrote the summary; skipping upload to avoid advancing the offset");
     expect(releaseLockMock).toHaveBeenCalledWith("sid-pi");
   });
 });
