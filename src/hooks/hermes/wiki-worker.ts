@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { finalizeSummary, releaseLock, readState } from "../summary-state.js";
 import { readSessionEventCache } from "../session-event-cache.js";
 import { buildSessionPath } from "../../utils/session-path.js";
-import { capLinesByBytes, newRowsFromWindow, stampOffset, WIKI_FALLBACK_MAX_ROWS, WIKI_JSONL_MAX_BYTES } from "../wiki-offset.js";
+import { capLinesByBytes, markSummaryUnwritten, newRowsFromWindow, stampOffset, summaryWasWritten, WIKI_FALLBACK_MAX_ROWS, WIKI_JSONL_MAX_BYTES } from "../wiki-offset.js";
 import { redactSecrets } from "../shared/redact.js";
 import { uploadSummary } from "../upload-summary.js";
 import { log as _log } from "../../utils/debug.js";
@@ -276,14 +276,7 @@ async function main(): Promise<void> {
     wlog(`running hermes -z (provider=${cfg.hermesProvider}, model=${cfg.hermesModel})`);
     let execSucceeded = false;
     const summaryBeforeExec = existsSync(tmpSummary) ? readFileSync(tmpSummary, "utf-8") : null;
-    // Backdate the pre-seeded file before handing it to the child. Comparing
-    // mtime against "a minute ago" instead of "just now" closes the only hole
-    // in the wrote-nothing check: on a coarse-resolution filesystem (FAT's 2s,
-    // say) a same-tick rewrite would otherwise keep the timestamp and read as
-    // "never written". Any write by the child lands far outside that window.
-    const MTIME_SENTINEL = new Date(Date.now() - 60_000);
-    if (existsSync(tmpSummary)) utimesSync(tmpSummary, MTIME_SENTINEL, MTIME_SENTINEL);
-    const summaryMtimeBefore = existsSync(tmpSummary) ? statSync(tmpSummary).mtimeMs : 0;
+    const summaryBaseline = markSummaryUnwritten(tmpSummary, { existsSync, utimesSync, statSync });
     try {
       // hermes -z (--oneshot) is the non-interactive mode. --yolo
       // auto-approves tool use within the spawned hermes process.
@@ -337,11 +330,7 @@ async function main(): Promise<void> {
       // summary in place. Uploading it unchanged would still advance the offset
       // and slice those events away forever, which is how a session gets stuck
       // as a header-only placeholder run after run.
-      // mtime, not just content: an agent that legitimately regenerates the
-      // SAME text still touched the file, and skipping that would freeze the
-      // offset and re-summarize those rows on every future run. Only a run
-      // that neither changed the bytes NOR touched the file wrote nothing.
-      if (!summaryChanged && statSync(tmpSummary).mtimeMs === summaryMtimeBefore) {
+      if (!summaryWasWritten(tmpSummary, summaryBaseline, summaryChanged, { statSync })) {
         wlog("hermes -z exited 0 but never wrote the summary; skipping upload to avoid advancing the offset");
         return;
       }
