@@ -169,6 +169,38 @@ describe("pi wiki-worker — behavior", () => {
     expect(uploadSummaryMock).not.toHaveBeenCalled();
     expect(releaseLockMock).toHaveBeenCalledWith("sid-pi");
   });
+
+  it("does NOT upload or advance the offset when the agent exits 0 having written nothing", async () => {
+    // Exit 0 is not proof of work. A child that cannot reach tmpDir (or simply
+    // declines) exits 0 with the summary file untouched, leaving the pre-seeded
+    // prior summary in place. Treating that as success re-uploaded the
+    // placeholder verbatim AND stamped lastSummaryCount, slicing the unread
+    // events away forever — so every later run summarized nothing.
+    fetchMock.mockImplementation(async (_u: string, init: any) => {
+      const sql = JSON.parse(init.body).query as string;
+      if (sql.startsWith("SELECT count(*) AS n")) return jsonResp({ columns: ["n"], rows: [[9]] });
+      if (sql.startsWith("SELECT message, creation_date")) {
+        return jsonResp({
+          columns: ["message", "creation_date"],
+          rows: Array.from({ length: 9 }, (_, i) => [JSON.stringify({ type: "user_message", content: `hello pi ${i}` }), "2026-04-20T00:00:00Z"]),
+        });
+      }
+      if (sql.startsWith("SELECT DISTINCT path")) {
+        return jsonResp({ columns: ["path"], rows: [["/sessions/alice/alice_org_default_sid-pi.jsonl"]] });
+      }
+      if (sql.startsWith("SELECT summary FROM")) {
+        return jsonResp({ columns: ["summary"], rows: [["# Session X\n- **JSONL offset**: 7\n\n## What Happened\nprior"]] });
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    execFileSyncMock.mockImplementation(() => Buffer.from(""));
+    await runWorker();
+    expect(uploadSummaryMock).not.toHaveBeenCalled();
+    expect(finalizeSummaryMock).not.toHaveBeenCalled();
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("pi --print exited 0 but never wrote the summary; skipping upload to avoid advancing the offset");
+    expect(releaseLockMock).toHaveBeenCalledWith("sid-pi");
+  });
 });
 
 const promptOf = (a: string[]) => a.find((x) => typeof x === "string" && x.includes("SUMMARY="))!;

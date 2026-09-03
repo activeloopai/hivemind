@@ -6,7 +6,7 @@
  * codex / cursor / hermes installed never needs `claude` in PATH.
  *
  * Per-agent invocation:
- *   claude_code → `claude -p <prompt> --no-session-persistence --model haiku --permission-mode bypassPermissions`
+ *   claude_code → `claude -p <prompt> --no-session-persistence --model haiku <permission grants>`
  *   codex       → `codex exec --dangerously-bypass-approvals-and-sandbox <prompt>`
  *   cursor      → `cursor-agent --print --model <model> --force --output-format text <prompt>`
  *   hermes      → `hermes -z <prompt> --provider <provider> -m <model> --yolo --ignore-user-config`
@@ -14,9 +14,15 @@
  * The worker passes a verdict-write path inside the prompt; the runner
  * captures stdout regardless so the worker's stdout-fallback path still
  * works on agents whose models don't reliably use the Write tool.
+ *
+ * That verdict path lives outside the session cwd, so the claude_code caller
+ * names it via `grants` (`--add-dir` + `--allowedTools`). Callers that name no
+ * grants keep the blanket `--permission-mode bypassPermissions`.
  */
 
 import { existsSync } from "node:fs";
+
+import { permissionFlags, type ClaudeGrants } from "../hooks/wiki-worker-spawn.js";
 import { createRequire } from "node:module";
 
 // We need `child_process.execFileSync` to actually spawn the agent CLI for
@@ -61,6 +67,14 @@ export interface GateRunOptions {
   piModel?: string;
   /** Max wall-clock for the CLI call; default 120s. */
   timeoutMs?: number;
+  /**
+   * claude_code only — dirs/tools to grant explicitly instead of the blanket
+   * `bypassPermissions`, which an enterprise policy can disable. The gate
+   * prompt names a verdict path outside the session cwd, so a caller that
+   * wants the Write-tool branch to work under such a policy must grant that
+   * dir. See ClaudeGrants in ../hooks/wiki-worker-spawn.ts.
+   */
+  grants?: ClaudeGrants;
 }
 
 export interface GateRunResult {
@@ -153,7 +167,7 @@ export function buildArgs(agent: Agent, prompt: string, opts: GateRunOptions): s
         "-p", prompt,
         "--no-session-persistence",
         "--model", "haiku",
-        "--permission-mode", "bypassPermissions",
+        ...permissionFlags(opts.grants),
       ];
     case "codex":
       return [

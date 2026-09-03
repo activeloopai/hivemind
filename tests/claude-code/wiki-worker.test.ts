@@ -290,8 +290,17 @@ describe("wiki-worker — happy path", () => {
     expect(calledArgs).toContain("--no-session-persistence");
     expect(calledArgs).toContain("--model");
     expect(calledArgs).toContain("haiku");
-    expect(calledArgs).toContain("--permission-mode");
-    expect(calledArgs).toContain("bypassPermissions");
+    // The scratch dir is granted explicitly instead of relying on
+    // bypassPermissions, which an enterprise policy can disable.
+    expect(calledArgs).not.toContain("--permission-mode");
+    expect(calledArgs).not.toContain("bypassPermissions");
+    // Pin the granted VALUES, not just the flag names: a grant naming the
+    // wrong directory reads identically to a correct one under a presence-only
+    // assertion, and would leave the child just as unable to reach tmpDir.
+    expect(calledArgs.slice(calledArgs.indexOf("--add-dir"))).toEqual([
+      "--add-dir", tmpDir,
+      "--allowedTools", "Read", "Write",
+    ]);
 
     // Prompt template was expanded with real values
     const prompt = calledArgs[1];
@@ -376,6 +385,68 @@ describe("wiki-worker — happy path", () => {
     const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
     expect(log).toContain("failed without producing a new summary");
     expect(releaseLockMock).toHaveBeenCalledWith("sid-worker");
+  });
+
+  it("does NOT upload or advance the offset when claude -p exits 0 having written nothing", async () => {
+    // The field failure, reproduced at the seam that made it permanent. Under an enterprise policy that disables bypassPermissions the
+    // child cannot reach tmpDir, cannot prompt (print mode), and exits 0 with
+    // the summary file untouched — leaving the pre-seeded prior summary on disk.
+    // Treating that as success re-uploaded the placeholder verbatim AND stamped
+    // lastSummaryCount, slicing the unread events away forever, so every later
+    // run summarized nothing. Exit 0 is not proof of work.
+    mkFetch(undefined, 1, true, 14);
+    // Captured inside the mock: the worker rmSync's tmpDir on the way out, so
+    // the pre-seed can only be observed while the child is "running".
+    let preSeeded: string | null = null;
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const summaryPath = args[1].match(/SUMMARY=(\S+)/)![1];
+      preSeeded = existsSync(summaryPath) ? readFileSync(summaryPath, "utf-8") : null;
+      return Buffer.from("");  // exit 0, wrote nothing
+    });
+    await runWorker();
+
+    // The worker did pre-seed the prior summary (otherwise this test would
+    // pass for the wrong reason — an absent file, not an unchanged one).
+    expect(preSeeded).toContain("JSONL offset");
+    expect(uploadSummaryMock).not.toHaveBeenCalled();
+    expect(finalizeSummaryMock).not.toHaveBeenCalled();
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("claude -p exited 0 but never wrote the summary; skipping upload to avoid advancing the offset");
+    expect(releaseLockMock).toHaveBeenCalledWith("sid-worker");
+  });
+
+  it("still uploads when the agent legitimately rewrites the summary to the SAME bytes", async () => {
+    // Content equality alone cannot tell "wrote nothing" from "correctly
+    // regenerated identical text". Treating the second as the first would
+    // freeze the offset and re-summarize those rows on every future run, so
+    // the guard also checks whether the file was touched.
+    mkFetch(undefined, 1, true, 14);
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const summaryPath = args[1].match(/SUMMARY=(\S+)/)![1];
+      // A plain rewrite of the same bytes, with NO mtime manipulation — the
+      // worst case for a content-only check, and the case a coarse filesystem
+      // clock would hide if the guard compared against "just now".
+      writeFileSync(summaryPath, readFileSync(summaryPath, "utf-8"));
+      return Buffer.from("");
+    });
+    await runWorker();
+    expect(uploadSummaryMock).toHaveBeenCalledTimes(1);
+    expect(finalizeSummaryMock).toHaveBeenCalledWith("sid-worker", 14);
+  });
+
+  it("still uploads and advances the offset when claude -p rewrites the pre-seeded summary", async () => {
+    // The mirror of the guard above: a real run that DOES rewrite the file must
+    // keep uploading and stamping, so the fix cannot silently freeze summaries.
+    mkFetch(undefined, 1, true, 14);
+    execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
+      const summaryPath = args[1].match(/SUMMARY=(\S+)/)![1];
+      writeFileSync(summaryPath, "# Session X\n\n## What Happened\nfresh body written by this run.\n");
+      return Buffer.from("");
+    });
+    await runWorker();
+
+    expect(uploadSummaryMock).toHaveBeenCalledTimes(1);
+    expect(finalizeSummaryMock).toHaveBeenCalledWith("sid-worker", 14);
   });
 
   it("defaults to /sessions/unknown/ when the path SELECT returns no rows", async () => {

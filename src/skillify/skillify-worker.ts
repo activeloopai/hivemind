@@ -399,6 +399,10 @@ async function main(): Promise<void> {
       agent: gateAgent,
       prompt,
       bin: cfg.gateBin,
+      // The prompt offers the model a verdict path inside tmpDir, which lives
+      // outside the session cwd. Grant it explicitly so the Write-tool branch
+      // survives an enterprise policy that disables bypassPermissions.
+      grants: { addDirs: [tmpDir], allowedTools: ["Read", "Write"] },
       cursorModel: cfg.cursorModel,
       hermesProvider: cfg.hermesProvider,
       hermesModel: cfg.hermesModel,

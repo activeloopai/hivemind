@@ -12,7 +12,7 @@
  * differs: codex shells `codex exec`, we shell `cursor-agent --print --model X`.
  */
 
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, utimesSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { buildTrailingPromptInvocation } from "../wiki-worker-spawn.js";
 import { dirname, join } from "node:path";
@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { finalizeSummary, releaseLock, readState } from "../summary-state.js";
 import { readSessionEventCache } from "../session-event-cache.js";
 import { buildSessionPath } from "../../utils/session-path.js";
-import { capLinesByBytes, newRowsFromWindow, stampOffset, WIKI_FALLBACK_MAX_ROWS, WIKI_JSONL_MAX_BYTES } from "../wiki-offset.js";
+import { capLinesByBytes, markSummaryUnwritten, newRowsFromWindow, stampOffset, summaryWasWritten, WIKI_FALLBACK_MAX_ROWS, WIKI_JSONL_MAX_BYTES } from "../wiki-offset.js";
 import { redactSecrets } from "../shared/redact.js";
 import { uploadSummary } from "../upload-summary.js";
 import { log as _log } from "../../utils/debug.js";
@@ -274,6 +274,7 @@ async function main(): Promise<void> {
     wlog(`running cursor-agent --print (model=${cfg.cursorModel})`);
     let execSucceeded = false;
     const summaryBeforeExec = existsSync(tmpSummary) ? readFileSync(tmpSummary, "utf-8") : null;
+    const summaryBaseline = markSummaryUnwritten(tmpSummary, { existsSync, utimesSync, statSync });
     try {
       // cursor-agent --print is the non-interactive headless mode. --force
       // auto-allows tools (matches the bypass-approvals semantic codex used).
@@ -310,6 +311,15 @@ async function main(): Promise<void> {
         wlog(summaryChanged
           ? "cursor-agent --print failed after a partial summary write; skipping upload to avoid advancing the offset"
           : "cursor-agent --print failed without producing a new summary; skipping upload");
+        return;
+      }
+      // Exit 0 is not proof of work: a child that cannot reach tmpDir (or simply
+      // declines) exits 0 having written nothing, leaving the pre-seeded base
+      // summary in place. Uploading it unchanged would still advance the offset
+      // and slice those events away forever, which is how a session gets stuck
+      // as a header-only placeholder run after run.
+      if (!summaryWasWritten(tmpSummary, summaryBaseline, summaryChanged, { statSync })) {
+        wlog("cursor-agent --print exited 0 but never wrote the summary; skipping upload to avoid advancing the offset");
         return;
       }
       if (raw.trim()) {

@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { stageSession, resolveClaudeBin, planClaudeSpawn, type StageOptions } from "../../src/skillify/stage-memory.js";
 import { readPendingMemoryManifest } from "../../src/skillify/pending-memory-manifest.js";
 
@@ -48,6 +48,27 @@ function opts(over: Partial<StageOptions> = {}): StageOptions {
 }
 
 describe("stageSession", () => {
+  it("grants the transcript dir and the staging dir explicitly, with Read+Write", async () => {
+    // The backfill hands the agent two paths outside the session cwd. Without
+    // an explicit grant those are refused under an enterprise policy that
+    // disables bypassPermissions, and every session stages as `no-summary`.
+    // The other tests inject a runAgent that ignores its grants argument, so
+    // dropping the grants entirely would leave them green — this one pins it.
+    let seen: any;
+    await stageSession(input(), opts({
+      runAgent: async (_bin, prompt, _timeout, grants) => {
+        seen = grants;
+        const m = prompt.match(/SUMMARY FILE to write: (\S+)/);
+        if (m) writeFileSync(m[1], "# Session s1\n## What Happened\nreal content\n");
+        return true;
+      },
+    }));
+    expect(seen).toBeDefined();
+    expect(seen.allowedTools).toEqual(["Read", "Write"]);
+    expect(seen.addDirs).toContain(dirname(jsonlPath));
+    expect(seen.addDirs).toContain(stagingDir);
+  });
+
   it("stages summary + manifest row on success", async () => {
     const r = await stageSession(input(), opts());
     expect(r).toMatchObject({ ok: true, embedded: false });

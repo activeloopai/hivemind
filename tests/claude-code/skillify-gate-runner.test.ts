@@ -74,12 +74,42 @@ describe("runGate dispatch", () => {
   // produces. (Previously these spawned `/usr/bin/echo` and grepped stdout,
   // which only works on POSIX; buildArgs is the deterministic, cross-platform
   // seam for the same contract.)
-  it("constructs claude_code invocation with --model haiku + bypassPermissions", () => {
+  it("constructs claude_code invocation with --model haiku + bypassPermissions when no grants are named", () => {
     const args = buildArgs("claude_code", "PROMPT_MARKER", { agent: "claude_code", prompt: "PROMPT_MARKER" });
     expect(args).toContain("PROMPT_MARKER");
     expect(args).toContain("--model");
     expect(args).toContain("haiku");
     expect(args).toContain("bypassPermissions");
+  });
+
+  it("swaps bypassPermissions for the named grants when the caller supplies them", () => {
+    // The worker names the tmp dir holding the verdict path. bypassPermissions
+    // is silently ignored under an enterprise policy that sets
+    // disableBypassPermissionsMode, so it must not be the only grant.
+    const args = buildArgs("claude_code", "PROMPT_MARKER", {
+      agent: "claude_code",
+      prompt: "PROMPT_MARKER",
+      grants: { addDirs: ["/tmp/skillify-x"], allowedTools: ["Read", "Write"] },
+    });
+    expect(args).not.toContain("--permission-mode");
+    expect(args).not.toContain("bypassPermissions");
+    expect(args).toEqual([
+      "-p", "PROMPT_MARKER",
+      "--no-session-persistence",
+      "--model", "haiku",
+      "--add-dir", "/tmp/skillify-x",
+      "--allowedTools", "Read", "Write",
+    ]);
+  });
+
+  it("ignores grants for non-claude agents (their CLIs have no --add-dir)", () => {
+    const args = buildArgs("codex", "PROMPT_MARKER", {
+      agent: "codex",
+      prompt: "PROMPT_MARKER",
+      grants: { addDirs: ["/tmp/skillify-x"], allowedTools: ["Read", "Write"] },
+    });
+    expect(args).not.toContain("--add-dir");
+    expect(args).toContain("--dangerously-bypass-approvals-and-sandbox");
   });
 
   it("constructs codex invocation with exec + --dangerously-bypass-approvals-and-sandbox", () => {

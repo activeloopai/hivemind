@@ -12,14 +12,14 @@
  * differs: codex shells `codex exec`, we shell `hermes -z --provider X -m Y`.
  */
 
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, utimesSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { finalizeSummary, releaseLock, readState } from "../summary-state.js";
 import { readSessionEventCache } from "../session-event-cache.js";
 import { buildSessionPath } from "../../utils/session-path.js";
-import { capLinesByBytes, newRowsFromWindow, stampOffset, WIKI_FALLBACK_MAX_ROWS, WIKI_JSONL_MAX_BYTES } from "../wiki-offset.js";
+import { capLinesByBytes, markSummaryUnwritten, newRowsFromWindow, stampOffset, summaryWasWritten, WIKI_FALLBACK_MAX_ROWS, WIKI_JSONL_MAX_BYTES } from "../wiki-offset.js";
 import { redactSecrets } from "../shared/redact.js";
 import { uploadSummary } from "../upload-summary.js";
 import { log as _log } from "../../utils/debug.js";
@@ -276,6 +276,7 @@ async function main(): Promise<void> {
     wlog(`running hermes -z (provider=${cfg.hermesProvider}, model=${cfg.hermesModel})`);
     let execSucceeded = false;
     const summaryBeforeExec = existsSync(tmpSummary) ? readFileSync(tmpSummary, "utf-8") : null;
+    const summaryBaseline = markSummaryUnwritten(tmpSummary, { existsSync, utimesSync, statSync });
     try {
       // hermes -z (--oneshot) is the non-interactive mode. --yolo
       // auto-approves tool use within the spawned hermes process.
@@ -322,6 +323,15 @@ async function main(): Promise<void> {
         wlog(summaryChanged
           ? "hermes -z failed after a partial summary write; skipping upload to avoid advancing the offset"
           : "hermes -z failed without producing a new summary; skipping upload");
+        return;
+      }
+      // Exit 0 is not proof of work: a child that cannot reach tmpDir (or simply
+      // declines) exits 0 having written nothing, leaving the pre-seeded base
+      // summary in place. Uploading it unchanged would still advance the offset
+      // and slice those events away forever, which is how a session gets stuck
+      // as a header-only placeholder run after run.
+      if (!summaryWasWritten(tmpSummary, summaryBaseline, summaryChanged, { statSync })) {
+        wlog("hermes -z exited 0 but never wrote the summary; skipping upload to avoid advancing the offset");
         return;
       }
       if (raw.trim()) {

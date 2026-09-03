@@ -7,7 +7,7 @@
  * Invoked by session-end.ts as: node wiki-worker.js <config.json>
  */
 
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, utimesSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { buildClaudeInvocation } from "./wiki-worker-spawn.js";
 import { dirname, join } from "node:path";
@@ -19,7 +19,7 @@ const dlog = (msg: string) => _log("wiki-worker", msg);
 import { finalizeSummary, releaseLock, readState } from "./summary-state.js";
 import { readSessionEventCache } from "./session-event-cache.js";
 import { buildSessionPath } from "../utils/session-path.js";
-import { capLinesByBytes, newRowsFromWindow, stampOffset, WIKI_FALLBACK_MAX_ROWS, WIKI_JSONL_MAX_BYTES } from "./wiki-offset.js";
+import { capLinesByBytes, markSummaryUnwritten, newRowsFromWindow, stampOffset, summaryWasWritten, WIKI_FALLBACK_MAX_ROWS, WIKI_JSONL_MAX_BYTES } from "./wiki-offset.js";
 import { redactSecrets } from "./shared/redact.js";
 import { uploadSummary } from "./upload-summary.js";
 import { embedSummaryWithWarmup } from "../embeddings/embed-summary.js";
@@ -324,8 +324,16 @@ async function main(): Promise<void> {
     wlog("running claude -p");
     let execSucceeded = false;
     const summaryBeforeExec = existsSync(tmpSummary) ? readFileSync(tmpSummary, "utf-8") : null;
+    const summaryBaseline = markSummaryUnwritten(tmpSummary, { existsSync, utimesSync, statSync });
     try {
-      const inv = buildClaudeInvocation(cfg.claudeBin, prompt);
+      // tmpDir holds both the session JSONL to read and the summary to write,
+      // and lives outside the session cwd — grant it explicitly rather than
+      // relying on bypassPermissions, which an enterprise policy can disable
+      // (see ClaudeGrants in wiki-worker-spawn.ts).
+      const inv = buildClaudeInvocation(cfg.claudeBin, prompt, {
+        addDirs: [tmpDir],
+        allowedTools: ["Read", "Write"],
+      });
       execFileSync(inv.file, inv.args, {
         ...inv.options,
         timeout: 120_000,
@@ -353,6 +361,15 @@ async function main(): Promise<void> {
         wlog(summaryChanged
           ? "claude -p failed after a partial summary write; skipping upload to avoid advancing the offset"
           : "claude -p failed without producing a new summary; skipping upload");
+        return;
+      }
+      // Exit 0 is not proof of work: a child that cannot reach tmpDir (or simply
+      // declines) exits 0 having written nothing, leaving the pre-seeded base
+      // summary in place. Uploading it unchanged would still advance the offset
+      // and slice those events away forever, which is how a session gets stuck
+      // as a header-only placeholder run after run.
+      if (!summaryWasWritten(tmpSummary, summaryBaseline, summaryChanged, { statSync })) {
+        wlog("claude -p exited 0 but never wrote the summary; skipping upload to avoid advancing the offset");
         return;
       }
       if (raw.trim()) {

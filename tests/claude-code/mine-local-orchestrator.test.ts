@@ -239,6 +239,18 @@ describe("runMineLocal: orchestrator branches", () => {
     await mod.runMineLocal([]);
 
     expect(spawnCalls).toHaveLength(1);
+    // The gate prompt offers the model a verdict path inside the per-session
+    // tmp dir, which is outside the session cwd. That dir must be granted by
+    // name: `bypassPermissions` is silently ignored under an enterprise policy
+    // (disableBypassPermissionsMode), and the child then refuses the path.
+    expect(spawnCalls[0].args).not.toContain("--permission-mode");
+    expect(spawnCalls[0].args).not.toContain("bypassPermissions");
+    // Pin the granted VALUES: the dir must be THIS session's tmp dir (the one
+    // holding the verdict path named in the prompt), not merely some dir.
+    const addDirAt = spawnCalls[0].args.indexOf("--add-dir");
+    expect(addDirAt).toBeGreaterThan(-1);
+    expect(spawnCalls[0].args[addDirAt + 1]).toMatch(/[/\\]mine-local-\d+[/\\]s-sess-aaa$/);
+    expect(spawnCalls[0].args.slice(addDirAt + 2)).toEqual(["--allowedTools", "Read", "Write"]);
     expect(writeNewSkill).toHaveBeenCalledTimes(1);
     expect(writeNewSkill.mock.calls[0][0].name).toBe("useful-skill");
     expect(fanOutSymlinks).toHaveBeenCalledTimes(1);

@@ -126,3 +126,60 @@ function truncateUtf8(s: string, maxBytes: number): string {
   const decoder = new TextDecoder("utf-8", { fatal: false });
   return decoder.decode(buf.subarray(0, maxBytes)).replace(/�+$/, "");
 }
+
+/**
+ * Did THIS run's agent actually write the summary?
+ *
+ * Exit 0 is not proof of work: a child that cannot reach the scratch dir (an
+ * enterprise policy disabling bypassPermissions, say) exits 0 having written
+ * nothing, leaving the pre-seeded summary in place. Uploading that unchanged
+ * placeholder still advances the offset and slices the unread events away
+ * forever, so the worker must be able to tell "wrote nothing" from "wrote".
+ *
+ * Content equality alone cannot: an agent that legitimately regenerates the
+ * same text would read as a no-op and freeze the offset. So the baseline
+ * stamps the file a minute into the past and the check compares timestamps —
+ * any real write lands far outside any plausible filesystem granularity.
+ *
+ * When the filesystem will not cooperate (utimes throwing or silently doing
+ * nothing) the timestamp proves nothing, and the check falls back to content.
+ * That errs toward skipping: re-summarizing the same rows next run wastes work,
+ * whereas a wrong upload destroys events. Never the other way round.
+ */
+export interface SummaryBaseline {
+  mtimeMs: number;
+  /** False when utimes threw or left the timestamp unchanged. */
+  trusted: boolean;
+}
+
+const SUMMARY_BACKDATE_MS = 60_000;
+
+export function markSummaryUnwritten(
+  path: string,
+  fs: Pick<typeof import("node:fs"), "existsSync" | "utimesSync" | "statSync">,
+): SummaryBaseline {
+  if (!fs.existsSync(path)) return { mtimeMs: 0, trusted: true };
+  const sentinel = new Date(Date.now() - SUMMARY_BACKDATE_MS);
+  try {
+    fs.utimesSync(path, sentinel, sentinel);
+    const mtimeMs = fs.statSync(path).mtimeMs;
+    // A filesystem that ignores utimes reports something far from the sentinel.
+    return { mtimeMs, trusted: Math.abs(mtimeMs - sentinel.getTime()) < 2_000 };
+  } catch {
+    return { mtimeMs: 0, trusted: false };
+  }
+}
+
+export function summaryWasWritten(
+  path: string,
+  baseline: SummaryBaseline,
+  contentChanged: boolean,
+  fs: Pick<typeof import("node:fs"), "statSync">,
+): boolean {
+  if (!baseline.trusted) return contentChanged;
+  try {
+    return fs.statSync(path).mtimeMs !== baseline.mtimeMs;
+  } catch {
+    return contentChanged;
+  }
+}

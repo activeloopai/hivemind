@@ -270,6 +270,22 @@ describe("codex wiki-worker — happy path", () => {
     expect(releaseLockMock).toHaveBeenCalledWith("sid-codex");
   });
 
+  it("does NOT upload or advance the offset when codex exec exits 0 having written nothing", async () => {
+    // Exit 0 is not proof of work. A child that cannot reach tmpDir (or simply
+    // declines) exits 0 with the summary file untouched, leaving the pre-seeded
+    // prior summary in place. Treating that as success re-uploaded the
+    // placeholder verbatim AND stamped lastSummaryCount, slicing the unread
+    // events away forever — so every later run summarized nothing.
+    mkFetch(1, true, 9);
+    execFileSyncMock.mockImplementation(() => Buffer.from(""));
+    await runWorker();
+    expect(uploadSummaryMock).not.toHaveBeenCalled();
+    expect(finalizeSummaryMock).not.toHaveBeenCalled();
+    const log = readFileSync(join(hooksDir, "wiki.log"), "utf-8");
+    expect(log).toContain("codex exec exited 0 but never wrote the summary; skipping upload to avoid advancing the offset");
+    expect(releaseLockMock).toHaveBeenCalledWith("sid-codex");
+  });
+
   it("ignores a stale sidecar offset when no existing summary was loaded", async () => {
     // Sidecar says 3 processed, but SELECT summary returns nothing (row gone).
     // Without a base summary the offset is meaningless — regenerate from scratch
