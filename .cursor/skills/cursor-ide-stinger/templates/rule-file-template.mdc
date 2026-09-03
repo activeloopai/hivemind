@@ -1,0 +1,26 @@
+---
+description: Canonical .mdc frontmatter template for cursor-ide-worker-bee. Copy and fill in.
+globs: "**/*.mdc"
+alwaysApply: false
+---
+
+# Rule: [Rule Name]
+
+<!-- 
+FRONTMATTER GUIDE:
+  alwaysApply: true  → Always included in every context (budget: ~2,000 tokens total across all alwaysApply rules)
+  alwaysApply: false + globs set  → Apply to Specific Files (fires when a matching file is in context)
+  alwaysApply: false + description set (no globs)  → Apply Intelligently (AI reads description and decides)
+  alwaysApply: false + no description + no globs  → Apply Manually (@mention in chat to load)
+
+GLOB EXAMPLES:
+  "**/*.ts, **/*.tsx"   → all TypeScript files
+  "src/**"              → everything under src/
+  "**/*.{ts,tsx,js}"   → TS and JS files
+  "*.md"                → markdown in project root only
+
+Keep this rule under 500 lines.
+Reference files with @filename instead of copying content inline.
+-->
+
+[Your rule content here. Be specific. Use concrete examples. Avoid vague directives like "write good code".]

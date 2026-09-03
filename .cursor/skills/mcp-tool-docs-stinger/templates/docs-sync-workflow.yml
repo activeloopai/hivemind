@@ -1,0 +1,58 @@
+# CI workflow template: fail the build when docs drift from code.
+# Place at: .github/workflows/docs-sync.yml
+# Gates three things: TypeDoc builds clean, the changelog version matches
+# package.json, and the documented MCP tool list matches src/mcp/server.ts.
+
+name: Docs sync
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'docs/**'
+      - 'CHANGELOG.md'
+      - 'package.json'
+  workflow_dispatch:
+
+jobs:
+  docs-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      # 1. TypeDoc must build with zero warnings (treatWarningsAsErrors in typedoc.json).
+      #    A newly exported symbol without a doc comment fails here.
+      - name: TypeDoc builds clean
+        run: npm run docs:api
+
+      # 2. The top changelog version must equal package.json's version.
+      - name: Changelog version matches package.json
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          CHANGELOG_VERSION="$(grep -m1 -oE '## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+          if [ "$PKG_VERSION" != "$CHANGELOG_VERSION" ]; then
+            echo "Changelog top version ($CHANGELOG_VERSION) != package.json ($PKG_VERSION)"
+            exit 1
+          fi
+          echo "Changelog version $CHANGELOG_VERSION matches package.json."
+
+      # 3. Every MCP tool registered in src/mcp/server.ts must be documented.
+      #    Adjust DOCS_GLOB to wherever the tool docs live.
+      - name: MCP tool docs cover every registered tool
+        run: |
+          DOCS_GLOB="docs/mcp-tools.md"
+          MISSING=0
+          for TOOL in $(grep -oE 'registerTool\(\s*"[a-z_]+"' src/mcp/server.ts | grep -oE '"[a-z_]+"' | tr -d '"'); do
+            if ! grep -q "$TOOL" $DOCS_GLOB; then
+              echo "MCP tool not documented: $TOOL"
+              MISSING=1
+            fi
+          done
+          if [ "$MISSING" -ne 0 ]; then exit 1; fi
+          echo "All registered MCP tools are documented."

@@ -5,22 +5,21 @@ ai_description: |
   Sub-trees: knowledge/ (public and private docs), requirements/ (product
   work: PRDs), issues/ (reactive bug/incident work: IRDs), notes/ (junk
   drawer, read-only to agents).
-  Schema reference: legion-shared/standards/library-schema-v2.md.
-  Standardize script: pnpm standardize-library --repository <name>.
+  Schema reference: this README plus the per-folder READMEs under library/.
 human_description: |
   Root of this repository's documentation library.
   - knowledge/: reference documentation split by audience (public vs private)
   - requirements/: planned product work (PRDs) with backlog/in-work/completed lifecycle
   - issues/: reactive bug and incident work (IRDs) with same lifecycle
-  - notes/: unstructured scratch space — only humans write here
-  Run `pnpm standardize-library --repository <name>` to scaffold any missing structure.
+  - notes/: unstructured scratch space - only humans write here
+  Structure is maintained manually or by the library-worker-bee; mirror the layout below when scaffolding new folders.
 ---
 
 # Library
 
 Documentation root for this repository. Schema version: **v2**.
 
-See [`legion-shared/standards/library-schema-v2.md`](../../legion-shared/standards/library-schema-v2.md) for the full specification.
+The schema-v2 convention is documented inline here and in the README.md inside each sub-folder. The layout below plus those per-folder READMEs are the full specification for this repo.
 
 ## Top-level layout
 
@@ -34,6 +33,4 @@ See [`legion-shared/standards/library-schema-v2.md`](../../legion-shared/standar
 
 ## What does NOT belong here
 
-- Brand assets → `legion-shared/brands/`
-- Wiki entity pages → `legion-wiki/<repo>/wiki/` (derived, never edit)
-- Library mirrors → `legion-wiki/<repo>/library/` (derived, never edit)
+- Wiki and codebase-graph pages: these are derived and live in `library/knowledge/` (maintained by the wiki-worker-bee, never hand-edit).
