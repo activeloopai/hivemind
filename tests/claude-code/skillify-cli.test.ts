@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 
+const { apiQueries } = vi.hoisted(() => ({ apiQueries: [] as string[] }));
+
 // Logged paths use the native separator (product builds them with path.join).
 // Compare against join(...) substrings rather than "/"-literal regexes so the
 // assertions hold on Windows too.
@@ -16,7 +18,8 @@ vi.mock("../../src/config.js", () => ({
 }));
 vi.mock("../../src/deeplake-api.js", () => ({
   DeeplakeApi: class {
-    async query(_sql: string) {
+    async query(sql: string) {
+      apiQueries.push(sql);
       return [{
         name: "fake-skill", project: "p", project_key: "pk",
         body: "body", version: 1, source_agent: "claude_code",
@@ -57,6 +60,7 @@ beforeEach(() => {
   else configBackup = null;
   try { rmSync(CONFIG_PATH); } catch { /* nothing */ }
   logged = []; erred = [];
+  apiQueries.length = 0;
   // Default: logged in. Individual tests can `loadConfigMock.mockReturnValueOnce(null)`
   // to exercise the unauthenticated path of unpull (no login needed) vs --not-mine
   // (which still requires myUsername).
@@ -299,11 +303,12 @@ describe("push", () => {
   // The DeeplakeApi mock returns a fake row (version 1) for the version SELECT,
   // so a real push bumps to v2; the INSERT response is ignored.
   let pushDir: string;
-  function writeProjectSkill(name: string): void {
+  function writeProjectSkill(name: string): string {
     const dir = join(process.cwd(), ".claude", "skills", name);
     mkdirSync(dir, { recursive: true });
+    const path = join(dir, "SKILL.md");
     writeFileSync(
-      join(dir, "SKILL.md"),
+      path,
       [
         "---",
         `name: ${name}`,
@@ -317,6 +322,7 @@ describe("push", () => {
         "## Body",
       ].join("\n"),
     );
+    return path;
   }
   beforeEach(() => {
     pushDir = mkdtempSync(join(tmpdir(), "skillify-cli-push-"));
@@ -336,6 +342,68 @@ describe("push", () => {
     expect(out).toContain(`Source:      ${join(process.cwd(), ".claude", "skills")}`);
     expect(out).toMatch(/→ would push\s+demo-skill\s+v1 → v2\s+\(alice, scope=me\)/);
     expect(out).toContain("Dry run — nothing written to the org skills table.");
+  });
+
+  it("--review prints the exact candidate and proposed version without writing", async () => {
+    const path = writeProjectSkill("demo-skill");
+    const candidate = `${readFileSync(path, "utf-8")}  \n\n`;
+    writeFileSync(path, candidate);
+    runSkillifyCommand(["push", "demo-skill", "--review"]);
+    await new Promise(r => setImmediate(r));
+    const out = logged.join("\n");
+
+    expect(out).toContain("Review candidate: demo-skill (proposed v2)");
+    expect(out).toContain("--- BEGIN SKILL.md ---");
+    expect(out).toContain("## Body");
+    expect(out).toContain("--- END SKILL.md ---");
+    expect(logged).toContain(candidate);
+    expect(out).toContain("Review mode — nothing published");
+    expect(apiQueries.some(sql => sql.includes("INSERT INTO"))).toBe(false);
+  });
+
+  it("--review rejects terminal control sequences without publishing", async () => {
+    const path = writeProjectSkill("unsafe-skill");
+    const candidate = `${readFileSync(path, "utf-8")}\n\u001b]8;;https://example.com\u0007spoof\u001b]8;;\u0007`;
+    writeFileSync(path, candidate);
+
+    runSkillifyCommand(["push", "unsafe-skill", "--review"]);
+    await new Promise(r => setImmediate(r));
+
+    expect(erred).toEqual([
+      `push error: cannot review 'unsafe-skill': SKILL.md contains terminal control character U+001B at offset ${candidate.indexOf("\u001b")}`,
+    ]);
+    expect(logged.join("\n")).not.toContain("spoof");
+    expect(apiQueries.some(sql => sql.includes("INSERT INTO"))).toBe(false);
+  });
+
+  it("--review rejects bidirectional formatting controls", async () => {
+    const path = writeProjectSkill("bidi-skill");
+    const candidate = `${readFileSync(path, "utf-8")}\nvisible \u202Ehidden`;
+    writeFileSync(path, candidate);
+
+    runSkillifyCommand(["push", "bidi-skill", "--review"]);
+    await new Promise(r => setImmediate(r));
+
+    expect(erred).toEqual([
+      `push error: cannot review 'bidi-skill': SKILL.md contains terminal control character U+202E at offset ${candidate.indexOf("\u202E")}`,
+    ]);
+    expect(logged.join("\n")).not.toContain("hidden");
+    expect(apiQueries.some(sql => sql.includes("INSERT INTO"))).toBe(false);
+  });
+
+  it("--review escapes formatting controls in the displayed source path", async () => {
+    const unsafeDir = join(pushDir, "path\u202Espoof");
+    mkdirSync(unsafeDir, { recursive: true });
+    process.chdir(unsafeDir);
+    writeProjectSkill("path-skill");
+
+    runSkillifyCommand(["push", "path-skill", "--review"]);
+    await new Promise(r => setImmediate(r));
+    const out = logged.join("\n");
+
+    expect(out).not.toContain("\u202E");
+    expect(out).toContain("\\u202E");
+    expect(apiQueries.some(sql => sql.includes("INSERT INTO"))).toBe(false);
   });
 
   it("real push reports the published version (remote v1 → v2)", async () => {
@@ -364,7 +432,7 @@ describe("push", () => {
   it("missing skill name is rejected with the exact usage line", async () => {
     runSkillifyCommand(["push"]);
     await new Promise(r => setImmediate(r));
-    expect(erred.join("\n")).toContain("Usage: hivemind skillify push <skill-name> [--from project|global] [--dry-run]");
+    expect(erred.join("\n")).toContain("Usage: hivemind skillify push <skill-name> [--from project|global] [--dry-run] [--review]");
   });
 
   it("requires login with the exact message", async () => {

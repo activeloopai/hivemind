@@ -66,6 +66,8 @@ export interface PushSummary {
   project: string;
   projectKey: string;
   scope: Scope;
+  /** Exact local SKILL.md snapshot used to derive this push proposal. */
+  sourceText: string;
 }
 
 export interface ParsedLocalSkill {
@@ -78,6 +80,8 @@ export interface ParsedLocalSkill {
   version: number;
   agent?: string;
   createdAt?: string;
+  /** Exact local SKILL.md bytes decoded as UTF-8, before parsing or trimming. */
+  sourceText: string;
 }
 
 /**
@@ -92,7 +96,8 @@ export function readLocalSkill(skillsRoot: string, name: string): ParsedLocalSki
   if (!existsSync(path)) {
     throw new Error(`skill '${name}' not found at ${path}`);
   }
-  const parsed = parseFrontmatter(readFileSync(path, "utf-8"));
+  const sourceText = readFileSync(path, "utf-8");
+  const parsed = parseFrontmatter(sourceText);
   if (!parsed) {
     throw new Error(`skill '${name}' at ${path} has no valid frontmatter — cannot push`);
   }
@@ -107,6 +112,7 @@ export function readLocalSkill(skillsRoot: string, name: string): ParsedLocalSki
     version: typeof fm.version === "number" && fm.version > 0 ? fm.version : 1,
     agent: typeof fm.created_by_agent === "string" ? fm.created_by_agent : undefined,
     createdAt: typeof fm.created_at === "string" ? fm.created_at : undefined,
+    sourceText,
   };
 }
 
@@ -202,5 +208,6 @@ export async function runPush(args: PushArgs): Promise<PushSummary> {
     project,
     projectKey,
     scope: args.scope,
+    sourceText: local.sourceText,
   };
 }
