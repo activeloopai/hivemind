@@ -23,7 +23,9 @@ import { getEmbeddingsEnabled } from "../user-config.js";
  *
  * In either case: SessionStart skips the warmup, capture / wiki-worker
  * write rows with NULL in the embedding column, and `Grep` falls back to
- * BM25 / ILIKE matching on text columns. Existing rows' embeddings remain
+ * lexical `LIKE`/`ILIKE` matching on text columns (BM25 was evaluated but
+ * dropped — its score scale (~1..3) is incompatible with cosine in a single
+ * ORDER BY without RRF or normalisation; see grep-core.ts PR-NOTES F4c).
  * readable.
  *
  * Read-once: the status is cached for the lifetime of the (short-lived)

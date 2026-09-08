@@ -42,7 +42,7 @@ On [LoCoMo](https://arxiv.org/abs/2402.17753), the public long-context memory be
 
 - 📥 **Captures** every session's prompts, tool calls, and responses as structured traces in Deeplake
 - 🧠 **Codifies** patterns into reusable `SKILL.md` files, available to every agent on your team
-- 🔍 **Searches** traces and skills with hybrid lexical + semantic retrieval (BM25 fallback when embeddings off)
+- 🔍 **Searches** traces and skills with hybrid lexical + semantic retrieval: a `UNION ALL` of `LIKE`/`ILIKE` substring rows (sentinel score 1.0, capped by `HIVEMIND_HYBRID_LEXICAL_LIMIT`) and cosine-similarity rows (real 0–1 score), ordered by score — so exact keyword matches always lead while semantic hits fill in below. When embeddings are off, falls back to lexical `LIKE`/`ILIKE` only. (BM25 was evaluated but dropped: its unbounded score scale (~1–3) overwhelmed cosine in a shared `ORDER BY`, requiring rank-based fusion (RRF) or score normalisation to use safely.)
 - 🔗 **Propagates** capability across sessions, agents, teammates, and machines in real time
 - 📁 **Intercepts** file operations on `~/.deeplake/memory/` through a virtual filesystem backed by SQL
 - 📝 **Summarizes** sessions into AI-generated wiki pages via a background worker at session end
