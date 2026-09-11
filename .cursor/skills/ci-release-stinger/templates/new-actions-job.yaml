@@ -1,0 +1,53 @@
+# Template: a new GitHub Actions job for Hivemind.
+#
+# Drop this into the relevant workflow (usually .github/workflows/ci.yaml) and
+# fill the {{...}} placeholders. The canonical shape: pinned setup-node, explicit
+# Node version (or matrix), a least-privilege permissions block, npm ci install,
+# and a step that MIRRORS a local `npm run` script so local == CI.
+#
+# See guides/04-workflows.md and examples/add-ci-job.md.
+
+{{job-id}}:                                  # e.g. lint-bundles, schema-check
+  name: {{Human readable job name}}
+  runs-on: ubuntu-latest                     # or windows-latest if it's a Windows-specific gate
+
+  # Least privilege. Only grant what THIS job needs.
+  # Most check jobs need nothing beyond read; a job that comments on the PR adds pull-requests: write.
+  permissions:
+    contents: read
+    # pull-requests: write                   # only if this job posts a PR comment
+
+  # Optional: prove the check across the supported Node range (mirror cross-node-install).
+  # strategy:
+  #   fail-fast: false
+  #   matrix:
+  #     node-version: [22, 24]
+
+  steps:
+    - name: Checkout
+      uses: actions/checkout@{{pinned-sha-or-version}}   # pin it - never @main
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6.4.0                     # match the repo's pinned version
+      with:
+        node-version: 22                                  # or: ${{ matrix.node-version }}
+        cache: npm
+
+    - name: Install dependencies
+      run: npm ci                                         # ci, not install - reproducible
+
+    # If the job needs the bundles, build first (prebuild runs sync-versions):
+    # - name: Build (typecheck + emit bundle artefacts)
+    #   run: npm run build
+
+    - name: {{Run the check}}
+      run: npm run {{script}}                             # MUST map to a local npm script
+                                                          # e.g. npm run dup / npm run pack:check / npm run audit:openclaw
+
+    # If the job produces a report, upload it (mirror the duplication job):
+    # - name: Upload report
+    #   if: always()
+    #   uses: actions/upload-artifact@{{pinned}}
+    #   with:
+    #     name: {{report-name}}
+    #     path: ./{{report-path}}

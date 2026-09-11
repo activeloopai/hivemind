@@ -32,9 +32,9 @@ const HOME = homedir();
 /**
  * Claude Code encodes cwd into the projects/ dir name by replacing both `/`
  * and `_` with `-`. Verified against ~/.claude/projects/ entries — the dir
- * for cwd `/home/emanuele/39_claude_code_plugin/deeplake-claude-code-plugins`
- * lands as `-home-emanuele-39-claude-code-plugin-deeplake-claude-code-plugins`,
- * NOT `-home-emanuele-39_claude_code_plugin-deeplake-claude-code-plugins`.
+ * for cwd `/home/user/projects/my_project`
+ * lands as `-home-user-projects-my-project`,
+ * NOT `-home-user-projects-my_project`.
  */
 function encodeCwdClaudeCode(cwd: string): string {
   return cwd.replace(/[/_]/g, "-");
