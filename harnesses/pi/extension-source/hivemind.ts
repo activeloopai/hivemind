@@ -1330,6 +1330,7 @@ const PI_SKILLIFY_COMMANDS: { cmd: string; desc: string }[] = [
   { cmd: "hivemind skillify push <skill-name>",          desc: "upload a local skill to the org table (inverse of pull)" },
   { cmd: "hivemind skillify push --from <project|global>", desc: "which local skills dir to read (default: project)" },
   { cmd: "hivemind skillify push --dry-run",             desc: "preview without writing to the org table" },
+  { cmd: "hivemind skillify push --review",              desc: "show the exact candidate and proposed version without publishing" },
   { cmd: "hivemind skillify unpull",                      desc: "remove every skill previously installed by pull" },
   { cmd: "hivemind skillify unpull --user <email>",       desc: "remove only that author's pulls" },
   { cmd: "hivemind skillify unpull --not-mine",           desc: "remove all pulls except your own" },
