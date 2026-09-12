@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   fingerprintEdits, alreadyProposed, priorEditSummaries, metaEntryFor, loadMeta, appendMeta,
+  patchMeta, latestUnresolvedFingerprint,
 } from "../../src/skillify/skillopt-meta.js";
 import type { Edit } from "../../src/skillify/skill-edits.js";
 
@@ -39,6 +40,50 @@ describe("alreadyProposed / priorEditSummaries", () => {
     expect(prior.join(" ")).toMatch(/delete @"old rule"/);
     expect(prior.join(" ")).toMatch(/append: x/);
   });
+
+  it("annotates summaries with [proposed] status when no patch exists", () => {
+    const m = [metaEntryFor("posthog", "kamo", edits, "t1")];
+    const prior = priorEditSummaries(m, "posthog", "kamo");
+    expect(prior.every((s) => s.startsWith("[proposed]"))).toBe(true);
+  });
+
+  it("annotates summaries with [applied] after a patch marks the entry applied", () => {
+    const fp = fingerprintEdits(edits);
+    const m = [
+      metaEntryFor("posthog", "kamo", edits, "t1"),
+      { skill: "posthog--kamo", ops: [], fingerprint: fp, proposedAt: "", status: "applied" as const, resolvedAt: "t2" },
+    ];
+    const prior = priorEditSummaries(m, "posthog", "kamo");
+    // All ops from the original entry should now be annotated [applied]
+    expect(prior.every((s) => s.startsWith("[applied]"))).toBe(true);
+    expect(prior.length).toBe(2); // still both ops
+  });
+
+  it("annotates summaries with [reverted] after a patch marks the entry reverted", () => {
+    const fp = fingerprintEdits(edits);
+    const m = [
+      metaEntryFor("posthog", "kamo", edits, "t1"),
+      { skill: "posthog--kamo", ops: [], fingerprint: fp, proposedAt: "", status: "reverted" as const, resolvedAt: "t2" },
+    ];
+    const prior = priorEditSummaries(m, "posthog", "kamo");
+    expect(prior.every((s) => s.startsWith("[reverted]"))).toBe(true);
+  });
+
+  it("handles multiple different edit sets with mixed statuses independently", () => {
+    const edits2: Edit[] = [{ op: "insert_after", target: "## Rules", content: "new rule" }];
+    const fp1 = fingerprintEdits(edits);
+    const m = [
+      metaEntryFor("posthog", "kamo", edits, "t1"),
+      { skill: "posthog--kamo", ops: [], fingerprint: fp1, proposedAt: "", status: "applied" as const, resolvedAt: "t2" },
+      metaEntryFor("posthog", "kamo", edits2, "t3"),
+      // edits2 stays "proposed" (no patch)
+    ];
+    const prior = priorEditSummaries(m, "posthog", "kamo");
+    const appliedOnes = prior.filter((s) => s.startsWith("[applied]"));
+    const proposedOnes = prior.filter((s) => s.startsWith("[proposed]"));
+    expect(appliedOnes.length).toBe(2); // edits has 2 ops
+    expect(proposedOnes.length).toBe(1); // edits2 has 1 op
+  });
 });
 
 describe("loadMeta / appendMeta", () => {
@@ -58,5 +103,72 @@ describe("loadMeta / appendMeta", () => {
 
   it("returns [] for a missing file", () => {
     expect(loadMeta(path.join(os.tmpdir(), "does-not-exist-xyz.jsonl"))).toEqual([]);
+  });
+});
+
+describe("patchMeta", () => {
+  let file: string;
+  beforeEach(() => { file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "patch-")), "meta.jsonl"); });
+  afterEach(() => { fs.rmSync(path.dirname(file), { recursive: true, force: true }); });
+
+  it("appends a patch entry and loadMeta reads it back with resolvedAt", () => {
+    const entry = metaEntryFor("skill", "auth", edits, "t1");
+    appendMeta(file, entry);
+    patchMeta(file, "skill--auth", entry.fingerprint, "applied", "t2");
+    const loaded = loadMeta(file);
+    expect(loaded).toHaveLength(2);
+    expect(loaded[0].status).toBe("proposed");
+    expect(loaded[1].status).toBe("applied");
+    expect(loaded[1].resolvedAt).toBe("t2");
+    expect(loaded[1].ops).toEqual([]); // patch entries carry no ops (original does)
+  });
+
+  it("is a no-op when fingerprint is empty", () => {
+    appendMeta(file, metaEntryFor("skill", "auth", edits, "t1"));
+    patchMeta(file, "skill--auth", "", "applied", "t2");
+    expect(loadMeta(file)).toHaveLength(1); // nothing appended
+  });
+
+  it("priorEditSummaries reflects the resolved status after patchMeta", () => {
+    const entry = metaEntryFor("skill", "auth", edits, "t1");
+    appendMeta(file, entry);
+    patchMeta(file, "skill--auth", entry.fingerprint, "reverted", "t2");
+    const meta = loadMeta(file);
+    const prior = priorEditSummaries(meta, "skill", "auth");
+    expect(prior.every((s) => s.startsWith("[reverted]"))).toBe(true);
+  });
+});
+
+describe("latestUnresolvedFingerprint", () => {
+  it("returns the fingerprint of the latest proposed entry", () => {
+    const e1 = metaEntryFor("sk", "au", edits, "t1");
+    const e2 = metaEntryFor("sk", "au", [{ op: "append", content: "x" }], "t2");
+    expect(latestUnresolvedFingerprint([e1, e2], "sk", "au")).toBe(e2.fingerprint);
+  });
+
+  it("returns null when no entries exist for this skill", () => {
+    expect(latestUnresolvedFingerprint([], "sk", "au")).toBeNull();
+    const other = metaEntryFor("other", "au", edits, "t1");
+    expect(latestUnresolvedFingerprint([other], "sk", "au")).toBeNull();
+  });
+
+  it("returns null when the latest entry has already been resolved (applied)", () => {
+    const entry = metaEntryFor("sk", "au", edits, "t1");
+    const patch = { ...entry, ops: [], status: "applied" as const, resolvedAt: "t2" };
+    expect(latestUnresolvedFingerprint([entry, patch], "sk", "au")).toBeNull();
+  });
+
+  it("returns null when the latest entry has already been resolved (reverted)", () => {
+    const entry = metaEntryFor("sk", "au", edits, "t1");
+    const patch = { ...entry, ops: [], status: "reverted" as const, resolvedAt: "t2" };
+    expect(latestUnresolvedFingerprint([entry, patch], "sk", "au")).toBeNull();
+  });
+
+  it("returns an earlier entry's fingerprint if the most recent one is resolved but an older proposed exists", () => {
+    const e1 = metaEntryFor("sk", "au", edits, "t1");
+    const e2 = metaEntryFor("sk", "au", [{ op: "append", content: "x" }], "t2");
+    const patch2 = { ...e2, ops: [], status: "applied" as const, resolvedAt: "t3" };
+    // e2 is resolved, e1 is still proposed
+    expect(latestUnresolvedFingerprint([e1, e2, patch2], "sk", "au")).toBe(e1.fingerprint);
   });
 });

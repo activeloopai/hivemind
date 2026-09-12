@@ -82,6 +82,14 @@ export interface ImproveOpts {
   prior?: (name: string, author: string) => string[];
   alreadyProposed?: (name: string, author: string, edits: Edit[]) => boolean;
   recordEdit?: (name: string, author: string, edits: Edit[]) => void;
+  /**
+   * Called after the judge runs to close the meta-learning loop. When the judge
+   * says the task PASSED (`"applied"`), the most recently proposed edit for this
+   * skill gets credit. When the task FAILED again and we cannot publish a new
+   * improvement (`"reverted"`), the prior edit is marked as not having helped.
+   * Best-effort — a failure here must not affect the improvement result.
+   */
+  resolveEdit?: (name: string, author: string, status: "applied" | "reverted") => void;
   // Deeplake insert→read lag tolerance: the invocation row is written by a SEPARATE process
   // (capture.js) and lands in Deeplake on a short visibility lag (expected, not a defect), so a
   // worker firing on a fast reaction can read stale. Poll findInvocation with linear backoff
@@ -129,16 +137,31 @@ export async function improveSkillIfFailed(opts: ImproveOpts): Promise<ImproveRe
   if (opts.reaction?.trim()) window += `\n\nUSER: ${opts.reaction.trim()}`;
 
   const verdict = await judgeSuccess(window, { model: opts.judge });
-  if (verdict.success !== 0) return { judged: true, failed: false, improved: false, reason: verdict.reason };
+  if (verdict.success !== 0) {
+    // Task passed — the skill (at its current published version) worked. Mark the
+    // most recently proposed edit for this skill as applied. Best-effort.
+    try { opts.resolveEdit?.(parts.name, parts.author, "applied"); } catch { /* meta is best-effort */ }
+    return { judged: true, failed: false, improved: false, reason: verdict.reason };
+  }
 
   // Failed → improve the specific skill, right now.
   const current = await readCurrentSkillRow(opts.query, opts.skillsTable, parts.name, parts.author);
-  if (!current) return { judged: true, failed: true, improved: false, reason: "skill not in org table" };
+  if (!current) {
+    // Can't improve — mark the prior edit as reverted (the skill failed and we can do nothing).
+    try { opts.resolveEdit?.(parts.name, parts.author, "reverted"); } catch { /* meta is best-effort */ }
+    return { judged: true, failed: true, improved: false, reason: "skill not in org table" };
+  }
 
   const priorEdits = opts.prior?.(parts.name, parts.author) ?? [];
   const p = await proposeSkillEdit(current.body, [verdict.reason], { model: opts.proposerModel, priorEdits });
-  if (!p.changed) return { judged: true, failed: true, improved: false, reason: "proposer made no change" };
+  if (!p.changed) {
+    // Proposer made no change — the prior edit didn't help enough to suggest anything new.
+    try { opts.resolveEdit?.(parts.name, parts.author, "reverted"); } catch { /* meta is best-effort */ }
+    return { judged: true, failed: true, improved: false, reason: "proposer made no change" };
+  }
   if (opts.alreadyProposed?.(parts.name, parts.author, p.edits)) {
+    // Dedup blocked — the prior edit was already tried and is still failing.
+    try { opts.resolveEdit?.(parts.name, parts.author, "reverted"); } catch { /* meta is best-effort */ }
     return { judged: true, failed: true, improved: false, reason: "edit already proposed (dedup)" };
   }
 

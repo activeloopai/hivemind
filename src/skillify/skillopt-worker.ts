@@ -18,7 +18,7 @@ import { DeeplakeApi } from "../deeplake-api.js";
 import { getStateDir } from "./state-dir.js";
 import { agentModel, detectScorerAgent } from "./agent-model.js";
 import { improveSkillIfFailed } from "./skillopt-improve.js";
-import { loadMeta, appendMeta, priorEditSummaries, alreadyProposed, metaEntryFor } from "./skillopt-meta.js";
+import { loadMeta, appendMeta, patchMeta, priorEditSummaries, alreadyProposed, metaEntryFor, skillRef as mkSkillRef, latestUnresolvedFingerprint } from "./skillopt-meta.js";
 import { tryAcquireWorkerLock, releaseWorkerLock } from "./state.js";
 import { SKILLOPT_ENV } from "./skillopt-env.js";
 
@@ -100,6 +100,17 @@ async function main(): Promise<void> {
       prior: (n, a) => priorEditSummaries(metaCache, n, a),
       alreadyProposed: (n, a, edits) => alreadyProposed(metaCache, n, a, edits),
       recordEdit: (n, a, edits) => { const e = metaEntryFor(n, a, edits, now); appendMeta(metaFile, e); metaCache.push(e); },
+      resolveEdit: (n, a, status) => {
+        // Find the most recently proposed entry for this skill and append a patch
+        // entry that transitions its status. The in-memory cache is updated so that
+        // subsequent priorEditSummaries calls in this process reflect the outcome.
+        const fp = latestUnresolvedFingerprint(metaCache, n, a);
+        if (!fp) return; // nothing to resolve — no prior proposed entry exists
+        const ref = mkSkillRef(n, a);
+        patchMeta(metaFile, ref, fp, status, now);
+        // Reflect the patch in the in-memory cache so this process sees the resolved view.
+        metaCache.push({ skill: ref, ops: [], fingerprint: fp, proposedAt: "", status, resolvedAt: now });
+      },
     });
 
     if (r.improved) log(`improved ${skillRef} → v${r.version} (${r.reason})`);
