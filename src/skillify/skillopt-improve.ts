@@ -147,24 +147,21 @@ export async function improveSkillIfFailed(opts: ImproveOpts): Promise<ImproveRe
   // Failed → improve the specific skill, right now.
   const current = await readCurrentSkillRow(opts.query, opts.skillsTable, parts.name, parts.author);
   if (!current) {
-    // Can't improve — mark the prior edit as reverted (the skill failed and we can do nothing).
-    try { opts.resolveEdit?.(parts.name, parts.author, "reverted"); } catch { /* meta is best-effort */ }
     return { judged: true, failed: true, improved: false, reason: "skill not in org table" };
   }
 
   const priorEdits = opts.prior?.(parts.name, parts.author) ?? [];
   const p = await proposeSkillEdit(current.body, [verdict.reason], { model: opts.proposerModel, priorEdits });
   if (!p.changed) {
-    // Proposer made no change — the prior edit didn't help enough to suggest anything new.
-    try { opts.resolveEdit?.(parts.name, parts.author, "reverted"); } catch { /* meta is best-effort */ }
     return { judged: true, failed: true, improved: false, reason: "proposer made no change" };
   }
   if (opts.alreadyProposed?.(parts.name, parts.author, p.edits)) {
-    // Dedup blocked — the prior edit was already tried and is still failing.
-    try { opts.resolveEdit?.(parts.name, parts.author, "reverted"); } catch { /* meta is best-effort */ }
     return { judged: true, failed: true, improved: false, reason: "edit already proposed (dedup)" };
   }
 
+  // We are about to replace the current version — the prior edit definitively did not fix the
+  // issue. Mark it reverted before publishing so the signal lands even if publish throws.
+  try { opts.resolveEdit?.(parts.name, parts.author, "reverted"); } catch { /* meta is best-effort */ }
   const { version } = await publishImprovedSkill({
     query: opts.query, tableName: opts.skillsTable, workspaceId: opts.workspaceId,
     current, newBody: p.editedBody, collaborator: opts.collaborator, now: opts.now,

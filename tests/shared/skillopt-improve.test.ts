@@ -198,31 +198,28 @@ describe("improveSkillIfFailed", () => {
       expect(resolveEdit).toHaveBeenCalledWith("posthog", "kamo", "applied");
     });
 
-    it("calls resolveEdit('reverted') when failed and skill is not in the org table", async () => {
+    it("does NOT call resolveEdit when failed and skill is not in the org table (infrastructure gap, not a verdict on the prior edit)", async () => {
       const { query } = makeQuery({ skillRows: [] });
       const resolveEdit = vi.fn();
       const r = await improveSkillIfFailed(base(query, { resolveEdit }));
       expect(r).toMatchObject({ judged: true, failed: true, improved: false, reason: "skill not in org table" });
-      expect(resolveEdit).toHaveBeenCalledOnce();
-      expect(resolveEdit).toHaveBeenCalledWith("posthog", "kamo", "reverted");
+      expect(resolveEdit).not.toHaveBeenCalled();
     });
 
-    it("calls resolveEdit('reverted') when failed and the proposer makes no change", async () => {
+    it("does NOT call resolveEdit when failed and the proposer makes no change (can't produce a replacement, not a verdict on the prior edit)", async () => {
       const { query } = makeQuery();
       const resolveEdit = vi.fn();
       const r = await improveSkillIfFailed(base(query, { proposerModel: async () => "[]", resolveEdit }));
       expect(r).toMatchObject({ judged: true, failed: true, improved: false, reason: "proposer made no change" });
-      expect(resolveEdit).toHaveBeenCalledOnce();
-      expect(resolveEdit).toHaveBeenCalledWith("posthog", "kamo", "reverted");
+      expect(resolveEdit).not.toHaveBeenCalled();
     });
 
-    it("calls resolveEdit('reverted') when failed and dedup blocks the improvement", async () => {
+    it("does NOT call resolveEdit when failed and dedup blocks the improvement (edit is still in play, not definitively bad)", async () => {
       const { query } = makeQuery();
       const resolveEdit = vi.fn();
       const r = await improveSkillIfFailed(base(query, { alreadyProposed: () => true, resolveEdit }));
       expect(r).toMatchObject({ judged: true, failed: true, improved: false, reason: "edit already proposed (dedup)" });
-      expect(resolveEdit).toHaveBeenCalledOnce();
-      expect(resolveEdit).toHaveBeenCalledWith("posthog", "kamo", "reverted");
+      expect(resolveEdit).not.toHaveBeenCalled();
     });
 
     it("does NOT call resolveEdit when the invocation is not found (not judged)", async () => {
@@ -248,17 +245,18 @@ describe("improveSkillIfFailed", () => {
       expect(r).toMatchObject({ judged: true, failed: false, improved: false });
     });
 
-    it("does NOT call resolveEdit when the judge fails but a new improvement is successfully published", async () => {
-      // When we DO successfully publish a new version, we don't mark the prior edit as
-      // reverted — the new edit is the thing that was proposed, not the prior one.
-      // resolveEdit is for the PRIOR entry; recordEdit covers the NEW one.
+    it("calls resolveEdit('reverted') before publishing a new improvement (prior edit definitively did not fix the issue)", async () => {
+      // Publishing a new version is the clearest reverted signal: task failed again and
+      // we are superseding the prior edit with a replacement. resolveEdit fires BEFORE
+      // publish so the signal lands even if publish throws.
       const { query } = makeQuery();
       const resolveEdit = vi.fn();
       const recordEdit = vi.fn();
       const r = await improveSkillIfFailed(base(query, { resolveEdit, recordEdit }));
       expect(r).toMatchObject({ judged: true, failed: true, improved: true });
-      expect(recordEdit).toHaveBeenCalled();     // new edit recorded
-      expect(resolveEdit).not.toHaveBeenCalled(); // prior edit NOT resolved — we didn't re-judge the prior version
+      expect(recordEdit).toHaveBeenCalled();                              // new edit recorded
+      expect(resolveEdit).toHaveBeenCalledOnce();                         // prior edit resolved
+      expect(resolveEdit).toHaveBeenCalledWith("posthog", "kamo", "reverted");
     });
   });
 });
