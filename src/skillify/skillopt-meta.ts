@@ -30,6 +30,13 @@ export interface MetaEntry {
   status: MetaStatus;
   /** Present only on patch entries written by `patchMeta`; absent on originals. */
   resolvedAt?: string;
+  /**
+   * The skill version published when this edit was recorded (set by `recordEdit` after a
+   * successful `publishImprovedSkill`). Used by `fingerprintForVersion` to resolve the
+   * correct entry for a given judgment, preventing a delayed judgment for version N from
+   * accidentally marking a later version's edit as reverted.
+   */
+  publishedVersion?: number;
 }
 
 export const skillRef = (name: string, author: string) => `${name}--${author}`;
@@ -111,8 +118,9 @@ function resolvedView(meta: MetaEntry[], ref: string): Map<string, MetaEntry> {
     if (!prior) {
       map.set(m.fingerprint, m);
     } else {
-      // Merge: prefer the patch's status/resolvedAt, but keep the original's ops/proposedAt
-      // so summaries don't disappear when a patch entry (with ops:[]) supersedes the original.
+      // Merge: prefer the patch's status/resolvedAt, but keep the original's
+      // ops/proposedAt/publishedVersion so summaries don't disappear when a patch
+      // entry (with ops:[]) supersedes the original.
       map.set(m.fingerprint, {
         ...prior,
         status: m.status,
@@ -162,12 +170,38 @@ export function latestUnresolvedFingerprint(meta: MetaEntry[], name: string, aut
 }
 
 /** Build a meta entry for a freshly-proposed edit set. */
-export function metaEntryFor(name: string, author: string, edits: Edit[], now: string): MetaEntry {
+export function metaEntryFor(
+  name: string, author: string, edits: Edit[], now: string,
+  publishedVersion?: number,
+): MetaEntry {
   return {
     skill: skillRef(name, author),
     ops: edits.map(summarizeEdit),
     fingerprint: fingerprintEdits(edits),
     proposedAt: now,
     status: "proposed",
+    ...(publishedVersion !== undefined ? { publishedVersion } : {}),
   };
+}
+
+/**
+ * Find the fingerprint of the meta entry whose edit produced `version` of skill
+ * `name--author`. Returns null when no entry carries that publishedVersion (e.g.
+ * the entry pre-dates this field, or the version was never recorded).
+ *
+ * Used by the worker's `resolveEdit` closure to pin resolution to the exact edit
+ * that produced the version currently in effect during this judgment, rather than
+ * relying on log recency — which would incorrectly attribute a delayed judgment
+ * for version N to a newer edit at version N+k.
+ */
+export function fingerprintForVersion(
+  meta: MetaEntry[], name: string, author: string, version: number,
+): string | null {
+  const ref = skillRef(name, author);
+  // Walk forward: the FIRST entry whose publishedVersion matches is the original
+  // (patch entries don't carry publishedVersion, so they won't match).
+  for (const m of meta) {
+    if (m.skill === ref && m.publishedVersion === version) return m.fingerprint;
+  }
+  return null;
 }

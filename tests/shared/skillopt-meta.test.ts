@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   fingerprintEdits, alreadyProposed, priorEditSummaries, metaEntryFor, loadMeta, appendMeta,
-  patchMeta, latestUnresolvedFingerprint,
+  patchMeta, latestUnresolvedFingerprint, fingerprintForVersion,
 } from "../../src/skillify/skillopt-meta.js";
 import type { Edit } from "../../src/skillify/skill-edits.js";
 
@@ -170,5 +170,43 @@ describe("latestUnresolvedFingerprint", () => {
     const patch2 = { ...e2, ops: [], status: "applied" as const, resolvedAt: "t3" };
     // e2 is resolved, e1 is still proposed
     expect(latestUnresolvedFingerprint([e1, e2, patch2], "sk", "au")).toBe(e1.fingerprint);
+  });
+});
+
+describe("fingerprintForVersion", () => {
+  it("returns the fingerprint of the entry that has the given publishedVersion", () => {
+    const e = metaEntryFor("sk", "au", edits, "t1", 4);
+    expect(fingerprintForVersion([e], "sk", "au", 4)).toBe(e.fingerprint);
+  });
+
+  it("returns null when no entry has the given publishedVersion", () => {
+    const e = metaEntryFor("sk", "au", edits, "t1"); // no publishedVersion
+    expect(fingerprintForVersion([e], "sk", "au", 4)).toBeNull();
+    expect(fingerprintForVersion([], "sk", "au", 4)).toBeNull();
+  });
+
+  it("returns null for a different skill even if the version matches", () => {
+    const e = metaEntryFor("other", "au", edits, "t1", 4);
+    expect(fingerprintForVersion([e], "sk", "au", 4)).toBeNull();
+  });
+
+  it("metaEntryFor stores publishedVersion when provided", () => {
+    const e = metaEntryFor("sk", "au", edits, "t1", 7);
+    expect(e.publishedVersion).toBe(7);
+    const e2 = metaEntryFor("sk", "au", edits, "t1"); // omitted
+    expect(e2.publishedVersion).toBeUndefined();
+  });
+
+  it("anti-regression: delayed judgment for version N does not mark a later version's edit (cross-version race)", () => {
+    // Simulate: Process A publishes E1 at v4; Process B starts after and sees E1 in its
+    // metaCache. Process B's judgment is for v3 (pre-E1 window), so it should resolve
+    // the v3 edit (which has no publishedVersion — nothing was published for v3 in meta)
+    // and NOT mark E1 as reverted.
+    const e1 = metaEntryFor("sk", "au", edits, "t1", 4); // E1 published at v4 by Process A
+    // Process B calls resolveEdit("reverted", priorVersion=3): look up fingerprint for v3
+    const fp = fingerprintForVersion([e1], "sk", "au", 3);
+    expect(fp).toBeNull(); // v3 has no recorded meta entry → no-op, E1 is NOT marked reverted
+    // E1's fingerprint is NOT returned:
+    expect(fp).not.toBe(e1.fingerprint);
   });
 });

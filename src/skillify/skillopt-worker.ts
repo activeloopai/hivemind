@@ -18,7 +18,7 @@ import { DeeplakeApi } from "../deeplake-api.js";
 import { getStateDir } from "./state-dir.js";
 import { agentModel, detectScorerAgent } from "./agent-model.js";
 import { improveSkillIfFailed } from "./skillopt-improve.js";
-import { loadMeta, appendMeta, patchMeta, priorEditSummaries, alreadyProposed, metaEntryFor, skillRef as mkSkillRef, latestUnresolvedFingerprint } from "./skillopt-meta.js";
+import { loadMeta, appendMeta, patchMeta, priorEditSummaries, alreadyProposed, metaEntryFor, skillRef as mkSkillRef, latestUnresolvedFingerprint, fingerprintForVersion } from "./skillopt-meta.js";
 import { tryAcquireWorkerLock, releaseWorkerLock } from "./state.js";
 import { SKILLOPT_ENV } from "./skillopt-env.js";
 
@@ -99,13 +99,21 @@ async function main(): Promise<void> {
       now,
       prior: (n, a) => priorEditSummaries(metaCache, n, a),
       alreadyProposed: (n, a, edits) => alreadyProposed(metaCache, n, a, edits),
-      recordEdit: (n, a, edits) => { const e = metaEntryFor(n, a, edits, now); appendMeta(metaFile, e); metaCache.push(e); },
-      resolveEdit: (n, a, status) => {
-        // Find the most recently proposed entry for this skill and append a patch
-        // entry that transitions its status. The in-memory cache is updated so that
-        // subsequent priorEditSummaries calls in this process reflect the outcome.
-        const fp = latestUnresolvedFingerprint(metaCache, n, a);
-        if (!fp) return; // nothing to resolve — no prior proposed entry exists
+      recordEdit: (n, a, edits, publishedVersion) => {
+        const e = metaEntryFor(n, a, edits, now, publishedVersion);
+        appendMeta(metaFile, e);
+        metaCache.push(e);
+      },
+      resolveEdit: (n, a, status, priorVersion) => {
+        // When priorVersion is provided (the "reverted" pre-publish path), look up the
+        // fingerprint that produced that exact version — this prevents a delayed judgment
+        // for version N from accidentally marking a later version's edit as reverted.
+        // When priorVersion is absent (the "applied" path), log-recency is correct: the
+        // currently-live edit is the right one to credit when a task passes.
+        const fp = priorVersion !== undefined
+          ? fingerprintForVersion(metaCache, n, a, priorVersion)
+          : latestUnresolvedFingerprint(metaCache, n, a);
+        if (!fp) return; // nothing to resolve
         const ref = mkSkillRef(n, a);
         patchMeta(metaFile, ref, fp, status, now);
         // Reflect the patch in the in-memory cache so this process sees the resolved view.

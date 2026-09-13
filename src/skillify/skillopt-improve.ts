@@ -81,15 +81,22 @@ export interface ImproveOpts {
   now: string;
   prior?: (name: string, author: string) => string[];
   alreadyProposed?: (name: string, author: string, edits: Edit[]) => boolean;
-  recordEdit?: (name: string, author: string, edits: Edit[]) => void;
+  recordEdit?: (name: string, author: string, edits: Edit[], publishedVersion: number) => void;
   /**
    * Called after the judge runs to close the meta-learning loop. When the judge
    * says the task PASSED (`"applied"`), the most recently proposed edit for this
-   * skill gets credit. When the task FAILED again and we cannot publish a new
-   * improvement (`"reverted"`), the prior edit is marked as not having helped.
+   * skill gets credit. When the task FAILED again and we are publishing a replacement,
+   * the prior edit is marked as not having helped.
+   *
+   * `priorVersion`: the version of the skill that was current when this judgment ran.
+   * When provided, resolution is pinned to the fingerprint that produced `priorVersion`
+   * (via `fingerprintForVersion`) rather than log recency, preventing a delayed judgment
+   * for version N from marking a later version's edit as reverted.
+   * Omit (or pass undefined) for the `"applied"` path where log-recency is correct:
+   * the currently-live edit is the right thing to credit when a task passes.
    * Best-effort — a failure here must not affect the improvement result.
    */
-  resolveEdit?: (name: string, author: string, status: "applied" | "reverted") => void;
+  resolveEdit?: (name: string, author: string, status: "applied" | "reverted", priorVersion?: number) => void;
   // Deeplake insert→read lag tolerance: the invocation row is written by a SEPARATE process
   // (capture.js) and lands in Deeplake on a short visibility lag (expected, not a defect), so a
   // worker firing on a fast reaction can read stale. Poll findInvocation with linear backoff
@@ -161,13 +168,15 @@ export async function improveSkillIfFailed(opts: ImproveOpts): Promise<ImproveRe
 
   // We are about to replace the current version — the prior edit definitively did not fix the
   // issue. Mark it reverted before publishing so the signal lands even if publish throws.
-  try { opts.resolveEdit?.(parts.name, parts.author, "reverted"); } catch { /* meta is best-effort */ }
+  // Pass current.version so the worker can pin resolution to the exact entry that produced
+  // this version, rather than using log recency (which could mark a newer edit by mistake).
+  try { opts.resolveEdit?.(parts.name, parts.author, "reverted", current.version); } catch { /* meta is best-effort */ }
   const { version } = await publishImprovedSkill({
     query: opts.query, tableName: opts.skillsTable, workspaceId: opts.workspaceId,
     current, newBody: p.editedBody, collaborator: opts.collaborator, now: opts.now,
   });
   // The publish already landed — a meta-write failure must NOT report failure (that would
   // drop the dedup marker AND make the run look failed, inviting a re-publish). Swallow it.
-  try { opts.recordEdit?.(parts.name, parts.author, p.edits); } catch { /* meta is best-effort */ }
+  try { opts.recordEdit?.(parts.name, parts.author, p.edits, version); } catch { /* meta is best-effort */ }
   return { judged: true, failed: true, improved: true, version, reason: verdict.reason };
 }

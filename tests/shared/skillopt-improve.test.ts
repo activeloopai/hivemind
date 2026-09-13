@@ -75,7 +75,7 @@ describe("improveSkillIfFailed", () => {
     expect(inserts).toHaveLength(1);
     expect(inserts[0]).toContain("Always assert the real outbound HTTP request.");
     expect(inserts[0]).toContain("'team'"); // scope promoted on publish
-    expect(recordEdit).toHaveBeenCalled();
+    expect(recordEdit).toHaveBeenCalledWith("posthog", "kamo", expect.any(Array), 3); // publishedVersion=3
   });
 
   it("judge says OK → no improvement, no publish", async () => {
@@ -245,18 +245,19 @@ describe("improveSkillIfFailed", () => {
       expect(r).toMatchObject({ judged: true, failed: false, improved: false });
     });
 
-    it("calls resolveEdit('reverted') before publishing a new improvement (prior edit definitively did not fix the issue)", async () => {
-      // Publishing a new version is the clearest reverted signal: task failed again and
-      // we are superseding the prior edit with a replacement. resolveEdit fires BEFORE
-      // publish so the signal lands even if publish throws.
+    it("calls resolveEdit('reverted', priorVersion) before publishing — version-stable resolution prevents cross-version race", async () => {
+      // resolveEdit must receive the current skill version (2, from SKILL_ROW) so the worker
+      // can use fingerprintForVersion to resolve the exact entry that produced that version,
+      // rather than log recency which would mark a newer edit if this is a delayed judgment.
       const { query } = makeQuery();
       const resolveEdit = vi.fn();
       const recordEdit = vi.fn();
       const r = await improveSkillIfFailed(base(query, { resolveEdit, recordEdit }));
       expect(r).toMatchObject({ judged: true, failed: true, improved: true });
-      expect(recordEdit).toHaveBeenCalled();                              // new edit recorded
-      expect(resolveEdit).toHaveBeenCalledOnce();                         // prior edit resolved
-      expect(resolveEdit).toHaveBeenCalledWith("posthog", "kamo", "reverted");
+      expect(recordEdit).toHaveBeenCalledWith("posthog", "kamo", expect.any(Array), 3); // publishedVersion=3
+      expect(resolveEdit).toHaveBeenCalledOnce();
+      // priorVersion=2 = current.version from SKILL_ROW; allows version-stable fingerprint lookup
+      expect(resolveEdit).toHaveBeenCalledWith("posthog", "kamo", "reverted", 2);
     });
   });
 });
