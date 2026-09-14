@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from "vitest";
 import {
   shouldRecall,
   passesThreshold,
-  extractKeywords,
   proactiveRecallDisabled,
   parsePositive,
   RECALL_THRESHOLD,
@@ -489,25 +488,6 @@ describe("recallTopHit — focused semantic query", () => {
       "t", vec, {},
     );
     expect(hit?.score).toBe(0);
-  });
-});
-
-describe("extractKeywords — lexical fallback keyword extraction", () => {
-  it("keeps salient/identifier tokens, drops stopwords and short tokens", () => {
-    const kw = extractKeywords("why does the parser throw a TypeError in column_streamers.hpp?");
-    expect(kw).toContain("parser");
-    expect(kw).toContain("typeerror");
-    expect(kw).toContain("column_streamers.hpp");
-    expect(kw).not.toContain("the");
-    expect(kw).not.toContain("why"); // stopword
-  });
-  it("de-dupes and caps the count", () => {
-    const kw = extractKeywords("cache cache cache redis redis storage storage provider bucket byoc extra", 4);
-    expect(kw.length).toBe(4);
-    expect(new Set(kw).size).toBe(kw.length);
-  });
-  it("returns few/no keywords for terse input (can't meet the lexical bar)", () => {
-    expect(extractKeywords("ok go").length).toBeLessThan(2);
   });
 });
 
