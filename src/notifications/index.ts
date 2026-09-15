@@ -77,6 +77,11 @@ export interface DrainOptions {
    */
   sessionCount?: number;
   /**
+   * Pre-read embeddings status — populated by the hook entry point so rules
+   * stay IO-free. When absent, treated as "enabled" (no nudge fired).
+   */
+  embeddingsStatus?: import("../embeddings/disable.js").EmbeddingsStatus;
+  /**
    * Delivery override. When set, the claimed notifications are handed to
    * this function instead of the per-agent adapter in delivery/index.ts.
    *
@@ -115,6 +120,7 @@ export async function drainSessionStart(opts: DrainOptions): Promise<void> {
       localSkillsCount: opts.localSkillsCount ?? null,
       latestInsightEntry: opts.latestInsightEntry ?? null,
       sessionCount: opts.sessionCount,
+      embeddingsStatus: opts.embeddingsStatus,
     };
 
     const fromRules = evaluateRules("session_start", ctx);

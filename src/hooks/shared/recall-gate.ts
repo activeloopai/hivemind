@@ -134,32 +134,4 @@ export const RECALL_THRESHOLD: number = (() => {
   return Number.isFinite(n) && n > 0 && n <= 1 ? n : DEFAULT_RECALL_THRESHOLD;
 })();
 
-// Common words carry no recall signal — matching them would surface noise.
-const STOPWORDS = new Set([
-  "the", "and", "for", "are", "but", "not", "you", "your", "with", "this", "that",
-  "have", "has", "had", "was", "were", "can", "could", "should", "would", "will",
-  "does", "did", "what", "why", "how", "when", "where", "which", "who", "into",
-  "from", "they", "them", "then", "than", "there", "here", "out", "get", "got",
-  "use", "using", "used", "make", "made", "want", "need", "please", "let", "add",
-  "fix", "run", "set", "all", "any", "our", "its", "his", "her", "now", "new",
-  "some", "more", "most", "such", "only", "also", "just", "like", "able", "via",
-]);
 
-/**
- * Extract salient lower-cased keywords from a prompt for the lexical fallback.
- * Keeps identifier-ish tokens (snake_case, dotted, paths), drops stopwords and
- * sub-3-char tokens, de-dupes, and caps the count.
- */
-export function extractKeywords(prompt: string | undefined | null, max = 8): string[] {
-  const raw = (prompt ?? "").toLowerCase().match(/[a-z0-9][a-z0-9_./-]{2,}/g) ?? [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const tok of raw) {
-    const w = tok.replace(/[._/-]+$/, ""); // trim trailing separators
-    if (w.length < 3 || STOPWORDS.has(w) || seen.has(w)) continue;
-    seen.add(w);
-    out.push(w);
-    if (out.length >= max) break;
-  }
-  return out;
-}
