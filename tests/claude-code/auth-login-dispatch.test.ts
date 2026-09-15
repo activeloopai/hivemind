@@ -25,7 +25,9 @@ const sessionPruneMock = vi.fn();
 const consoleLogMock = vi.fn();
 const exitSpy = vi.fn();
 
-vi.mock("../../src/commands/auth.js", () => ({
+vi.mock("../../src/commands/auth.js", async () => ({
+  // Pure matcher: use the real one so name/id resolution is exercised, not stubbed.
+  findWorkspace: (await vi.importActual<typeof import("../../src/commands/auth.js")>("../../src/commands/auth.js")).findWorkspace,
   loadCredentials: (...a: unknown[]) => loadCredentialsMock(...a),
   login: (...a: unknown[]) => loginMock(...a),
   saveCredentials: (...a: unknown[]) => saveCredentialsMock(...a),

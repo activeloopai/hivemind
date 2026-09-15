@@ -12,7 +12,9 @@ import {
   loadCredentials,
   saveCredentials,
   deleteCredentials,
+  lookupWorkspaceAlias,
 } from "./auth-creds.js";
+import { findDirConfig } from "../dir-config.js";
 
 // Re-export so existing importers keep working without churn.
 export { loadCredentials, saveCredentials, deleteCredentials };
@@ -55,7 +57,7 @@ export function decodeJwtPayload(token: string): Record<string, unknown> | null 
 
 // ── API Helpers ──────────────────────────────────────────────────────────────
 
-async function apiGet(path: string, token: string, apiUrl: string, orgId?: string): Promise<unknown> {
+async function apiGet(path: string, token: string, apiUrl: string, orgId?: string, signal?: AbortSignal): Promise<unknown> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
@@ -63,7 +65,7 @@ async function apiGet(path: string, token: string, apiUrl: string, orgId?: strin
     ...hivemindOsHeader(),
   };
   if (orgId) headers["X-Activeloop-Org-Id"] = orgId;
-  const resp = await fetch(`${apiUrl}${path}`, { headers });
+  const resp = await fetch(`${apiUrl}${path}`, { headers, signal });
   if (!resp.ok) throw new Error(`API ${resp.status}: ${await resp.text().catch(() => "")}`);
   return resp.json();
 }
@@ -301,8 +303,7 @@ export async function healDriftedOrgToken(
     if (currentWs !== "default") {
       try {
         const wsList = await listWorkspaces(healed.token, apiUrl, creds.orgId);
-        const lcWs = currentWs.toLowerCase();
-        const wsMatch = wsList.find(w => w.id === currentWs || (w.name && w.name.toLowerCase() === lcWs));
+        const wsMatch = findWorkspace(wsList, currentWs);
         if (!wsMatch) {
           log(`workspace '${currentWs}' not in org ${creds.orgId} — reset to default`);
           healed.workspaceId = "default";
@@ -326,8 +327,90 @@ export async function healDriftedOrgToken(
 
 // ── Workspace Commands ───────────────────────────────────────────────────────
 
-export async function listWorkspaces(token: string, apiUrl = DEFAULT_API_URL, orgId?: string): Promise<{ id: string; name: string }[]> {
-  const raw = await apiGet("/workspaces", token, apiUrl, orgId) as { data?: { id: string; name: string }[] } | { id: string; name: string }[];
+// An exact id always wins over a name: workspace A named "build" must not
+// shadow workspace B whose id is "build".
+export function findWorkspace(
+  wsList: { id: string; name: string }[],
+  ref: string,
+): { id: string; name: string } | undefined {
+  const lc = ref.toLowerCase();
+  return wsList.find(w => w.id === ref) ?? wsList.find(w => w.name && w.name.toLowerCase() === lc);
+}
+
+export interface WorkspaceOverrideResult {
+  creds: Credentials;
+  // User-facing line when the override names a workspace the org doesn't
+  // have. Every write would 403 and capture would silently switch itself
+  // off, so SessionStart must say it out loud.
+  warning?: string;
+}
+
+// SessionStart must never hang on this lookup; the cached alias (if any)
+// keeps working when the request is cut off.
+const WORKSPACE_LOOKUP_TIMEOUT_MS = 5_000;
+
+// `HIVEMIND_WORKSPACE_ID` (and a `.hivemind` workspaceId) are documented as
+// workspace NAMES but the API only accepts ids in `/workspaces/{id}/...` — a
+// name gets a 403 on every query. Resolve the reference against the EFFECTIVE
+// org (env > .hivemind > login, same precedence as resolveDirConfig) and
+// persist it in creds.workspaceAliases so every later (synchronous) hook maps
+// it through loadConfig() without a round-trip. Runs every session, so a
+// rename or deletion is picked up on the next start; the cache only carries
+// the answer across hooks and network failures. Never throws.
+export async function resolveWorkspaceOverride(
+  creds: Credentials,
+  log: (msg: string) => void = () => {},
+  cwd: string = process.cwd(),
+): Promise<WorkspaceOverrideResult> {
+  const found = findDirConfig(cwd);
+  const ref = process.env.HIVEMIND_WORKSPACE_ID ?? found?.raw.workspaceId;
+  const token = process.env.HIVEMIND_TOKEN ?? creds.token;
+  if (!ref || ref === "default" || !token) return { creds };
+  const orgId = process.env.HIVEMIND_ORG_ID ?? found?.raw.orgId ?? creds.orgId;
+  const apiUrl = process.env.HIVEMIND_API_URL ?? creds.apiUrl ?? DEFAULT_API_URL;
+  const cached = lookupWorkspaceAlias(creds.workspaceAliases, orgId, ref);
+  try {
+    const wsList = await listWorkspaces(token, apiUrl, orgId, AbortSignal.timeout(WORKSPACE_LOOKUP_TIMEOUT_MS));
+    const match = findWorkspace(wsList, ref);
+    if (!match) {
+      const names = wsList.map(w => w.name || w.id).join(", ") || "(none)";
+      const source = process.env.HIVEMIND_WORKSPACE_ID ? "HIVEMIND_WORKSPACE_ID" : found?.path;
+      log(`workspace '${ref}' not found in org ${orgId}`);
+      return {
+        creds: cached ? forgetWorkspaceAlias(creds, orgId, ref) : creds,
+        warning: `Workspace '${ref}' (from ${source}) does not match any workspace in this org (available: ${names}); ` +
+          `capture and memory search will fail until it is fixed. Prefer \`hivemind workspace switch <name>\` over the env var.`,
+      };
+    }
+    if (match.id !== ref) log(`workspace '${ref}' resolved to id '${match.id}'`);
+    return { creds: cached === match.id ? creds : rememberWorkspaceAlias(creds, orgId, ref, match.id) };
+  } catch (e) {
+    log(`workspace resolve skipped (${(e as Error).message}); ${cached ? `using cached id '${cached}'` : "no cached id"}`);
+    return { creds };
+  }
+}
+
+// Re-read credentials right before writing: many sessions start in parallel
+// and one may have just healed the token. Only the alias map is merged in,
+// so a stale in-memory snapshot can never roll back another session's write.
+function rememberWorkspaceAlias(creds: Credentials, orgId: string, ref: string, id: string): Credentials {
+  const latest = loadCredentials() ?? creds;
+  const aliases = { ...latest.workspaceAliases, [orgId]: { ...latest.workspaceAliases?.[orgId], [ref.toLowerCase()]: id } };
+  saveCredentials({ ...latest, workspaceAliases: aliases });
+  return { ...creds, workspaceAliases: aliases };
+}
+
+function forgetWorkspaceAlias(creds: Credentials, orgId: string, ref: string): Credentials {
+  const latest = loadCredentials() ?? creds;
+  const org = { ...latest.workspaceAliases?.[orgId] };
+  delete org[ref.toLowerCase()];
+  const aliases = { ...latest.workspaceAliases, [orgId]: org };
+  saveCredentials({ ...latest, workspaceAliases: aliases });
+  return { ...creds, workspaceAliases: aliases };
+}
+
+export async function listWorkspaces(token: string, apiUrl = DEFAULT_API_URL, orgId?: string, signal?: AbortSignal): Promise<{ id: string; name: string }[]> {
+  const raw = await apiGet("/workspaces", token, apiUrl, orgId, signal) as { data?: { id: string; name: string }[] } | { id: string; name: string }[];
   const data = (raw as { data?: { id: string; name: string }[] }).data ?? (raw as { id: string; name: string }[]);
   return Array.isArray(data) ? data : [];
 }

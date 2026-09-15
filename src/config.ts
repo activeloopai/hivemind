@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, userInfo } from "node:os";
+import { resolveWorkspaceRef } from "./commands/auth-creds.js";
 
 export interface Config {
   token: string;
@@ -18,6 +19,9 @@ export interface Config {
   docsTableName: string;
   codebaseTableName: string;
   memoryPath: string;
+  // Learned workspace name → id map (see Credentials.workspaceAliases).
+  // Optional so hand-built Config fixtures in tests keep compiling.
+  workspaceAliases?: Record<string, Record<string, string>>;
 }
 
 interface Credentials {
@@ -27,6 +31,7 @@ interface Credentials {
   userName?: string;
   workspaceId?: string;
   apiUrl?: string;
+  workspaceAliases?: Record<string, Record<string, string>>;
 }
 
 export function loadConfig(): Config | null {
@@ -53,7 +58,13 @@ export function loadConfig(): Config | null {
     orgId,
     orgName: creds?.orgName ?? orgId,
     userName: creds?.userName || userInfo().username || "unknown",
-    workspaceId: process.env.HIVEMIND_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    // The API only accepts workspace IDS in its URLs, but the env var is
+    // documented (and typed by users) as a name. Map through the aliases
+    // SessionStart learned so a name never reaches the wire.
+    workspaceId: resolveWorkspaceRef(
+      creds?.workspaceAliases, orgId,
+      process.env.HIVEMIND_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    ),
     apiUrl: process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.HIVEMIND_TABLE ?? "memory",
     sessionsTableName: process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions",
@@ -79,6 +90,7 @@ export function loadConfig(): Config | null {
     // UPDATE-or-INSERT path (which is vulnerable to UPDATE-coalescing).
     docsTableName: process.env.HIVEMIND_DOCS_TABLE ?? "hivemind_docs",
     codebaseTableName: process.env.HIVEMIND_CODEBASE_TABLE ?? "codebase",
+    workspaceAliases: creds?.workspaceAliases,
     memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join(home, ".deeplake", "memory"),
   };
 }

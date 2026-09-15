@@ -23,12 +23,14 @@ const ensureSessionsTableMock = vi.fn();
 const queryMock = vi.fn();
 const knownTablesMock = vi.fn();
 const autoUpdateMock = vi.fn();
+const resolveWorkspaceOverrideMock = vi.fn(async (creds: unknown, _log?: unknown) => ({ creds } as { creds: unknown; warning?: string }));
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/commands/auth.js", () => ({
   loadCredentials: (...a: any[]) => loadCredsMock(...a),
   saveCredentials: (...a: any[]) => saveCredsMock(...a),
   healDriftedOrgToken: async (creds: unknown) => creds,
+  resolveWorkspaceOverride: (creds: unknown, log?: unknown) => resolveWorkspaceOverrideMock(creds, log),
 }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: any[]) => loadConfigMock(...a) }));
 vi.mock("../../src/utils/debug.js", () => ({
@@ -194,6 +196,20 @@ describe("session-start hook — guards", () => {
     const parsed = JSON.parse(out!);
     expect(parsed.hookSpecificOutput.additionalContext).toContain("Logged in to Deeplake as org: acme");
     expect(parsed.hookSpecificOutput.additionalContext).toContain("workspace: default");
+  });
+
+  it("resolves the workspace override BEFORE loadConfig and surfaces its warning in the banner", async () => {
+    const order: string[] = [];
+    resolveWorkspaceOverrideMock.mockImplementationOnce(async (creds: unknown) => {
+      order.push("override");
+      return { creds, warning: "HIVEMIND_WORKSPACE_ID='Nope' does not match any workspace in this org" };
+    });
+    loadConfigMock.mockImplementation(() => { order.push("loadConfig"); return validConfig; });
+    const out = await runHook();
+    const parsed = JSON.parse(out!);
+    expect(order.indexOf("override")).toBeLessThan(order.indexOf("loadConfig"));
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("Logged in to Deeplake as org: acme");
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("HIVEMIND_WORKSPACE_ID='Nope' does not match");
   });
 
   it("falls back to orgId when orgName is missing", async () => {

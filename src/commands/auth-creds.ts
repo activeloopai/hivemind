@@ -36,7 +36,36 @@ export interface Credentials {
   workspaceId?: string;
   apiUrl?: string;
   autoupdate?: boolean;
+  // Per-org map of a workspace reference the user typed (name or id, lower-
+  // cased) to the backend id, learned by resolveWorkspaceOverride() at
+  // SessionStart. Lets the synchronous loadConfig() in every later hook turn
+  // `HIVEMIND_WORKSPACE_ID="Model Services Dev"` into `model-services-dev`
+  // without a network call — the API only accepts ids in its URLs.
+  workspaceAliases?: Record<string, Record<string, string>>;
   savedAt: string;
+}
+
+// "default" is the per-org sentinel the backend resolves itself. Own-property
+// lookups only: the map is user-controlled JSON, and `__proto__` /
+// `constructor` must not read as cache hits.
+export function lookupWorkspaceAlias(
+  aliases: Record<string, Record<string, string>> | undefined,
+  orgId: string,
+  ref: string,
+): string | undefined {
+  const org = aliases && Object.prototype.hasOwnProperty.call(aliases, orgId) ? aliases[orgId] : undefined;
+  const key = ref.toLowerCase();
+  const id = org && Object.prototype.hasOwnProperty.call(org, key) ? org[key] : undefined;
+  return typeof id === "string" ? id : undefined;
+}
+
+export function resolveWorkspaceRef(
+  aliases: Record<string, Record<string, string>> | undefined,
+  orgId: string,
+  ref: string,
+): string {
+  if (ref === "default") return ref;
+  return lookupWorkspaceAlias(aliases, orgId, ref) ?? ref;
 }
 
 // Each helper avoids the existsSync-before-act anti-pattern: it has both a

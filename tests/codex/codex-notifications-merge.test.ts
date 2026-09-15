@@ -25,6 +25,7 @@ vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMo
 vi.mock("../../src/commands/auth.js", () => ({
   loadCredentials: (...a: any[]) => loadCredsMock(...a),
   healDriftedOrgToken: async (creds: unknown) => creds,
+  resolveWorkspaceOverride: async (creds: unknown) => ({ creds }),
 }));
 vi.mock("../../src/utils/debug.js", () => ({ log: () => undefined }));
 vi.mock("../../src/skillify/auto-pull.js", () => ({

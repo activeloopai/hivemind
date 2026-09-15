@@ -327,7 +327,7 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 |---------------------------|---------------------------|--------------------------------------------|
 | `HIVEMIND_TOKEN`          | _(none)_                  | API token (auto-set by login)              |
 | `HIVEMIND_ORG_ID`         | _(none)_                  | Organization ID (auto-set by login)        |
-| `HIVEMIND_WORKSPACE_ID`   | `default`                 | Workspace name                             |
+| `HIVEMIND_WORKSPACE_ID`   | `default`                 | Workspace name or id (`hivemind workspaces`) |
 | `HIVEMIND_API_URL`        | `https://api.deeplake.ai` | API endpoint                               |
 | `HIVEMIND_TABLE`          | `memory`                  | SQL table for summaries and virtual FS     |
 | `HIVEMIND_SESSIONS_TABLE` | `sessions`                | SQL table for per-event session capture    |

@@ -12,7 +12,7 @@ import { docsWikiContextNote } from "../docs/docs-context.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { loadCredentials, saveCredentials, healDriftedOrgToken } from "../commands/auth.js";
+import { loadCredentials, saveCredentials, healDriftedOrgToken, resolveWorkspaceOverride } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
 import { resolveDirConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
@@ -73,7 +73,7 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - hivemind org list                           — list organizations
 - hivemind org switch <name-or-id>            — switch organization
 - hivemind workspaces                         — list workspaces
-- hivemind workspace <id>                     — switch workspace
+- hivemind workspace switch <name-or-id>      — switch workspace
 - hivemind invite <email> <ADMIN|WRITE|READ>  — invite member (ALWAYS ask user which role before inviting)
 - hivemind members                            — list members
 - hivemind remove <user-id>                   — remove member
@@ -138,6 +138,7 @@ async function main(): Promise<void> {
   }
 
   let creds = loadCredentials();
+  let workspaceWarning = "";
 
   if (!creds?.token) {
     log("no credentials found — run /hivemind:login to authenticate");
@@ -158,6 +159,10 @@ async function main(): Promise<void> {
     // old org_id claim. Detect drift here and re-bind; non-fatal on
     // failure (logged + continue with stale token).
     creds = await healDriftedOrgToken(creds, log);
+    // Must run before loadConfig() below so the learned alias is on disk.
+    const wsOverride = await resolveWorkspaceOverride(creds, log, input.cwd ?? process.cwd());
+    creds = wsOverride.creds;
+    workspaceWarning = wsOverride.warning ? `\n\n${wsOverride.warning}` : "";
     // Backfill userName if missing (for users who logged in before this field was added)
     if (creds.token && !creds.userName) {
       try {
@@ -347,7 +352,7 @@ async function main(): Promise<void> {
     ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search uses org: ${effOrg} (workspace: ${effWs})${routedNote}`
     : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routedNote}`;
   const baseContext = creds?.token
-    ? `${resolvedContext}\n\n${identityLine}${updateNotice}`
+    ? `${resolvedContext}\n\n${identityLine}${workspaceWarning}${updateNotice}`
     : `${resolvedContext}\n\nNot logged in to Deeplake; memory search is unavailable this session.${localMinedNote}${updateNotice}`;
   // Append the rules block when there's something to show, then
   // append the graph note (single line, may be empty). The renderer

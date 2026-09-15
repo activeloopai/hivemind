@@ -20,7 +20,7 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { loadCredentials, healDriftedOrgToken } from "../../commands/auth.js";
+import { loadCredentials, healDriftedOrgToken, resolveWorkspaceOverride } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
 import { resolveDirConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
@@ -63,7 +63,7 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - hivemind org list                           — list organizations
 - hivemind org switch <name-or-id>            — switch organization
 - hivemind workspaces                         — list workspaces
-- hivemind workspace <id>                     — switch workspace
+- hivemind workspace switch <name-or-id>      — switch workspace
 - hivemind invite <email> <ADMIN|WRITE|READ>  — invite member (ALWAYS ask user which role before inviting)
 - hivemind members                            — list members
 - hivemind remove <user-id>                   — remove member
@@ -128,6 +128,7 @@ async function main(): Promise<void> {
   const cwd = resolveCwd(input);
 
   let creds = loadCredentials();
+  let workspaceWarning = "";
   if (!creds?.token) {
     log("no credentials found");
     const auto = maybeAutoMineLocal();
@@ -135,6 +136,10 @@ async function main(): Promise<void> {
   } else {
     log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     creds = await healDriftedOrgToken(creds, log);
+    // Must run before loadConfig() below so the learned alias is on disk.
+    const wsOverride = await resolveWorkspaceOverride(creds, log, cwd);
+    creds = wsOverride.creds;
+    workspaceWarning = wsOverride.warning ? `\n${wsOverride.warning}` : "";
   }
 
   // Centralized autoupdate fires BEFORE the DB ensure-table calls — those
@@ -234,7 +239,7 @@ async function main(): Promise<void> {
     ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search still uses org: ${effOrg}`
     : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`;
   const baseContext = creds?.token
-    ? `${context}\n${identityLine}${versionNotice}`
+    ? `${context}\n${identityLine}${workspaceWarning}${versionNotice}`
     : `${context}\nNot logged in to Deeplake. Run: hivemind login${localMinedNote}${versionNotice}`;
   // Cursor cannot route Write/Edit through hivemind hooks (its
   // pre-tool-use only intercepts Shell). So the agent here uses

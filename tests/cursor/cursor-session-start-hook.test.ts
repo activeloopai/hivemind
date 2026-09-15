@@ -28,6 +28,7 @@ vi.mock("../../src/config.js", () => ({ loadConfig: (...a: unknown[]) => loadCon
 vi.mock("../../src/commands/auth.js", () => ({
   loadCredentials: (...a: unknown[]) => loadCredentialsMock(...a),
   healDriftedOrgToken: async (creds: unknown) => creds,
+  resolveWorkspaceOverride: async (creds: unknown) => ({ creds }),
 }));
 vi.mock("../../src/utils/debug.js", () => ({ log: (_tag: string, msg: string) => debugLogMock(msg) }));
 vi.mock("../../src/utils/version-check.js", async (importOriginal) => {

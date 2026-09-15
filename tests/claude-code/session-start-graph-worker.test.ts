@@ -49,6 +49,7 @@ vi.mock("../../src/commands/auth.js", () => ({
   loadCredentials: (...a: any[]) => loadCredsMock(...a),
   saveCredentials: (...a: any[]) => saveCredsMock(...a),
   healDriftedOrgToken: async (creds: unknown) => creds,
+  resolveWorkspaceOverride: async (creds: unknown) => ({ creds }),
 }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: any[]) => loadConfigMock(...a) }));
 vi.mock("../../src/utils/debug.js", () => ({

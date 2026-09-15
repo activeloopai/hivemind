@@ -11,7 +11,7 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { loadCredentials, healDriftedOrgToken } from "../../commands/auth.js";
+import { loadCredentials, healDriftedOrgToken, resolveWorkspaceOverride } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
 import { resolveDirConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
@@ -48,7 +48,7 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - hivemind org list                           — list organizations
 - hivemind org switch <name-or-id>            — switch organization
 - hivemind workspaces                         — list workspaces
-- hivemind workspace <id>                     — switch workspace
+- hivemind workspace switch <name-or-id>      — switch workspace
 - hivemind invite <email> <ADMIN|WRITE|READ>  — invite member (ALWAYS ask user which role before inviting)
 - hivemind members                            — list members
 - hivemind remove <user-id>                   — remove member
@@ -94,13 +94,8 @@ async function main(): Promise<void> {
   const cwd = input.cwd ?? process.cwd();
 
   let creds = loadCredentials();
+  let workspaceWarning = "";
   const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
-
-  // Per-directory `.hivemind`: route / opt out for this tree. Resolved once and
-  // reused for the placeholder write and the disclosure banner below.
-  const baseConfig = loadConfig();
-  const dirRes = baseConfig ? resolveDirConfig(baseConfig, cwd) : null;
-  const collectHere = captureEnabled && (dirRes?.collect ?? true);
 
   if (!creds?.token) {
     // Auto-trigger mine-local on first SessionStart for unauthenticated
@@ -110,7 +105,18 @@ async function main(): Promise<void> {
     maybeAutoMineLocal();
   } else {
     creds = await healDriftedOrgToken(creds, log);
+    // Must run before loadConfig() below so the learned alias is on disk.
+    const wsOverride = await resolveWorkspaceOverride(creds, log, cwd);
+    creds = wsOverride.creds;
+    workspaceWarning = wsOverride.warning ? `\n${wsOverride.warning}` : "";
   }
+
+  // Per-directory `.hivemind`: route / opt out for this tree. Resolved once and
+  // reused for the placeholder write and the disclosure banner below. After
+  // the heal + override steps so loadConfig() sees the repaired credentials.
+  const baseConfig = loadConfig();
+  const dirRes = baseConfig ? resolveDirConfig(baseConfig, cwd) : null;
+  const collectHere = captureEnabled && (dirRes?.collect ?? true);
 
   // Centralized autoupdate fires BEFORE the DB ensure-table calls — those
   // can stall for tens of seconds against a slow/unreachable backend, and
@@ -197,7 +203,7 @@ async function main(): Promise<void> {
     ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search still uses org: ${effOrg}`
     : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`;
   const baseContext = creds?.token
-    ? `${context}\n${identityLine}${versionNotice}`
+    ? `${context}\n${identityLine}${workspaceWarning}${versionNotice}`
     : `${context}\nNot logged in to Deeplake. Run: hivemind login${localMinedNote}${versionNotice}`;
   // Hermes' pre-tool-use intercepts only `terminal` — it cannot
   // route Write/Edit. Use the CLI variant: agent invokes

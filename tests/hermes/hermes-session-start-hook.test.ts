@@ -20,6 +20,7 @@ vi.mock("../../src/commands/auth.js", () => ({
   // Pass-through stub — the heal helper is unit-tested in tests/claude-code/auth.test.ts.
   // Returning creds unchanged keeps these hook tests focused on the hook's own logic.
   healDriftedOrgToken: async (creds: unknown) => creds,
+  resolveWorkspaceOverride: async (creds: unknown) => ({ creds }),
 }));
 vi.mock("../../src/utils/debug.js", () => ({ log: (_tag: string, msg: string) => debugLogMock(msg) }));
 vi.mock("../../src/utils/version-check.js", async (importOriginal) => {

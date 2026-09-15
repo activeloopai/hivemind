@@ -70,6 +70,20 @@ interface Creds {
   // sees `undefined !== false` and runs the update even when the user
   // has explicitly run `hivemind autoupdate off`.
   autoupdate?: boolean;
+  // Mirrors Credentials.workspaceAliases: orgId -> lower-cased name/id -> id,
+  // learned by the other harnesses' SessionStart. The API only accepts
+  // workspace ids in its URLs; see resolveWorkspaceRef in auth-creds.ts.
+  workspaceAliases?: Record<string, Record<string, string>>;
+}
+
+// Inline copy of resolveWorkspaceRef (src/commands/auth-creds.ts) — keep in
+// lockstep. Own-property lookups only; "default" is never rewritten.
+function resolveWorkspaceRef(aliases: Creds["workspaceAliases"], orgId: string, ref: string): string {
+  if (ref === "default") return ref;
+  const org = aliases && Object.prototype.hasOwnProperty.call(aliases, orgId) ? aliases[orgId] : undefined;
+  const key = ref.toLowerCase();
+  const id = org && Object.prototype.hasOwnProperty.call(org, key) ? org[key] : undefined;
+  return typeof id === "string" ? id : ref;
 }
 
 function loadCreds(): Creds | null {
@@ -87,6 +101,7 @@ function loadCreds(): Creds | null {
       workspaceId: parsed.workspaceId ?? "default",
       userName: parsed.userName ?? "unknown",
       autoupdate: parsed.autoupdate,
+      workspaceAliases: parsed.workspaceAliases,
     };
   } catch {
     return null;
@@ -135,7 +150,8 @@ function applyDirConfig(creds: Creds, cwd: string): { creds: Creds; collect: boo
   const envWs = process.env.HIVEMIND_WORKSPACE_ID;
   const baseOrgId = envOrgId || creds.orgId;
   const baseOrgName = envOrgId ? (creds.orgName ?? envOrgId) : creds.orgName;
-  const baseWs = envWs || creds.workspaceId;
+  const rawWs = envWs || creds.workspaceId;
+  const baseWs = resolveWorkspaceRef(creds.workspaceAliases, baseOrgId, rawWs);
   const withEnv: Creds = { ...creds, orgId: baseOrgId, orgName: baseOrgName, workspaceId: baseWs };
 
   const dir = findHivemindDir(cwd || process.cwd());
@@ -144,7 +160,9 @@ function applyDirConfig(creds: Creds, cwd: string): { creds: Creds; collect: boo
   // The file may fill only fields NOT pinned by an env var.
   const orgId = envOrgId ? baseOrgId : (dir.orgId ?? baseOrgId);
   const orgName = envOrgId ? baseOrgName : (dir.orgName ?? dir.orgId ?? baseOrgName);
-  const workspaceId = envWs ? baseWs : (dir.workspaceId ?? baseWs);
+  // Resolve against the FINAL org: a `.hivemind` may route the org while the
+  // env var locks the workspace reference.
+  const workspaceId = resolveWorkspaceRef(creds.workspaceAliases, orgId, envWs ? rawWs : (dir.workspaceId ?? rawWs));
   const routed = orgId !== baseOrgId || workspaceId !== baseWs; // .hivemind changed it
   return { creds: { ...withEnv, orgId, orgName, workspaceId }, collect: true, routed };
 }

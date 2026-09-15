@@ -201,3 +201,54 @@ describe("loadConfig — credentials file", () => {
     expect(cfg?.sessionsTableName).toBe("sessions");   // default unchanged
   });
 });
+
+describe("loadConfig — workspace alias resolution", () => {
+  function credsWithAliases() {
+    existsSyncMock.mockReturnValue(true);
+    readFileSyncMock.mockReturnValue(JSON.stringify({
+      token: "ftok", orgId: "forg", workspaceId: "default",
+      workspaceAliases: { forg: { "model services dev": "model-services-dev" }, other: { "x": "y" } },
+    }));
+  }
+
+  it("maps an env workspace NAME through the learned alias, case-insensitively", async () => {
+    credsWithAliases();
+    process.env.HIVEMIND_WORKSPACE_ID = "Model Services Dev";
+    const loadConfig = await importLoadConfig();
+    expect(loadConfig()?.workspaceId).toBe("model-services-dev");
+  });
+
+  it("passes an unknown env value through unchanged (SessionStart warns instead)", async () => {
+    credsWithAliases();
+    process.env.HIVEMIND_WORKSPACE_ID = "nope";
+    const loadConfig = await importLoadConfig();
+    expect(loadConfig()?.workspaceId).toBe("nope");
+  });
+
+  it("only consults aliases of the effective org", async () => {
+    credsWithAliases();
+    process.env.HIVEMIND_ORG_ID = "other";
+    process.env.HIVEMIND_WORKSPACE_ID = "Model Services Dev";
+    const loadConfig = await importLoadConfig();
+    expect(loadConfig()?.workspaceId).toBe("Model Services Dev");
+  });
+
+  it("ignores inherited properties in the alias map", async () => {
+    existsSyncMock.mockReturnValue(true);
+    readFileSyncMock.mockReturnValue(JSON.stringify({ token: "ftok", orgId: "forg", workspaceAliases: { forg: { a: "b" } } }));
+    process.env.HIVEMIND_WORKSPACE_ID = "constructor";
+    const loadConfig = await importLoadConfig();
+    expect(loadConfig()?.workspaceId).toBe("constructor");
+  });
+
+  it("never rewrites the 'default' sentinel and exposes the alias map", async () => {
+    existsSyncMock.mockReturnValue(true);
+    readFileSyncMock.mockReturnValue(JSON.stringify({
+      token: "ftok", orgId: "forg", workspaceAliases: { forg: { default: "should-not-apply" } },
+    }));
+    const loadConfig = await importLoadConfig();
+    const cfg = loadConfig();
+    expect(cfg?.workspaceId).toBe("default");
+    expect(cfg?.workspaceAliases).toEqual({ forg: { default: "should-not-apply" } });
+  });
+});

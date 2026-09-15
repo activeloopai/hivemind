@@ -13,7 +13,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { loadCredentials, healDriftedOrgToken } from "../../commands/auth.js";
+import { loadCredentials, healDriftedOrgToken, resolveWorkspaceOverride } from "../../commands/auth.js";
 import { readStdin } from "../../utils/stdin.js";
 import { countLocalManifestEntries } from "../../skillify/local-manifest.js";
 import { maybeAutoMineLocal } from "../../skillify/spawn-mine-local-worker.js";
@@ -81,6 +81,7 @@ async function main(): Promise<void> {
   const input = await readStdin<CodexSessionStartInput>();
 
   let creds = loadCredentials();
+  let workspaceWarning = "";
 
   if (!creds?.token) {
     log("no credentials found — run auth login to authenticate");
@@ -89,6 +90,10 @@ async function main(): Promise<void> {
   } else {
     log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     creds = await healDriftedOrgToken(creds, log);
+    // Must run before the setup worker is spawned so it reads the learned alias.
+    const wsOverride = await resolveWorkspaceOverride(creds, log, input.cwd ?? process.cwd());
+    creds = wsOverride.creds;
+    workspaceWarning = wsOverride.warning ? `\n${wsOverride.warning}` : "";
   }
 
   // Spawn async setup (graph-deps provisioning, table creation, placeholder,
@@ -222,7 +227,7 @@ async function main(): Promise<void> {
   if (creds?.token) spawnGraphPullWorker(input.cwd, __bundleDir);
 
   const additionalContext = creds?.token
-    ? `Hivemind: logged in as org ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"}).${versionNotice}`
+    ? `Hivemind: logged in as org ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"}).${workspaceWarning}${versionNotice}`
     : `Hivemind: not logged in. Run \`hivemind login\` to enable shared memory + skill sharing.${versionNotice}`;
 
   const systemMessage = (!creds?.token && localMined > 0)
