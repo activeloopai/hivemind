@@ -17,6 +17,8 @@ import { readStdin } from "../utils/stdin.js";
 import { drainSessionStart, registerRule } from "../notifications/index.js";
 import { bumpSessionCount } from "../notifications/state.js";
 import { referralInviteRule } from "../notifications/rules/referral-invite.js";
+import { embeddingsNudgeRule } from "../notifications/rules/embeddings-nudge.js";
+import { embeddingsStatus } from "../embeddings/disable.js";
 import { log as _log } from "../utils/debug.js";
 
 const log = (msg: string) => _log("session-notifications", msg);
@@ -27,6 +29,7 @@ const log = (msg: string) => _log("session-notifications", msg);
 // on, for signed-in users (see rules/referral-invite.ts). localMinedRule
 // remains in the tree but unregistered.
 registerRule(referralInviteRule);
+registerRule(embeddingsNudgeRule);
 
 interface SessionStartInput {
   session_id?: string;
@@ -61,7 +64,7 @@ async function main(): Promise<void> {
   const sessionCount = bumpSessionCount(sessionId);
 
   const creds = loadCredentials();
-  await drainSessionStart({ agent: "claude-code", creds, sessionId, source, sessionCount });
+  await drainSessionStart({ agent: "claude-code", creds, sessionId, source, sessionCount, embeddingsStatus: embeddingsStatus() });
 }
 
 main().catch((e) => { log(`fatal: ${e?.message ?? String(e)}`); process.exit(0); });
