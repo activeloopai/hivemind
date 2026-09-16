@@ -10,7 +10,6 @@ import {
   SKILLS_COLUMNS,
   RULES_COLUMNS,
   GOALS_COLUMNS,
-  KPIS_COLUMNS,
   DOCS_COLUMNS,
   buildCreateTableSql,
   healMissingColumns,
@@ -725,27 +724,6 @@ export class DeeplakeApi {
     // Secondary index: SessionStart banner filters by owner+status, so
     // the (owner, status) pair lookup is the hot path.
     await this.ensureLookupIndex(safe, "owner_status", `("owner", "status")`);
-  }
-
-  /**
-   * Create the kpis table.
-   *
-   * Backed by memory/kpi/<goal_id>/<kpi_id>.md. KPI rows do NOT carry
-   * owner — ownership derives from the parent goal via logical join on
-   * goal_id. INSERT-only version-bumped. (goal_id, kpi_id) index is the
-   * canonical lookup the VFS uses on Read and Write.
-   */
-  async ensureKpisTable(name: string): Promise<void> {
-    const safe = sqlIdent(name);
-    const tables = await this.listTables();
-    if (!tables.includes(safe)) {
-      log(`table "${safe}" not found, creating`);
-      await this.createTableWithRetry(buildCreateTableSql(safe, KPIS_COLUMNS), safe);
-      log(`table "${safe}" created`);
-      if (!tables.includes(safe)) this._tablesCache = [...tables, safe];
-    }
-    await this.healSchema(safe, KPIS_COLUMNS);
-    await this.ensureLookupIndex(safe, "goal_id_kpi_id", `("goal_id", "kpi_id")`);
   }
 
   /**

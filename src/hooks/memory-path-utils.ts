@@ -37,7 +37,7 @@ export const SAFE_BUILTINS = new Set([
 ]);
 
 // A quoted heredoc (`<<'EOF'` / `<<"EOF"`) disables shell expansion, so its
-// body is inert literal data — a goal/KPI description, not commands. Drop the
+// body is inert literal data — a goal description, not commands. Drop the
 // body and its closing delimiter so they are never validated as command stages
 // or tripped over by the substitution guard. Unquoted heredocs keep their body
 // (bash would expand it), so they still fall through to full validation.

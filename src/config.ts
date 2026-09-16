@@ -15,7 +15,6 @@ export interface Config {
   skillsTableName: string;
   rulesTableName: string;
   goalsTableName: string;
-  kpisTableName: string;
   docsTableName: string;
   codebaseTableName: string;
   memoryPath: string;
@@ -74,14 +73,11 @@ export function loadConfig(): Config | null {
     // override convention (memory_test / sessions_test → goals_test, etc.)
     // documented in CLAUDE.md.
     rulesTableName: process.env.HIVEMIND_RULES_TABLE ?? "hivemind_rules",
-    // Goals + KPIs (refined design — VFS path classifier maps
+    // Goals (VFS path classifier maps
     //   memory/goal/<user>/<status>/<uuid>.md → hivemind_goals row
-    //   memory/kpi/<uuid>/<kpi_id>.md → hivemind_kpis row
     // See src/shell/deeplake-fs.ts for the translation logic and
-    // GOALS_COLUMNS / KPIS_COLUMNS in deeplake-schema.ts for the
-    // table shape.
+    // GOALS_COLUMNS in deeplake-schema.ts for the table shape).
     goalsTableName: process.env.HIVEMIND_GOALS_TABLE ?? "hivemind_goals",
-    kpisTableName: process.env.HIVEMIND_KPIS_TABLE ?? "hivemind_kpis",
     // Per-file documentation kept fresh on code deltas. INSERT-only
     // version-bumped table (see DOCS_COLUMNS in deeplake-schema.ts).
     // Phase 1: written/read through the `hivemind docs` CLI + worker via the

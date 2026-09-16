@@ -420,7 +420,6 @@ let sessionsTable = "sessions";
 let memoryTable = "memory";
 let skillsTable = "skills";  // lazy-created on first INSERT by the worker
 let goalsTable = "hivemind_goals";  // lazy-created by hivemind_goal_add tool
-let kpisTable = "hivemind_kpis";    // lazy-created by hivemind_kpi_add tool
 let captureEnabled = true;
 const capturedCounts = new Map<string, number>();
 const fallbackSessionId = crypto.randomUUID();
@@ -730,7 +729,6 @@ async function getApi(): Promise<DeeplakeApi | null> {
   memoryTable = config.tableName;
   skillsTable = config.skillsTableName;
   goalsTable = config.goalsTableName;
-  kpisTable = config.kpisTableName;
 
   // Build the api in a local variable and only commit it to the module-level
   // cache after both ensureX calls succeed. If a transient network failure
@@ -1255,58 +1253,6 @@ export default definePluginEntry({
             const msg = err instanceof Error ? err.message : String(err);
             pluginApi.logger.error(`hivemind_goal_add failed: ${msg}`);
             return { content: [{ type: "text", text: `Goal add failed: ${msg}` }] };
-          }
-        },
-      });
-
-      pluginApi.registerTool({
-        name: "hivemind_kpi_add",
-        label: "Hivemind KPI Add",
-        description:
-          "Add a measurable KPI to an existing Hivemind goal. Persists to the org-shared hivemind_kpis table. Only call after the user has explicitly asked for KPIs — do NOT auto-generate them.",
-        parameters: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            goal_id: { type: "string", minLength: 1, description: "Existing goal_id (UUID) returned by hivemind_goal_add." },
-            kpi_id: { type: "string", minLength: 1, description: "Short slug for this KPI (e.g. 'k-prs')." },
-            target: { type: "integer", minimum: 1, description: "Positive integer target." },
-            unit: { type: "string", minLength: 1, description: "Unit label (e.g. 'count', 'PRs', 'lines')." },
-            name: { type: "string", description: "Optional human-readable name. Defaults to kpi_id." },
-          },
-          required: ["goal_id", "kpi_id", "target", "unit"],
-        },
-        execute: async (_toolCallId, rawParams) => {
-          const params = rawParams as { goal_id: string; kpi_id: string; target: number; unit: string; name?: string };
-          const dl = await getApi();
-          if (!dl) {
-            return { content: [{ type: "text", text: "Not logged in. Run /hivemind_login first." }] };
-          }
-          try {
-            await dl.ensureKpisTable(kpisTable);
-            const name = params.name ?? params.kpi_id;
-            const content = `${name}\n\n- target: ${params.target}\n- current: 0\n- unit: ${params.unit}`;
-            const ts = new Date().toISOString();
-            const safe = kpisTable.replace(/[^A-Za-z0-9_]/g, "");
-            await dl.query(
-              `INSERT INTO "${safe}" (id, goal_id, kpi_id, content, version, created_at, updated_at, agent, plugin_version) VALUES (` +
-              `'${crypto.randomUUID()}', ` +
-              `'${sqlStr(params.goal_id)}', ` +
-              `'${sqlStr(params.kpi_id)}', ` +
-              `E'${sqlStr(content)}', ` +
-              `1, ` +
-              `'${sqlStr(ts)}', ` +
-              `'${sqlStr(ts)}', ` +
-              `'openclaw', ` +
-              `''` +
-              `)`
-            );
-            pluginApi.logger.info?.(`hivemind_kpi_add → ${params.goal_id}/${params.kpi_id}`);
-            return { content: [{ type: "text", text: `KPI added.\ngoal_id: ${params.goal_id}\nkpi_id: ${params.kpi_id}\ntarget: ${params.target} ${params.unit}` }] };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            pluginApi.logger.error(`hivemind_kpi_add failed: ${msg}`);
-            return { content: [{ type: "text", text: `KPI add failed: ${msg}` }] };
           }
         },
       });

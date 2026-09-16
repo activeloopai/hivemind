@@ -16,9 +16,7 @@ import { buildVirtualIndexContent, INDEX_LIMIT_PER_SECTION } from "../hooks/virt
 import {
   classifyPath,
   composeGoalPath,
-  composeKpiPath,
   decomposeGoalPath,
-  decomposeKpiPath,
   type PathKind,
 } from "./goal-paths.js";
 import { handleGraphVfs } from "../graph/vfs-handler.js";
@@ -222,9 +220,8 @@ export class DeeplakeFs implements IFileSystem {
   // Path-routed structured tables. When non-null, the VFS classifies
   // each path (see ./goal-paths.ts) and dispatches reads/writes to
   // the right table instead of the generic memory table. Null means
-  // the goal/kpi routing is disabled (test or legacy configurations).
+  // the goal routing is disabled (test or legacy configurations).
   private goalsTable: string | null = null;
-  private kpisTable: string | null = null;
   // Per-file docs table, for /docs/ VFS reads + docs/find search. Null = off.
   private docsTable: string | null = null;
   /** Project scope for docs reads on shared tables (legacy '' rows included). */
@@ -247,15 +244,14 @@ export class DeeplakeFs implements IFileSystem {
     table: string,
     mount = "/memory",
     sessionsTable?: string,
-    extra?: { goalsTable?: string; kpisTable?: string; docsTable?: string; docsProject?: string },
+    extra?: { goalsTable?: string; docsTable?: string; docsProject?: string },
   ): Promise<DeeplakeFs> {
     const fs = new DeeplakeFs(client, table, mount);
     fs.sessionsTable = sessionsTable ?? null;
     fs.goalsTable = extra?.goalsTable ?? null;
-    fs.kpisTable = extra?.kpisTable ?? null;
     fs.docsTable = extra?.docsTable ?? null;
     fs.docsProject = extra?.docsProject ?? null;
-    // Ensure the memory table + goal/kpi tables exist before
+    // Ensure the memory table + goals table exist before
     // bootstrapping. Each ensure call is idempotent and lazy-heals
     // any column drift from prior schema versions. Failures bubble
     // up; the shell will report them but stay alive (the
@@ -264,10 +260,6 @@ export class DeeplakeFs implements IFileSystem {
     if (fs.goalsTable) {
       try { await client.ensureGoalsTable(fs.goalsTable); }
       catch { /* keep bootstrap moving — goal routing degrades gracefully */ }
-    }
-    if (fs.kpisTable) {
-      try { await client.ensureKpisTable(fs.kpisTable); }
-      catch { /* same — degrade gracefully */ }
     }
 
     // Bootstrap memory + sessions metadata in parallel.
@@ -278,8 +270,8 @@ export class DeeplakeFs implements IFileSystem {
         const rows = await client.query(sql);
         for (const row of rows) {
           const p = row["path"] as string;
-          // Goal/KPI-shaped paths belong exclusively to the dedicated
-          // hivemind_goals / hivemind_kpis tables. Pre-routing hook
+          // Goal-shaped paths belong exclusively to the dedicated
+          // hivemind_goals table. Pre-routing hook
           // versions (<=0.7.4) wrote goals to the generic memory table
           // as plain files; surfacing those here re-injects phantom
           // goals into the VFS goal namespace — visible in `ls /goal/...`
@@ -289,7 +281,7 @@ export class DeeplakeFs implements IFileSystem {
           // configured, goal routing is off and these rows are the only
           // copy, so we keep them.)
           const kind = classifyPath(p);
-          if ((kind === "goal" && fs.goalsTable) || (kind === "kpi" && fs.kpisTable)) {
+          if (kind === "goal" && fs.goalsTable) {
             continue;
           }
           fs.files.set(p, null);
@@ -334,8 +326,8 @@ export class DeeplakeFs implements IFileSystem {
       }
     })() : Promise.resolve();
 
-    // Goals + KPIs bootstrap — read the latest version of each row in
-    // the structured tables and synthesize VFS paths for the cache.
+    // Goals bootstrap — read the latest version of each row in the
+    // structured table and synthesize VFS paths for the cache.
     // ls / cat then work naturally against the file map, while
     // writes route to upsertRow which dispatches by path classifier.
     const goalsBootstrap = fs.goalsTable ? (async () => {
@@ -368,34 +360,7 @@ export class DeeplakeFs implements IFileSystem {
       }
     })() : Promise.resolve();
 
-    const kpisBootstrap = fs.kpisTable ? (async () => {
-      try {
-        const kpiRows = await client.query(
-          // One row per (goal_id, kpi_id) (UPDATE-or-INSERT model).
-          `SELECT goal_id, kpi_id, content, created_at ` +
-          `FROM "${fs.kpisTable}" ORDER BY created_at DESC`
-        );
-        for (const row of kpiRows) {
-          const goal_id = String(row["goal_id"] ?? "");
-          const kpi_id = String(row["kpi_id"] ?? "");
-          if (!goal_id || !kpi_id) continue;
-          const p = composeKpiPath({ goal_id, kpi_id });
-          const content = String(row["content"] ?? "");
-          fs.files.set(p, Buffer.from(content, "utf-8"));
-          fs.meta.set(p, {
-            size: Buffer.byteLength(content, "utf-8"),
-            mime: "text/markdown",
-            mtime: new Date(),
-          });
-          fs.addToTree(p);
-          fs.flushed.add(p);
-        }
-      } catch {
-        // KPIs table may not exist yet — start empty.
-      }
-    })() : Promise.resolve();
-
-    await Promise.all([memoryBootstrap, sessionsBootstrap, goalsBootstrap, kpisBootstrap]);
+    await Promise.all([memoryBootstrap, sessionsBootstrap, goalsBootstrap]);
 
     return fs;
   }
@@ -475,7 +440,7 @@ export class DeeplakeFs implements IFileSystem {
   }
 
   private async upsertRow(r: PendingRow, embedding: number[] | null): Promise<void> {
-    // Path-routed structured tables: dispatch goal / kpi writes to
+    // Path-routed structured tables: dispatch goal writes to
     // the dedicated table with INSERT-only version-bump semantics.
     // The generic memory path falls through to the existing UPDATE /
     // INSERT shape below. Failures here propagate up to the flush
@@ -483,10 +448,6 @@ export class DeeplakeFs implements IFileSystem {
     const kind: PathKind = classifyPath(r.path);
     if (kind === "goal" && this.goalsTable) {
       await this.upsertGoalRow(r);
-      return;
-    }
-    if (kind === "kpi" && this.kpisTable) {
-      await this.upsertKpiRow(r);
       return;
     }
 
@@ -567,52 +528,6 @@ export class DeeplakeFs implements IFileSystem {
         `'${esc(parts.goal_id)}', ` +
         `'${esc(parts.owner)}', ` +
         `'${esc(parts.status)}', ` +
-        `E'${esc(r.contentText)}', ` +
-        `1, ` +
-        `'${esc(createdAt)}', ` +
-        `'${esc(updatedAt)}', ` +
-        `'manual', ` +
-        `''` +
-        `)`
-      );
-    }
-    this.flushed.add(r.path);
-  }
-
-  /**
-   * UPDATE-or-INSERT for a KPI row, keyed by (goal_id, kpi_id).
-   * Same trade-off as upsertGoalRow — one row per KPI forever,
-   * no version proliferation. Progress bumps (Edit on the `current:`
-   * line) and any other content edits mutate the same row in place.
-   */
-  private async upsertKpiRow(r: PendingRow): Promise<void> {
-    if (!this.kpisTable) throw new Error("kpisTable not configured");
-    const parts = decomposeKpiPath(r.path);
-    const safe = this.kpisTable;
-    const now = new Date().toISOString();
-    const createdAt = r.creationDate ?? now;
-    const updatedAt = r.lastUpdateDate ?? createdAt;
-    const existing = await this.client.query(
-      `SELECT id FROM "${safe}" ` +
-      `WHERE goal_id = '${esc(parts.goal_id)}' AND kpi_id = '${esc(parts.kpi_id)}' LIMIT 1`
-    );
-    if (existing.length > 0) {
-      // Preserve created_at — KPI progress edits keep their original
-      // creation time so the KPI list stays in stable creation order
-      // (created_at ASC). Edit time goes to updated_at.
-      await this.client.query(
-        `UPDATE "${safe}" SET ` +
-        `content = E'${esc(r.contentText)}', ` +
-        `updated_at = '${esc(updatedAt)}' ` +
-        `WHERE goal_id = '${esc(parts.goal_id)}' AND kpi_id = '${esc(parts.kpi_id)}'`
-      );
-    } else {
-      const id = randomUUID();
-      await this.client.query(
-        `INSERT INTO "${safe}" (id, goal_id, kpi_id, content, version, created_at, updated_at, agent, plugin_version) VALUES (` +
-        `'${id}', ` +
-        `'${esc(parts.goal_id)}', ` +
-        `'${esc(parts.kpi_id)}', ` +
         `E'${esc(r.contentText)}', ` +
         `1, ` +
         `'${esc(createdAt)}', ` +

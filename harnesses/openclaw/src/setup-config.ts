@@ -14,14 +14,13 @@ export const HIVEMIND_TOOL_NAMES = [
   "hivemind_read",
   "hivemind_index",
   "hivemind_goal_add",
-  "hivemind_kpi_add",
   "hivemind_graph_search",
   "hivemind_graph_neighborhood",
 ];
 
 /**
  * Core memory tools whose per-name alsoAllow entry counts as full suite
- * coverage. Niche tools (goals/KPIs/graph) must NOT — a user who allowlists
+ * coverage. Niche tools (goals/graph) must NOT — a user who allowlists
  * only hivemind_graph_search still needs "hivemind" added by /hivemind_setup.
  */
 export const HIVEMIND_CORE_ALLOWLIST_TOOLS = [

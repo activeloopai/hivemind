@@ -1,5 +1,5 @@
 /**
- * CLI surface for `hivemind goal` / `hivemind kpi`.
+ * CLI surface for `hivemind goal`.
  *
  * Why this exists: cursor and hermes intercept ONLY Shell-style
  * tool invocations in their pre-tool-use hook (see
@@ -15,7 +15,7 @@
  * command runs as a normal subprocess (cursor's hook lets
  * non-memory-touching commands pass through), and this code talks
  * directly to the Deeplake API. End result: a row in
- * hivemind_goals (or hivemind_kpis) regardless of which agent
+ * hivemind_goals regardless of which agent
  * called it.
  *
  * Subcommands:
@@ -24,11 +24,6 @@
  *   hivemind goal list [--all|--mine]     list goal_id + text + status
  *   hivemind goal done <goal_id>          flip status -> closed
  *   hivemind goal progress <goal_id> <status>  flip status to any value
- *   hivemind kpi add <goal_id> <kpi_id> <target> <unit> [name]
- *                                          create a KPI on an existing goal
- *   hivemind kpi list <goal_id>            list KPIs for a goal
- *   hivemind kpi bump <goal_id> <kpi_id> <delta>
- *                                          add <delta> (int, +/-) to current
  *
  * Output is intentionally compact and machine-parsable on the
  * happy path so the agent can pipe it into follow-up commands.
@@ -198,106 +193,6 @@ async function goalProgress(goalId: string, status: string): Promise<void> {
   process.stdout.write(`${goalId} -> ${status}\n`);
 }
 
-// ── kpi subcommands ─────────────────────────────────────────────────────────
-
-async function kpiAdd(args: string[]): Promise<void> {
-  const [goalId, kpiId, targetStr, unit, ...nameParts] = args;
-  if (!goalId || !kpiId || !targetStr || !unit) {
-    process.stderr.write("usage: hivemind kpi add <goal_id> <kpi_id> <target> <unit> [name]\n");
-    process.exit(1);
-  }
-  const target = Number.parseInt(targetStr, 10);
-  if (!Number.isFinite(target) || target <= 0) {
-    process.stderr.write(`invalid target: ${targetStr} (must be positive integer)\n`);
-    process.exit(1);
-  }
-  const name = nameParts.length > 0 ? nameParts.join(" ") : kpiId;
-  const cfg = loadRoutedConfig();
-  if (!cfg) { process.stderr.write("not logged in\n"); process.exit(1); }
-  const { api, query } = loadApiOrDie(cfg.kpisTableName);
-  await api.ensureKpisTable(cfg.kpisTableName);
-  const safe = sqlIdent(cfg.kpisTableName);
-  const content = `${name}\n\n- target: ${target}\n- current: 0\n- unit: ${unit}`;
-  const ts = new Date().toISOString();
-  await query(
-    `INSERT INTO "${safe}" (id, goal_id, kpi_id, content, version, created_at, updated_at, agent, plugin_version) VALUES (` +
-    `'${randomUUID()}', ` +
-    `'${sqlStr(goalId)}', ` +
-    `'${sqlStr(kpiId)}', ` +
-    `E'${sqlStr(content)}', ` +
-    `1, ` +
-    `'${sqlStr(ts)}', ` +
-    `'${sqlStr(ts)}', ` +
-    `'manual', ` +
-    `''` +
-    `)`
-  );
-  process.stdout.write(`${goalId}/${kpiId}\n`);
-}
-
-async function kpiList(goalId: string): Promise<void> {
-  if (!goalId) { process.stderr.write("usage: hivemind kpi list <goal_id>\n"); process.exit(1); }
-  const cfg = loadRoutedConfig();
-  if (!cfg) { process.stderr.write("not logged in\n"); process.exit(1); }
-  const { query } = loadApiOrDie(cfg.kpisTableName);
-  const safe = sqlIdent(cfg.kpisTableName);
-  try {
-    const rows = await query(
-      `SELECT kpi_id, content FROM "${safe}" WHERE goal_id = '${sqlStr(goalId)}' ORDER BY created_at ASC LIMIT 50`
-    );
-    if (rows.length === 0) { process.stdout.write("(no kpis)\n"); return; }
-    for (const r of rows) {
-      const firstLine = String(r.content ?? "").split(/\r?\n/)[0].trim();
-      process.stdout.write(`${r.kpi_id}\t${firstLine}\n`);
-    }
-  } catch (e: unknown) {
-    process.stderr.write(`hivemind kpi list: ${(e as Error).message}\n`);
-    process.exit(1);
-  }
-}
-
-async function kpiBump(goalId: string, kpiId: string, deltaStr: string): Promise<void> {
-  if (!goalId || !kpiId || !deltaStr) {
-    process.stderr.write("usage: hivemind kpi bump <goal_id> <kpi_id> <delta>\n");
-    process.exit(1);
-  }
-  const delta = Number.parseInt(deltaStr, 10);
-  if (!Number.isFinite(delta)) {
-    process.stderr.write(`invalid delta: ${deltaStr}\n`);
-    process.exit(1);
-  }
-  const cfg = loadRoutedConfig();
-  if (!cfg) { process.stderr.write("not logged in\n"); process.exit(1); }
-  const { api, query } = loadApiOrDie(cfg.kpisTableName);
-  // Heal the schema before the UPDATE — same reason as goalProgress: a
-  // preexisting KPIs table may not yet have the `updated_at` column.
-  await api.ensureKpisTable(cfg.kpisTableName);
-  const safe = sqlIdent(cfg.kpisTableName);
-  // Read current content
-  const rows = await query(
-    `SELECT content FROM "${safe}" WHERE goal_id = '${sqlStr(goalId)}' AND kpi_id = '${sqlStr(kpiId)}' LIMIT 1`
-  );
-  if (rows.length === 0) {
-    process.stderr.write(`kpi not found: ${goalId}/${kpiId}\n`);
-    process.exit(1);
-  }
-  const content = String(rows[0].content ?? "");
-  // Find and bump the `current:` line
-  const newContent = content.replace(
-    /^(\s*-?\s*current\s*:\s*)(-?\d+)(\s*)$/m,
-    (_m, prefix, n, suffix) => `${prefix}${Number.parseInt(n, 10) + delta}${suffix}`
-  );
-  if (newContent === content) {
-    process.stderr.write(`could not find 'current:' line in kpi ${goalId}/${kpiId}\n`);
-    process.exit(1);
-  }
-  const ts = new Date().toISOString();
-  await query(
-    `UPDATE "${safe}" SET content = E'${sqlStr(newContent)}', updated_at = '${sqlStr(ts)}' WHERE goal_id = '${sqlStr(goalId)}' AND kpi_id = '${sqlStr(kpiId)}'`
-  );
-  process.stdout.write(`${goalId}/${kpiId} +${delta}\n`);
-}
-
 // ── dispatchers ─────────────────────────────────────────────────────────────
 
 const USAGE_GOAL = `
@@ -347,24 +242,5 @@ export async function runGoalCommand(args: string[]): Promise<void> {
     return;
   }
   process.stderr.write(`unknown goal subcommand: ${sub}\n${USAGE_GOAL}\n`);
-  process.exit(1);
-}
-
-const USAGE_KPI = `
-hivemind kpi — manage goal KPIs
-
-Usage:
-  hivemind kpi add <goal_id> <kpi_id> <target> <unit> [name]
-  hivemind kpi list <goal_id>
-  hivemind kpi bump <goal_id> <kpi_id> <delta>
-`.trim();
-
-export async function runKpiCommand(args: string[]): Promise<void> {
-  const sub = args[0];
-  if (!sub || sub === "--help" || sub === "-h") { process.stdout.write(USAGE_KPI + "\n"); return; }
-  if (sub === "add") { await kpiAdd(args.slice(1)); return; }
-  if (sub === "list") { await kpiList(args[1]); return; }
-  if (sub === "bump") { await kpiBump(args[1], args[2], args[3]); return; }
-  process.stderr.write(`unknown kpi subcommand: ${sub}\n${USAGE_KPI}\n`);
   process.exit(1);
 }

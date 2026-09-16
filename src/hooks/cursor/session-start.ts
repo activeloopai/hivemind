@@ -244,8 +244,8 @@ async function main(): Promise<void> {
   // Cursor cannot route Write/Edit through hivemind hooks (its
   // pre-tool-use only intercepts Shell). So the agent here uses
   // the CLI variant — `hivemind goal add/list/...` invoked as
-  // shell commands. Same end state (rows in hivemind_goals /
-  // hivemind_kpis), different code path inside the agent.
+  // shell commands. Same end state (rows in hivemind_goals),
+  // different code path inside the agent.
   const baseWithGoals = creds?.token ? `${baseContext}\n\n${GOALS_INSTRUCTIONS_CLI}` : baseContext;
   const withRules = rulesBlock
     ? `${baseWithGoals}\n\n${rulesBlock}`

@@ -654,7 +654,6 @@ const openclawGraphWorkerDefine = {
     "process.env.HIVEMIND_SKILLS_TABLE": "globalThis.__hivemind_tuning__.HIVEMIND_SKILLS_TABLE",
     "process.env.HIVEMIND_RULES_TABLE": "globalThis.__hivemind_tuning__.HIVEMIND_RULES_TABLE",
     "process.env.HIVEMIND_GOALS_TABLE": "globalThis.__hivemind_tuning__.HIVEMIND_GOALS_TABLE",
-    "process.env.HIVEMIND_KPIS_TABLE": "globalThis.__hivemind_tuning__.HIVEMIND_KPIS_TABLE",
     "process.env.HIVEMIND_MEMORY_PATH": "globalThis.__hivemind_tuning__.HIVEMIND_MEMORY_PATH",
     "process.env.HIVEMIND_GRAPH_PUSH": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_PUSH",
     "process.env.HIVEMIND_GRAPHS_HOME": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPHS_HOME",

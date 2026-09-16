@@ -130,42 +130,13 @@ export const RULES_COLUMNS: readonly ColumnDef[] = Object.freeze([
  * audit trail preserved).
  *
  * Status enum: 'opened' | 'in_progress' | 'closed' — mirrors the path
- * folder names. KPIs link via shared `goal_id` (no FK enforcement on
- * Deeplake; logical join only).
+ * folder names.
  */
 export const GOALS_COLUMNS: readonly ColumnDef[] = Object.freeze([
   { name: "id",             sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "goal_id",        sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "owner",          sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "status",         sql: "TEXT NOT NULL DEFAULT 'opened'" },
-  { name: "content",        sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "version",        sql: "BIGINT NOT NULL DEFAULT 1" },
-  { name: "created_at",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "updated_at",     sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "agent",          sql: "TEXT NOT NULL DEFAULT 'manual'" },
-  { name: "plugin_version", sql: "TEXT NOT NULL DEFAULT ''" },
-]);
-
-/**
- * KPIs table — markdown bodies describing target / current / unit for
- * one KPI on one goal. Backed by VFS path
- * `memory/kpi/<goal_id>/<kpi_id>.md`. Path encodes the (goal_id,
- * kpi_id) pair; the content column stores the body (free markdown,
- * by convention with `target:` / `current:` / `unit:` lines for the
- * commit-extract worker to mutate).
- *
- * Owner is intentionally NOT stored here — it is derived from the
- * parent goal (logical join on goal_id). This avoids the
- * reassign-races scenario where moving a goal between owners would
- * otherwise force a multi-file cascade move on the KPI files.
- *
- * Same version-bump pattern: every write INSERTs v=N+1; deleting a
- * KPI conceptually means writing a tombstone version, deferred to v1.1.
- */
-export const KPIS_COLUMNS: readonly ColumnDef[] = Object.freeze([
-  { name: "id",             sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "goal_id",        sql: "TEXT NOT NULL DEFAULT ''" },
-  { name: "kpi_id",         sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "content",        sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "version",        sql: "BIGINT NOT NULL DEFAULT 1" },
   { name: "created_at",     sql: "TEXT NOT NULL DEFAULT ''" },
@@ -294,7 +265,6 @@ validateSchema("SESSIONS_COLUMNS", SESSIONS_COLUMNS);
 validateSchema("SKILLS_COLUMNS", SKILLS_COLUMNS);
 validateSchema("RULES_COLUMNS", RULES_COLUMNS);
 validateSchema("GOALS_COLUMNS", GOALS_COLUMNS);
-validateSchema("KPIS_COLUMNS", KPIS_COLUMNS);
 validateSchema("DOCS_COLUMNS", DOCS_COLUMNS);
 validateSchema("CODEBASE_COLUMNS", CODEBASE_COLUMNS);
 

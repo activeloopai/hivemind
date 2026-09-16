@@ -59,7 +59,6 @@ async function main(): Promise<void> {
   const table = process.env["HIVEMIND_TABLE"] ?? "memory";
   const sessionsTable = process.env["HIVEMIND_SESSIONS_TABLE"] ?? "sessions";
   const goalsTable = process.env["HIVEMIND_GOALS_TABLE"] ?? config.goalsTableName;
-  const kpisTable = process.env["HIVEMIND_KPIS_TABLE"] ?? config.kpisTableName;
   const docsTable = process.env["HIVEMIND_DOCS_TABLE"] ?? config.docsTableName;
   const mount = process.env["HIVEMIND_MOUNT"] ?? "/";
 
@@ -71,7 +70,7 @@ async function main(): Promise<void> {
     process.stderr.write(`Connecting to deeplake://${config.workspaceId}/${table} ...\n`);
   }
 
-  const fs = await DeeplakeFs.create(client, table, mount, sessionsTable, { goalsTable, kpisTable, docsTable, docsProject: deriveProjectKey(process.cwd()).key });
+  const fs = await DeeplakeFs.create(client, table, mount, sessionsTable, { goalsTable, docsTable, docsProject: deriveProjectKey(process.cwd()).key });
 
   if (!isOneShot) {
     const fileCount = fs.getAllPaths().filter(p => !!p).length;

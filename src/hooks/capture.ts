@@ -232,15 +232,6 @@ async function main(): Promise<void> {
   // source of truth. Only reached after a successful INSERT above.
   appendSessionEvent(input.session_id, line);
 
-  // Commit-driven KPI auto-extract is disabled for now — the
-  // fire-and-forget sub-agent spawned per `git commit` (see
-  // src/hooks/commit-kpi-extract.ts) consumed a high amount of tokens
-  // on the user's claude/codex plan (every commit triggered a full
-  // goal/KPI scan + reasoning pass over the diff). The module is
-  // kept on disk for future re-wiring once we add: sha-dedup,
-  // empty-goals prefilter, debounce, and a hard timeout. Re-enable
-  // by restoring the import + try block here.
-
   maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
 
   // SkillOpt: the user prompt is the reaction to a recently-used org skill. Swallowed.
