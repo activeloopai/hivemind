@@ -31,11 +31,6 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/capture.js\"",
             "timeout": 10,
             "async": true
-          },
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/recall.js\"",
-            "timeout": 2
           }
         ]
       }

@@ -240,43 +240,6 @@ export default defineConfig({
           functions: 90,
           lines: 90,
         },
-        // feat/proactive-recall — UserPromptSubmit auto-search-and-inject.
-        "src/hooks/recall.ts": {
-          statements: 90,
-          branches: 90,
-          functions: 90,
-          lines: 90,
-        },
-        "src/hooks/shared/recall-gate.ts": {
-          statements: 90,
-          branches: 90,
-          functions: 90,
-          lines: 90,
-        },
-        "src/hooks/shared/recall-format.ts": {
-          statements: 90,
-          branches: 90,
-          functions: 90,
-          lines: 90,
-        },
-        "src/hooks/shared/recall-query.ts": {
-          statements: 90,
-          branches: 90,
-          functions: 90,
-          lines: 90,
-        },
-        "src/hooks/shared/recall-events.ts": {
-          statements: 90,
-          branches: 90,
-          functions: 90,
-          lines: 90,
-        },
-        "src/hooks/shared/with-deadline.ts": {
-          statements: 90,
-          branches: 90,
-          functions: 90,
-          lines: 90,
-        },
         // fix/plugin-autoupdate-session-safety — snapshot-restore around
         // claude-plugin update + SessionEnd GC. All four files at 90+.
         "src/utils/plugin-cache.ts": {

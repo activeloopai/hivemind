@@ -80,7 +80,6 @@ const ccHooks = [
   { entry: "dist/src/hooks/session-start-setup.js", out: "session-start-setup" },
   { entry: "dist/src/hooks/session-notifications.js", out: "session-notifications" },
   { entry: "dist/src/hooks/capture.js", out: "capture" },
-  { entry: "dist/src/hooks/recall.js", out: "recall" },
   { entry: "dist/src/hooks/pre-tool-use.js", out: "pre-tool-use" },
   { entry: "dist/src/hooks/session-end.js", out: "session-end" },
   { entry: "dist/src/hooks/plugin-cache-gc.js", out: "plugin-cache-gc" },
