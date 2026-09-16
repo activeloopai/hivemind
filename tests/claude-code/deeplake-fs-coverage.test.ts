@@ -37,7 +37,7 @@ function makeGoalClient(init: { goals?: GoalRow[]; memory?: string[] } = {}) {
     ensureTable: vi.fn().mockResolvedValue(undefined),
     ensureGoalsTable: vi.fn().mockResolvedValue(undefined),
     listTables: vi.fn().mockResolvedValue(["memory", "goals"]),
-    query: vi.fn(async (sql: string) => {
+    query: vi.fn(async (sql: string): Promise<Record<string, unknown>[]> => {
       // ── bootstrap ──
       if (sql.includes("SELECT path, size_bytes, mime_type")) {
         return memory.map(p => ({ path: p, size_bytes: 1, mime_type: "text/markdown" }));
@@ -334,6 +334,30 @@ describe("flush re-queue on failure", () => {
     // the failure so the caller knows the write did not land.
     await expect(fs.flush()).rejects.toThrow(/writes failed and were re-queued/);
   });
+
+  it("keeps a newer write over the re-queued stale row when the write lands mid-flush", async () => {
+    const { fs, client } = await makeGoalFs({});
+    let rejectInsert!: (e: Error) => void;
+    const insertStarted = new Promise<void>((started) => {
+      client.query.mockImplementationOnce(() => new Promise<never>((_, reject) => { rejectInsert = reject; started(); }));
+    });
+    await fs.writeFile("/notes/x.md", "v1");
+    const flushing = fs.flush();
+    await insertStarted;
+    // The v1 INSERT is in flight; the caller overwrites the same path.
+    await fs.writeFile("/notes/x.md", "v2");
+    rejectInsert(new Error("backend down"));
+    await expect(flushing).rejects.toThrow(/1\/1 writes failed/);
+    // v2 must survive the re-queue — the stale v1 row must not clobber it.
+    expect(await fs.readFile("/notes/x.md")).toBe("v2");
+  });
+
+  it("flush with nothing pending issues no query", async () => {
+    const { fs, client } = await makeGoalFs({});
+    client.query.mockClear();
+    await fs.flush();
+    expect(client.query).not.toHaveBeenCalled();
+  });
 });
 
 // ── embeddings-disabled flush path ────────────────────────────────────────────
@@ -435,6 +459,28 @@ describe("read branches", () => {
     await fs.writeFile("/notes/c.md", "cached");
     const buf = await fs.readFileBuffer("/notes/c.md");
     expect(Buffer.from(buf).toString("utf-8")).toBe("cached");
+  });
+
+  it("readFile (text) mirrors readFileBuffer: ENOENT on a missing row, '' on a NULL summary", async () => {
+    const { fs, client } = await makeGoalFs({ memory: ["/notes/gone.md", "/notes/null.md"] });
+    client.query.mockImplementation(async (sql: string) => sql.includes("/notes/null.md") ? [{ summary: null }] : []);
+    await expect(fs.readFile("/notes/gone.md")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile("/notes/null.md")).toBe("");
+  });
+
+  it("readFile (text) serves a pending unflushed write without a query", async () => {
+    const { fs, client } = await makeGoalFs({});
+    await fs.writeFile("/notes/pending.md", "not flushed yet");
+    client.query.mockClear();
+    expect(await fs.readFile("/notes/pending.md")).toBe("not flushed yet");
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
+  it("prefetch skips unknown paths and issues no query for them", async () => {
+    const { fs, client } = await makeGoalFs({});
+    client.query.mockClear();
+    await fs.prefetch(["/notes/never-registered.md"]);
+    expect(client.query).not.toHaveBeenCalled();
   });
 
   it("readFileBuffer throws ENOENT when the SQL row is absent", async () => {
