@@ -495,7 +495,7 @@ Generation shells out to a host agent's own CLI (`claude -p`, `codex exec`, …)
 
 ## Rules (cross-agent team principles)
 
-Hivemind **shares team rules across every agent in the org**, injected at SessionStart so every claude-code / cursor / hermes session starts knowing them. For personal or team work items with progress tracking, use [Goals + KPIs](#goals--kpis) (VFS-backed) instead.
+Hivemind **shares team rules across every agent in the org**, injected at SessionStart so every claude-code / cursor / hermes session starts knowing them. For personal or team work items with progress tracking, use [Goals](#goals) (VFS-backed) instead.
 
 ```bash
 hivemind rules add "no DROP TABLE on prod creds"
@@ -525,9 +525,9 @@ fall back to `hivemind context`):
 - `HIVEMIND_RULES_TABLE`: table name (default `hivemind_rules`).
 - `HIVEMIND_CAPTURE=false`: full read-only mode. Skips placeholder + ensure DDL; renderer still injects.
 
-## Goals + KPIs
+## Goals
 
-Personal / team objectives + measurable targets live in the Deeplake virtual filesystem under `~/.deeplake/memory/goal/<owner>/<status>/<uuid>.md` and `~/.deeplake/memory/kpi/<goal_id>/<kpi-slug>.md`. Path encodes structure (owner, status, goal_id); the file body holds the human-readable description.
+Personal / team objectives live in the Deeplake virtual filesystem under `~/.deeplake/memory/goal/<owner>/<status>/<uuid>.md`. Path encodes structure (owner, status, goal_id); the file body holds the human-readable description.
 
 ```bash
 # CLI fallback for runtimes that can't route VFS writes (cursor/hermes/pi)
@@ -537,7 +537,7 @@ hivemind goal done <goal_id>
 hivemind goal progress <goal_id> opened|in_progress|closed
 ```
 
-For VFS-capable runtimes (claude-code/codex) the `hivemind-goals` skill creates and edits goals/KPIs directly via Bash heredoc against the VFS path. `mv` between `opened/`, `in_progress/`, and `closed/` is the canonical status transition. KPIs are manual files; the body format is documented in the skill (`target:`, `current:`, `unit:`).
+For VFS-capable runtimes (claude-code/codex) the `hivemind-goals` skill creates and edits goals directly via Bash heredoc against the VFS path. `mv` between `opened/`, `in_progress/`, and `closed/` is the canonical status transition.
 
 ## Architecture
 

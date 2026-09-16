@@ -32,7 +32,7 @@ Hivemind has four moving parts that recur across every domain.
 
 **The shared core (`src/`).** The Deeplake API client (`src/deeplake-api.ts`), the table schemas (`src/deeplake-schema.ts`), config loading (`src/config.ts`), credential handling (`src/commands/auth.ts`), and the SQL-safety utilities are all agent-agnostic. The per-agent hooks are thin wrappers over this core.
 
-**Deeplake as the substrate.** All durable state lives in Deeplake tables: `sessions` (raw per-event traces), `memory` (wiki summaries plus the virtual filesystem), `skills`, `rules`, `goals`, `kpis`, and `codebase` (the code graph). Org and workspace boundaries are enforced at the storage layer, so two workspaces never share a row, partition, or index.
+**Deeplake as the substrate.** All durable state lives in Deeplake tables: `sessions` (raw per-event traces), `memory` (wiki summaries plus the virtual filesystem), `skills`, `rules`, `goals`, and `codebase` (the code graph). Org and workspace boundaries are enforced at the storage layer, so two workspaces never share a row, partition, or index.
 
 **The virtual filesystem (VFS).** Agents read and write memory through ordinary shell commands (`cat`, `ls`, `grep`) against `~/.deeplake/memory/`. A PreToolUse hook intercepts those commands and routes them to SQL queries instead of the real disk, which is how recall feels like browsing files while actually hitting a team-shared database.
 

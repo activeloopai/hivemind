@@ -81,7 +81,7 @@ The OpenClaw plugin manifest at `harnesses/openclaw/openclaw.plugin.json` declar
   "contracts": {
     "tools": [
       "hivemind_search", "hivemind_read", "hivemind_index",
-      "hivemind_goal_add", "hivemind_kpi_add"
+      "hivemind_goal_add"
     ],
     "commands": [
       "hivemind_login", "hivemind_capture", "hivemind_whoami",
@@ -101,10 +101,9 @@ The `memoryCorpusSupplements: true` declaration tells OpenClaw's runtime that th
 
 The three recall tools (`hivemind_search`, `hivemind_read`, `hivemind_index`) mirror the MCP server tools but use the OpenClaw `AgentTool` interface and accept richer parameters. `hivemind_search` additionally supports `path`, `regex`, and `ignoreCase` fields. All three call the same `searchDeeplakeTables` and `readVirtualPathContent` functions from the shared core.
 
-Two write tools are also registered:
+One write tool is also registered:
 
 - **`hivemind_goal_add`** creates a new goal row in the `hivemind_goals` table with `agent: "openclaw"` provenance. It mirrors the `hivemind goal add --agent capture` CLI path.
-- **`hivemind_kpi_add`** creates a KPI row in the `hivemind_kpis` table linked to an existing goal by `goal_id`.
 
 ### Commands
 

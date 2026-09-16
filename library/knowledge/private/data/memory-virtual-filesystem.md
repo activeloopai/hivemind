@@ -2,7 +2,7 @@
 
 > Category: Data | Version: 1.0 | Date: June 2026 | Status: Active
 
-How Hivemind makes a team-shared Deeplake database look like an ordinary directory at `~/.deeplake/memory/`: the `DeeplakeFs` intercept, path-routed dispatch to the goals and KPIs tables, batched writes with debounced flush, the synthesized `index.md`, and the read-only sessions and graph bridges.
+How Hivemind makes a team-shared Deeplake database look like an ordinary directory at `~/.deeplake/memory/`: the `DeeplakeFs` intercept, path-routed dispatch to the goals table, batched writes with debounced flush, the synthesized `index.md`, and the read-only sessions and graph bridges.
 
 **Related:**
 - [`deeplake-tables-schema.md`](deeplake-tables-schema.md)
@@ -17,7 +17,7 @@ How Hivemind makes a team-shared Deeplake database look like an ordinary directo
 
 ## Why a filesystem over a database
 
-Coding agents already know how to `cat`, `ls`, `grep`, and `find`. Hivemind leans on that fluency: instead of teaching every assistant a new recall API, it presents memory as files under `~/.deeplake/memory/` and intercepts the shell commands that touch that mount. From the agent's point of view it is browsing files; underneath, each operation is a SQL query against the `sessions`, `memory`, `goals`, and `kpis` tables described in [`deeplake-tables-schema.md`](deeplake-tables-schema.md).
+Coding agents already know how to `cat`, `ls`, `grep`, and `find`. Hivemind leans on that fluency: instead of teaching every assistant a new recall API, it presents memory as files under `~/.deeplake/memory/` and intercepts the shell commands that touch that mount. From the agent's point of view it is browsing files; underneath, each operation is a SQL query against the `sessions`, `memory`, and `goals` tables described in [`deeplake-tables-schema.md`](deeplake-tables-schema.md).
 
 There are two consumers of this intercept. The PreToolUse hook rewrites Claude Code Bash, Read, Grep, and Glob commands one-shot and stateless. The standalone deeplake-shell exposes the same mount through a long-lived `DeeplakeFs` object that implements the `IFileSystem` interface from `just-bash`. Both produce the same view; this document focuses on the `DeeplakeFs` implementation in `src/shell/deeplake-fs.ts`, which is the richer of the two.
 
@@ -40,32 +40,29 @@ At construction the factory `create()` bootstraps four sources in parallel befor
 
 ```mermaid
 flowchart TD
-    create["DeeplakeFs.create()"] --> ensure["ensureTable + ensureGoalsTable + ensureKpisTable"]
+    create["DeeplakeFs.create()"] --> ensure["ensureTable + ensureGoalsTable"]
     ensure --> parallel["Promise.all bootstrap"]
     parallel --> mem["memory rows: SELECT path, size_bytes, mime_type"]
     parallel --> sess["sessions rows: GROUP BY path, MAX(size_bytes)"]
     parallel --> goals["goals rows: latest per goal_id"]
-    parallel --> kpis["kpis rows: latest per goal_id, kpi_id"]
     mem --> tree["populate files/meta/dirs maps"]
     sess --> tree
     goals --> tree
-    kpis --> tree
 ```
 
-The memory bootstrap reads `path, size_bytes, mime_type` ordered by path and registers each row as an unfetched file (`files.set(p, null)`). Crucially, it skips any goal-shaped or KPI-shaped path when the dedicated tables are configured, because those rows belong exclusively to the structured tables. Surfacing the generic-table copies would re-inject phantom goals into the VFS namespace that the `hivemind goal list` CLI (which reads only the structured table) would not see.
+The memory bootstrap reads `path, size_bytes, mime_type` ordered by path and registers each row as an unfetched file (`files.set(p, null)`). Crucially, it skips any goal-shaped path when the dedicated table is configured, because those rows belong exclusively to the structured table. Surfacing the generic-table copies would re-inject phantom goals into the VFS namespace that the `hivemind goal list` CLI (which reads only the structured table) would not see.
 
 The sessions bootstrap groups by `path` and takes `MAX(size_bytes)`, a workaround for a Deeplake behavior where `SUM(size_bytes)` returns NULL when combined with `GROUP BY path`. For the single-row-per-file layout MAX equals SUM; for multi-row layouts it under-reports but stays positive so files never look like empty placeholders.
 
 ---
 
-## Path classification: three destinations
+## Path classification: two destinations
 
-Every read and write is first classified by `classifyPath` (from `src/shell/goal-paths.ts`) into one of three kinds:
+Every read and write is first classified by `classifyPath` (from `src/shell/goal-paths.ts`) into one of two kinds:
 
 | Kind | Path shape | Backing table |
 |---|---|---|
 | `goal` | `memory/goal/<owner>/<status>/<goal_id>.md` | `goals` |
-| `kpi` | `memory/kpi/<goal_id>/<kpi_id>.md` | `kpis` |
 | `memory` | anything else | `memory` |
 
 The classifier strips any leading mount prefix by finding the last `/memory/` occurrence in the path, which lets it accept every shape an agent might produce: a mount-relative `/goal/...`, a test mount `/memory/goal/...`, a shell redirect `~/.deeplake/memory/goal/...`, or a host-absolute `/home/<user>/.deeplake/memory/goal/...`. The status component must be one of `opened`, `in_progress`, or `closed`, and the filename must end in `.md`; anything malformed falls back to `memory` so the generic path handles it.
@@ -80,15 +77,11 @@ export function classifyPath(p: string): PathKind {
     }
     return "memory";
   }
-  if (segs[0] === "kpi") {
-    if (segs.length === 3 && segs[2].endsWith(".md")) return "kpi";
-    return "memory";
-  }
   return "memory";
 }
 ```
 
-The path encoding is the source of truth: `decomposeGoalPath` extracts `owner`, `status`, and `goal_id` from the path, and the row's `content` column stores only the markdown body. `composeGoalPath` and `composeKpiPath` rebuild the canonical mount-relative path (no mount prefix) that both the cache and the DB rows use.
+The path encoding is the source of truth: `decomposeGoalPath` extracts `owner`, `status`, and `goal_id` from the path, and the row's `content` column stores only the markdown body. `composeGoalPath` rebuilds the canonical mount-relative path (no mount prefix) that both the cache and the DB rows use.
 
 ---
 
@@ -119,7 +112,7 @@ sequenceDiagram
 
 The flush is serialized through a promise chain (`flushChain`) so two flushes never interleave. `_doFlush` drains the pending map, computes embeddings for the batch (skipping the daemon hop entirely when embeddings are globally disabled, writing NULL for the vector columns), and upserts every row in parallel via `Promise.allSettled`. Any row that fails is re-queued for the next flush unless a newer version was written in the meantime, and the flush throws so callers know some writes were deferred.
 
-`upsertRow` dispatches by path kind. Goal and KPI writes route to `upsertGoalRow` / `upsertKpiRow`, which do their own SELECT-then-UPDATE-or-INSERT keyed by `goal_id` (or `goal_id, kpi_id`). The generic memory path branches on the `flushed` set: a path already flushed gets an UPDATE of `summary`, `summary_embedding`, `mime_type`, `size_bytes`, and `last_update_date` (plus optional `project` and `description`); a fresh path gets a full INSERT with a new UUID. Text bodies are escaped with `sqlStr` and written with the `E'...'` literal form (see [`deeplake-tables-schema.md`](deeplake-tables-schema.md)).
+`upsertRow` dispatches by path kind. Goal writes route to `upsertGoalRow`, which does its own SELECT-then-UPDATE-or-INSERT keyed by `goal_id`. The generic memory path branches on the `flushed` set: a path already flushed gets an UPDATE of `summary`, `summary_embedding`, `mime_type`, `size_bytes`, and `last_update_date` (plus optional `project` and `description`); a fresh path gets a full INSERT with a new UUID. Text bodies are escaped with `sqlStr` and written with the `E'...'` literal form (see [`deeplake-tables-schema.md`](deeplake-tables-schema.md)).
 
 `appendFile` takes a fast path that avoids a read-back: when the file already exists it issues a SQL-level concatenation (`summary = summary || E'...'`) and invalidates the content cache so the next read fetches fresh data. This makes append O(1) per call rather than read-modify-write.
 
@@ -179,4 +172,4 @@ The bridge keeps the FS contract honest. The `no-graph` result (no snapshot buil
 
 ## What the agent never sees
 
-The intercept hides three things the agent would otherwise trip over. It hides write batching: a `cat` immediately after a `Write` reads from the pending buffer, so the agent sees its own write even before it reaches Deeplake. It hides the multi-row session layout: a session "file" is dozens of rows concatenated transparently. And it hides the goals and KPIs structured tables behind plain markdown files, so the agent manages objectives with `Write` and `mv` while the CLI reads the same state from typed columns. The result is that recall feels like browsing a directory while every operation is really a query against a team-shared, multi-tenant database.
+The intercept hides three things the agent would otherwise trip over. It hides write batching: a `cat` immediately after a `Write` reads from the pending buffer, so the agent sees its own write even before it reaches Deeplake. It hides the multi-row session layout: a session "file" is dozens of rows concatenated transparently. And it hides the goals structured table behind plain markdown files, so the agent manages objectives with `Write` and `mv` while the CLI reads the same state from typed columns. The result is that recall feels like browsing a directory while every operation is really a query against a team-shared, multi-tenant database.

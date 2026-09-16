@@ -86,7 +86,7 @@ flowchart TB
         sessionsTable["sessions table"]
         memoryTable["memory table + VFS"]
         skillsTable["skills table"]
-        rulesGoals["rules / goals / kpis"]
+        rulesGoals["rules / goals"]
         codebaseTable["codebase table"]
     end
 
@@ -134,7 +134,7 @@ The differences are real but shallow: event names and payload field names vary, 
 
 ## State and storage
 
-All durable state lives in Deeplake tables defined in `src/deeplake-schema.ts`. The `sessions` table holds raw per-event traces with an optional `message_embedding` vector. The `memory` table holds wiki summaries plus the virtual filesystem entries and their `summary_embedding`. Separate tables back skills, rules, goals, KPIs, and the codebase graph. Rules, skills, goals, and KPIs all use the same immutable, version-bumped write pattern (every edit INSERTs version N+1 and reads take the highest version) to sidestep a Deeplake UPDATE-coalescing quirk that previously dropped concurrent writes.
+All durable state lives in Deeplake tables defined in `src/deeplake-schema.ts`. The `sessions` table holds raw per-event traces with an optional `message_embedding` vector. The `memory` table holds wiki summaries plus the virtual filesystem entries and their `summary_embedding`. Separate tables back skills, rules, goals, and the codebase graph. Rules and skills use an immutable, version-bumped write pattern (every edit INSERTs version N+1 and reads take the highest version) to sidestep a Deeplake UPDATE-coalescing quirk that previously dropped concurrent writes. Goals are the deliberate exception: `upsertGoalRow` keeps one row per `goal_id` and mutates it in place (UPDATE-or-INSERT, `version` fixed at 1), trading the audit trail for a one-row-per-goal table view.
 
 Tenant isolation is enforced at the storage layer, not just the API: org and workspace boundaries mean sessions never share a row, partition, or index across workspaces. Credentials live on disk with mode `0600` and the config directory with mode `0700`, and the device-flow login keeps tokens out of the environment and out of source.
 

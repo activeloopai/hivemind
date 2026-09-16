@@ -24,14 +24,13 @@ Two cross-cutting facts shape every table below. First, Deeplake's HTTP query en
 
 ---
 
-## The seven tables at a glance
+## The six tables at a glance
 
-Hivemind owns seven tables. Their logical relationships (Deeplake enforces no foreign keys; all joins are logical) look like this:
+Hivemind owns six tables. Their logical relationships (Deeplake enforces no foreign keys; all joins are logical) look like this:
 
 ```mermaid
 erDiagram
     sessions ||--o{ memory : "summarized into"
-    goals ||--o{ kpis : "goal_id"
     skills }o--|| project : "project_key"
     rules }o--|| org : "scope"
     codebase }o--|| repo : "repo_slug"
@@ -63,11 +62,6 @@ erDiagram
         text goal_id
         text status
     }
-    kpis {
-        text id
-        text goal_id
-        text kpi_id
-    }
     codebase {
         text commit_sha
         text snapshot_sha256
@@ -82,7 +76,6 @@ erDiagram
 | `skills` | Mined `SKILL.md` versions | Append-only, version-bumped |
 | `rules` | Org-wide principles | Append-only, version-bumped |
 | `goals` | User-tracked objectives | UPDATE-or-INSERT keyed by `goal_id` |
-| `kpis` | Metrics attached to a goal | UPDATE-or-INSERT keyed by `(goal_id, kpi_id)` |
 | `codebase` | Code-graph snapshots | SELECT-before-INSERT, per identity key |
 
 ---
@@ -182,9 +175,9 @@ A rule edit INSERTs version+1; the latest per `rule_id` wins. Rules feed the Ses
 
 ---
 
-## Goals and KPIs: path-encoded, UPDATE-or-INSERT
+## Goals: path-encoded, UPDATE-or-INSERT
 
-Goals and KPIs are backed by the virtual filesystem path conventions, and the path is the source of truth for their structural fields. A goal lives at `memory/goal/<owner>/<status>/<goal_id>.md`; a KPI lives at `memory/kpi/<goal_id>/<kpi_id>.md`. The `content` column stores only the human-readable markdown body, so there is nothing to drift between the path-encoded fields and the row body.
+Goals are backed by the virtual filesystem path convention, and the path is the source of truth for their structural fields. A goal lives at `memory/goal/<owner>/<status>/<goal_id>.md`. The `content` column stores only the human-readable markdown body, so there is nothing to drift between the path-encoded fields and the row body.
 
 ```sql
 CREATE TABLE IF NOT EXISTS "goals" (
@@ -201,25 +194,9 @@ CREATE TABLE IF NOT EXISTS "goals" (
 ) USING deeplake;
 ```
 
-Unlike skills and rules, the goals and KPIs tables hold one row per logical key forever. A status transition, an owner reassignment, or a body edit mutates the same row in place via UPDATE rather than inserting a new version. The `version` column survives as a vestigial `1`, kept so the audit-trail pattern can be reinstated without a migration. This is a deliberate v1 trade-off: one row per goal makes the Deeplake table view obvious and bootstrap queries simple, at the cost of no audit trail and exposure to the UPDATE-coalescing quirk for two writes that hit the same row within microseconds. For the single-user and small-team workflow this was an accepted choice.
+Unlike skills and rules, the goals table holds one row per logical key forever. A status transition, an owner reassignment, or a body edit mutates the same row in place via UPDATE rather than inserting a new version. The `version` column survives as a vestigial `1`, kept so the audit-trail pattern can be reinstated without a migration. This is a deliberate v1 trade-off: one row per goal makes the Deeplake table view obvious and bootstrap queries simple, at the cost of no audit trail and exposure to the UPDATE-coalescing quirk for two writes that hit the same row within microseconds. For the single-user and small-team workflow this was an accepted choice.
 
 The status enum is `opened`, `in_progress`, or `closed`, mirroring the path folder names. The `created_at` timestamp is preserved across edits (a status change records its time in `updated_at`) so goals stay in stable creation order in listings.
-
-```sql
-CREATE TABLE IF NOT EXISTS "kpis" (
-  id             TEXT NOT NULL DEFAULT '',
-  goal_id        TEXT NOT NULL DEFAULT '',
-  kpi_id         TEXT NOT NULL DEFAULT '',
-  content        TEXT NOT NULL DEFAULT '',
-  version        BIGINT NOT NULL DEFAULT 1,
-  created_at     TEXT NOT NULL DEFAULT '',
-  updated_at     TEXT NOT NULL DEFAULT '',
-  agent          TEXT NOT NULL DEFAULT 'manual',
-  plugin_version TEXT NOT NULL DEFAULT ''
-) USING deeplake;
-```
-
-A KPI is keyed by `(goal_id, kpi_id)`. Owner is intentionally not stored on the KPI; it is derived from the parent goal by a logical join on `goal_id`, which avoids a multi-file cascade move whenever a goal is reassigned between owners. The body is free markdown, by convention carrying `target:`, `current:`, and `unit:` lines that the commit-extract worker mutates.
 
 How these path conventions are parsed and dispatched is detailed in [`memory-virtual-filesystem.md`](memory-virtual-filesystem.md).
 
@@ -316,7 +293,7 @@ The read patterns follow directly from the write patterns:
 - `memory`: read the row for a `path` directly (`SELECT summary FROM "memory" WHERE path = '...'`).
 - `sessions`: read all rows for a `path` ordered by `creation_date` and concatenate the messages.
 - `skills` and `rules`: take the highest `version` per logical key.
-- `goals` and `kpis`: read the single row per key, ordered by `created_at DESC` at bootstrap.
+- `goals`: read the single row per key, ordered by `created_at DESC` at bootstrap.
 - `codebase`: SELECT by the identity key; the pull path relaxes the key to drop `worktree_id` and takes `ORDER BY ts DESC LIMIT 1` for the freshest snapshot of a commit.
 
 These conventions keep every table internally consistent under concurrent hook processes without relying on database transactions, which Deeplake does not expose at this layer.

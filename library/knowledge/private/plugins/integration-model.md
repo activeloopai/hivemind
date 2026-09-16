@@ -78,7 +78,7 @@ The extension wires two hook events via `pluginApi.on(event, handler)`:
 - `before_agent_start`: handles the login nudge (device-flow URL) and the post-auth welcome banner.
 - `agent_end`: captures new messages from the conversation into the `sessions` table and fires the skillify worker.
 
-OpenClaw has no PreToolUse analog. Instead, the extension registers three agent-facing tools (`hivemind_search`, `hivemind_read`, `hivemind_index`) plus two write tools (`hivemind_goal_add`, `hivemind_kpi_add`) via `pluginApi.registerTool`. The SKILL.md body embedded at build time (`__HIVEMIND_SKILL__` constant) instructs the agent to call `hivemind_search` before answering questions about past work. OpenClaw also registers a `MemoryCorpusSupplement` so other OpenClaw plugins that expose a `memory_search` tool can federate queries into Hivemind automatically.
+OpenClaw has no PreToolUse analog. Instead, the extension registers three agent-facing tools (`hivemind_search`, `hivemind_read`, `hivemind_index`) plus one write tool (`hivemind_goal_add`) via `pluginApi.registerTool`. The SKILL.md body embedded at build time (`__HIVEMIND_SKILL__` constant) instructs the agent to call `hivemind_search` before answering questions about past work. OpenClaw also registers a `MemoryCorpusSupplement` so other OpenClaw plugins that expose a `memory_search` tool can federate queries into Hivemind automatically.
 
 Because OpenClaw's bundle scanner treats any `process.env` access in a file that also calls `fetch()` as `env-harvesting`, all `HIVEMIND_*` environment reads are rewritten by esbuild's `define` to `globalThis.__hivemind_tuning__?.HIVEMIND_X`, and `applyOpenclawTuning` bridges the user's `openclaw.json` plugin config into that global.
 
@@ -110,4 +110,4 @@ Despite the mechanism differences, every integration shares the same invariants 
 - Capture is gated by `HIVEMIND_CAPTURE !== "false"`. When that flag is set, the hook runs read-only: no DDL, no INSERTs.
 - User-facing notices go through the SessionStart banner channel. Hooks never write error text into `additionalContext`, because arbitrary text in context is a prompt-injection risk.
 - Each INSERT writes exactly one row per event, never concatenating events into a shared row, to prevent write races.
-- All writes use the immutable version-bumped pattern for rules, skills, goals, and KPIs to avoid Deeplake's UPDATE-coalescing quirk.
+- Rules and skills use the immutable version-bumped pattern to avoid Deeplake's UPDATE-coalescing quirk; goals are UPDATE-or-INSERT, one row per `goal_id`.

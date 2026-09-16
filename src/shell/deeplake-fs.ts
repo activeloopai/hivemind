@@ -441,7 +441,8 @@ export class DeeplakeFs implements IFileSystem {
 
   private async upsertRow(r: PendingRow, embedding: number[] | null): Promise<void> {
     // Path-routed structured tables: dispatch goal writes to
-    // the dedicated table with INSERT-only version-bump semantics.
+    // the dedicated table with UPDATE-or-INSERT semantics (one row
+    // per goal_id, see upsertGoalRow).
     // The generic memory path falls through to the existing UPDATE /
     // INSERT shape below. Failures here propagate up to the flush
     // chain which re-queues the row on the next tick.

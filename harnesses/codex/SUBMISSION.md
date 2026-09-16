@@ -62,7 +62,7 @@ Each includes the prompt, expected behavior, and any required test data.
    - Expected: hivemind-graph skill queries `memory/graph/query/...`; returns callers/callees.
    - Test data: a built graph snapshot for the repo.
 
-5. **Goal/KPI tracking**
+5. **Goal tracking**
    - Prompt: "Track a goal: ship the Codex plugin submission this month."
    - Expected: hivemind-goals skill writes to `memory/goal/`; confirms creation.
    - Test data: authenticated workspace.

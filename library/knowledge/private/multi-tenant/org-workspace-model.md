@@ -110,7 +110,6 @@ The heal never throws: a failed re-mint logs a warning and returns the original 
 | `skillsTableName` | `"skills"` | `HIVEMIND_SKILLS_TABLE` |
 | `rulesTableName` | `"hivemind_rules"` | `HIVEMIND_RULES_TABLE` |
 | `goalsTableName` | `"hivemind_goals"` | `HIVEMIND_GOALS_TABLE` |
-| `kpisTableName` | `"hivemind_kpis"` | `HIVEMIND_KPIS_TABLE` |
 | `codebaseTableName` | `"codebase"` | `HIVEMIND_CODEBASE_TABLE` |
 | `memoryPath` | `~/.deeplake/memory` | `HIVEMIND_MEMORY_PATH` |
 
