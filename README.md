@@ -339,10 +339,7 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | `HIVEMIND_SUMMARY_EVERY_HOURS` | `2`                  | Time-based summary cadence, used when at least one new event has arrived since the last summary. |
 | `HIVEMIND_WIKI_WORKER`    | _(none)_                  | Set to `1` to disable the background session-summary worker entirely (no `claude -p` summary runs). Also set automatically inside the worker as a recursion guard. Capture and recall keep working. |
 | `HIVEMIND_GRAPH_ON_STOP`  | _(none)_                  | Set to `0` to disable the code-graph rebuild that runs on `Stop` / `SessionEnd`. |
-| `HIVEMIND_EMBEDDINGS`     | `true`                    | Set to `false` to force lexical-only mode  |
-| `HIVEMIND_PROACTIVE_RECALL_DISABLED` | _(none)_       | Set to `1` to disable **proactive recall** (auto-searching team memory on each recall-worthy prompt and injecting a relevant snippet into the agent's context). On by default. Does **not** affect capture or the agent's own grep/skill recall. Alt form: `HIVEMIND_PROACTIVE_RECALL=0`. |
-| `HIVEMIND_RECALL_MIN_OVERLAP` | `2`                   | Proactive recall (lexical mode): min distinct prompt keywords a summary must share to be injected. Higher = stricter. |
-| `HIVEMIND_RECALL_TIMEOUT_MS` | `1000`                 | Proactive recall: hard cap on the synchronous search path; on timeout it skips rather than delay the turn. |
+| `HIVEMIND_EMBEDDINGS`     | _(none)_                  | Read once, when `~/.deeplake/config.json` has no `embeddings.enabled` yet: unset or `false` seeds it off, any other value (`true`, `1`, ...) seeds it on. Afterwards only `hivemind embeddings install`/`enable` (persist on) and `disable`/`uninstall` (persist off) change it. |
 | `HIVEMIND_DEBUG`          | _(none)_                  | Set to `1` for verbose hook debug logs     |
 
 ## Per-directory config (`.hivemind`)
@@ -438,18 +435,6 @@ So `org switch` moves everything that *isn't* explicitly pinned; a pin stays put
 Hivemind ships with a local embedding daemon (nomic-embed-text-v1.5) for hybrid semantic + lexical search over `~/.deeplake/memory/`. **Off by default** because the dependency footprint is ~600 MB. Enable with `hivemind embeddings install` (or `hivemind install --with-embeddings`). Without it, search degrades silently to ILIKE lexical-only.
 
 Full guide: **[docs/EMBEDDINGS.md](docs/EMBEDDINGS.md)**.
-
-## Proactive recall
-
-On a recall-worthy prompt (errors, "how did we…", substantive requests — acks and short follow-ups are skipped), Hivemind automatically searches the team's summaries and, if the top hit clears a relevance bar, injects one attributed snippet (`recalled from <teammate> · <date>`) into the agent's context — so prior work shows up *unprompted*, not only when the agent decides to search. Semantic when embeddings are installed, otherwise lexical (ILIKE keyword overlap), so it works without the embedding model. The search is latency-bounded and skips silently on any miss or error.
-
-**On by default.** To turn it off (capture and the agent's own grep/skill recall are unaffected):
-
-```bash
-HIVEMIND_PROACTIVE_RECALL_DISABLED=1 claude   # or HIVEMIND_PROACTIVE_RECALL=0
-```
-
-Tune precision/latency with `HIVEMIND_RECALL_MIN_OVERLAP` and `HIVEMIND_RECALL_TIMEOUT_MS` (see the table above). Every recall-worthy invocation is recorded to `~/.deeplake/recall-events.jsonl` for usage/hit-rate analysis.
 
 ## Summaries
 

@@ -20,9 +20,9 @@
  * SECOND, stub placeholder row is INSERTed at the same path. Now two rows share
  * `/summaries/<user>/<sid>.md`: one finalized, one `description='in progress',
  * summary=<stub>, summary_embedding=NULL`. Downstream reads (`uploadSummary`'s
- * SELECT, recall, polls) use `... WHERE path=$p LIMIT 1` with NO `ORDER BY`, so
- * the stub can shadow the finalized row — the row *looks* reverted to a
- * placeholder, and recall silently drops it.
+ * SELECT, memory search, polls) use `... WHERE path=$p LIMIT 1` with NO
+ * `ORDER BY`, so the stub can shadow the finalized row — the row *looks*
+ * reverted to a placeholder, and memory search silently drops it.
  *
  * This path bypasses uploadSummary's FINALIZE-WINS guard entirely, which is why
  * that guard never caught it.

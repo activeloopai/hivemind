@@ -1,9 +1,10 @@
 // Robust summary embedding for the finalize (wiki-worker) path.
 //
 // Background: ~75% of production summary rows have a NULL summary_embedding,
-// so proactive recall silently degrades to weak lexical matching for most of
-// the corpus. A large share of those NULLs are NOT "embeddings disabled" — they
-// are ENABLED users whose embed daemon was cold at the one moment finalize ran.
+// so semantic memory search silently degrades to weak lexical matching for
+// most of the corpus. A large share of those NULLs are NOT "embeddings
+// disabled" — they are ENABLED users whose embed daemon was cold at the one
+// moment finalize ran.
 //
 // EmbedClient.embed() is built for the latency-critical capture hook: on a cold
 // daemon it returns null IMMEDIATELY while spawning the daemon in the

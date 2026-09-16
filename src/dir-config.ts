@@ -107,7 +107,7 @@ export interface ResolvedDirConfig {
  *
  * The two concerns are INDEPENDENT:
  *   - `orgId` / `workspaceId` are IDENTITY — they apply to reads (memory
- *     search, recall, the VFS) as well as capture. Omitted fields fall back to
+ *     search, the VFS) as well as capture. Omitted fields fall back to
  *     the global identity in `base`.
  *   - `collect` is the CAPTURE switch — writes only. It never suppresses the
  *     identity overlay, so `{ "collect": false, "workspaceId": "x" }` reads
@@ -156,7 +156,7 @@ export function resolveDirConfig(
  * THE single entry point for a workspace-scoped Config.
  *
  * Any code path that builds a `DeeplakeApi` against per-directory workspace data
- * — CLI commands (goals, rules, skills), memory read/write hooks, recall — MUST
+ * — CLI commands (goals, rules, skills), memory read/write hooks — MUST
  * get its config from here, never from a bare `loadConfig()`. It folds the
  * nearest `.hivemind` (and the `HIVEMIND_*` env locks, via resolveDirConfig)
  * into one place, so routing can never again be half-wired across call sites.

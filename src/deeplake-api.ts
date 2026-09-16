@@ -290,7 +290,7 @@ export class DeeplakeApi {
   private async _queryWithRetry(sql: string, externalSignal?: AbortSignal): Promise<Record<string, unknown>[]> {
     let lastError: Error | undefined;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      // A caller-supplied signal (e.g. recall's latency budget) aborts the
+      // A caller-supplied signal (e.g. a hook's latency budget) aborts the
       // whole operation — including between retries — so in-flight work is
       // actually cancelled, not just abandoned.
       if (externalSignal?.aborted) throw new Error("Query aborted");
