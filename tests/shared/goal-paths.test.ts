@@ -3,14 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   classifyPath,
   composeGoalPath,
-  composeKpiPath,
   decomposeGoalPath,
-  decomposeKpiPath,
 } from "../../src/shell/goal-paths.js";
 
 /**
  * Pure classifier — no I/O, no DB — but it's the dispatch boundary
- * between the goals/kpis tables and the generic memory table inside
+ * between the goals table and the generic memory table inside
  * the VFS. A regression here silently routes goal writes back into the
  * memory table (no `WHERE goal_id` queryability ever) so the
  * cross-agent rollout starts losing rows without any explicit error.
@@ -55,27 +53,8 @@ describe("classifyPath", () => {
     });
   });
 
-  describe("kpi paths", () => {
-    it("classifies the canonical mount-relative form", () => {
-      expect(classifyPath("/kpi/g-uuid/k-prs.md")).toBe("kpi");
-    });
-
-    it("classifies the /memory/ host-FS form", () => {
-      expect(classifyPath("/home/emanuele/.deeplake/memory/kpi/g-uuid/k-prs.md")).toBe("kpi");
-    });
-
-    it("rejects missing .md", () => {
-      expect(classifyPath("/kpi/g-uuid/k-prs")).toBe("memory");
-    });
-
-    it("rejects wrong segment count", () => {
-      expect(classifyPath("/kpi/g-uuid")).toBe("memory");
-      expect(classifyPath("/kpi/g-uuid/k-prs/extra.md")).toBe("memory");
-    });
-  });
-
   describe("memory paths", () => {
-    it("treats anything outside goal/ and kpi/ as memory", () => {
+    it("treats anything outside goal/ as memory", () => {
       expect(classifyPath("/summaries/alice/abc.md")).toBe("memory");
       expect(classifyPath("/foo/bar.md")).toBe("memory");
       expect(classifyPath("/")).toBe("memory");
@@ -90,7 +69,6 @@ describe("classifyPath", () => {
 
     it("strips trailing slashes consistently", () => {
       expect(classifyPath("/goal/alice/opened/uuid.md/")).toBe("goal");
-      expect(classifyPath("/kpi/g/k.md/")).toBe("kpi");
     });
   });
 });
@@ -119,7 +97,6 @@ describe("decomposeGoalPath", () => {
 
   it("throws on a non-goal path so callers can't accidentally treat memory rows as goals", () => {
     expect(() => decomposeGoalPath("/summaries/alice/abc.md")).toThrow(/Not a goal path/);
-    expect(() => decomposeGoalPath("/kpi/g/k.md")).toThrow(/Not a goal path/);
   });
 
   it("throws on an invalid status (no row should ever land with status='wat')", () => {
@@ -131,31 +108,6 @@ describe("decomposeGoalPath", () => {
   });
 });
 
-describe("decomposeKpiPath", () => {
-  it("extracts goal_id / kpi_id from a canonical path", () => {
-    expect(decomposeKpiPath("/kpi/g-uuid/k-prs.md")).toEqual({
-      goal_id: "g-uuid",
-      kpi_id: "k-prs",
-    });
-  });
-
-  it("handles the host-FS /memory/ prefix", () => {
-    expect(decomposeKpiPath("/home/x/.deeplake/memory/kpi/g/k.md")).toEqual({
-      goal_id: "g",
-      kpi_id: "k",
-    });
-  });
-
-  it("throws on non-kpi paths", () => {
-    expect(() => decomposeKpiPath("/goal/o/opened/uuid.md")).toThrow(/Not a kpi path/);
-    expect(() => decomposeKpiPath("/summaries/x.md")).toThrow(/Not a kpi path/);
-  });
-
-  it("throws when the leaf is missing .md", () => {
-    expect(() => decomposeKpiPath("/kpi/g/k")).toThrow(/must end with \.md/);
-  });
-});
-
 describe("compose round-trip", () => {
   it("composeGoalPath ↔ decomposeGoalPath is identity for valid parts", () => {
     const original = { owner: "alice@activeloop.ai", status: "in_progress" as const, goal_id: "u-1" };
@@ -164,15 +116,7 @@ describe("compose round-trip", () => {
     expect(decomposeGoalPath(p)).toEqual(original);
   });
 
-  it("composeKpiPath ↔ decomposeKpiPath is identity", () => {
-    const original = { goal_id: "g-1", kpi_id: "k-prs" };
-    const p = composeKpiPath(original);
-    expect(p).toBe("/kpi/g-1/k-prs.md");
-    expect(decomposeKpiPath(p)).toEqual(original);
-  });
-
   it("composed paths always classify as their kind", () => {
     expect(classifyPath(composeGoalPath({ owner: "x", status: "opened", goal_id: "u" }))).toBe("goal");
-    expect(classifyPath(composeKpiPath({ goal_id: "g", kpi_id: "k" }))).toBe("kpi");
   });
 });

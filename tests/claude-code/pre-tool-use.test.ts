@@ -457,7 +457,7 @@ describe("pre-tool-use: Write / Edit on memory paths are denied with Bash guidan
 
   it("denies Write with tilde-prefixed memory path", () => {
     const r = runPreToolUse("Write", {
-      file_path: "~/.deeplake/memory/kpi/g/k.md",
+      file_path: "~/.deeplake/memory/notes/g/k.md",
       content: "x",
     });
     expect(r.empty).toBe(false);

@@ -565,7 +565,7 @@ describe("autoPullSkills — invokes legacy-cap migration before the network", (
       token: "tok", orgId: "org", orgName: "O", userName: "u",
       workspaceId: "default", apiUrl: "https://api.deeplake.ai",
       tableName: "memory", sessionsTableName: "sessions", skillsTableName: "skills",
-      rulesTableName: "r", goalsTableName: "g", kpisTableName: "k",
+      rulesTableName: "r", goalsTableName: "g",
       docsTableName: "d", codebaseTableName: "c",
       memoryPath: join(fakeHome, ".deeplake", "memory"),
     }) as any;

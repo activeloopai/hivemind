@@ -33,10 +33,6 @@ describe("inner CLI spawn windowsHide — source guards", () => {
     expect(src("src/skillify/claude-model.ts")).toMatch(/spawn\(\s*findAgentBin\([^;]*windowsHide:\s*true/);
   });
 
-  it("commit-kpi-extract detached CLI spawn passes windowsHide", () => {
-    expect(src("src/hooks/commit-kpi-extract.ts")).toMatch(/spawn\(\s*cli\.bin[^)]*windowsHide:\s*true/);
-  });
-
   // The helper LOOKUPS, not the CLI spawns. These run `where.exe` on Windows
   // on the way to launching a detached worker, so without CREATE_NO_WINDOW
   // each one allocates its own visible window — the same flash the CLI spawns

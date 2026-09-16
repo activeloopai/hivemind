@@ -74,7 +74,7 @@ const VALID_CONFIG = {
   token: "tok", orgId: "org", orgName: "OrgName", userName: "alice@activeloop.ai",
   workspaceId: "ws", apiUrl: "https://api", tableName: "memory",
   sessionsTableName: "sessions", skillsTableName: "skills", rulesTableName: "hivemind_rules",
-  goalsTableName: "g", kpisTableName: "k", docsTableName: "hivemind_docs",
+  goalsTableName: "g", docsTableName: "hivemind_docs",
   codebaseTableName: "codebase", memoryPath: "/tmp/mem",
 };
 

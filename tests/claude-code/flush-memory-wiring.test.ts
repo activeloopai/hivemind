@@ -39,7 +39,7 @@ const NOW = "2026-06-16T00:00:00.000Z";
 const cfg: Config = {
   token: "t", orgId: "o", orgName: "Org", userName: "u", workspaceId: "w", apiUrl: "http://x",
   tableName: "mem", sessionsTableName: "s", skillsTableName: "sk", rulesTableName: "r",
-  goalsTableName: "g", kpisTableName: "k", docsTableName: "d", codebaseTableName: "c", memoryPath: "/m",
+  goalsTableName: "g", docsTableName: "d", codebaseTableName: "c", memoryPath: "/m",
 };
 
 beforeEach(() => {

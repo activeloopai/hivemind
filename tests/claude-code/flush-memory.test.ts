@@ -25,7 +25,7 @@ const NOW = "2026-06-16T00:00:00.000Z";
 const fakeConfig: Config = {
   token: "t", orgId: "o", orgName: "OrgName", userName: "user", workspaceId: "w",
   apiUrl: "http://x", tableName: "memtable", sessionsTableName: "s", skillsTableName: "sk",
-  rulesTableName: "r", goalsTableName: "g", kpisTableName: "k", docsTableName: "d", codebaseTableName: "c",
+  rulesTableName: "r", goalsTableName: "g", docsTableName: "d", codebaseTableName: "c",
   memoryPath: "/m",
 };
 

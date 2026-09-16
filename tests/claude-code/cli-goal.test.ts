@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * CLI handler tests for `hivemind goal` / `hivemind kpi`.
+ * CLI handler tests for `hivemind goal`.
  *
  * Path B (CLI) is the only goal-write path that cursor / hermes / pi can
  * reach (their plugin hooks can't rewrite Write tool calls — see
@@ -16,7 +16,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const ensureGoalsTableMock = vi.fn();
-const ensureKpisTableMock = vi.fn();
 const queryMock = vi.fn();
 
 vi.mock("../../src/config.js", () => ({
@@ -33,12 +32,11 @@ vi.mock("../../src/deeplake-api.js", () => ({
       _tableName: string,
     ) { /* nothing */ }
     ensureGoalsTable(name: string) { return ensureGoalsTableMock(name); }
-    ensureKpisTable(name: string) { return ensureKpisTableMock(name); }
     query(sql: string) { return queryMock(sql); }
   },
 }));
 
-import { runGoalCommand, runKpiCommand } from "../../src/commands/goal.js";
+import { runGoalCommand } from "../../src/commands/goal.js";
 import { loadConfig } from "../../src/config.js";
 const loadConfigMock = loadConfig as unknown as ReturnType<typeof vi.fn>;
 
@@ -54,7 +52,6 @@ const VALID_CONFIG = {
   skillsTableName: "skills",
   rulesTableName: "hivemind_rules",
   goalsTableName: "hivemind_goals_test",
-  kpisTableName: "hivemind_kpis_test",
   memoryPath: "/tmp/mem",
 };
 
@@ -68,7 +65,6 @@ beforeEach(() => {
   stdout = [];
   stderr = [];
   ensureGoalsTableMock.mockReset().mockResolvedValue(undefined);
-  ensureKpisTableMock.mockReset().mockResolvedValue(undefined);
   queryMock.mockReset().mockResolvedValue([]);
   loadConfigMock.mockReset().mockReturnValue(VALID_CONFIG);
   stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
@@ -122,18 +118,6 @@ describe("runGoalCommand — help & unknown sub", () => {
   });
 });
 
-describe("runKpiCommand — help & unknown sub", () => {
-  it("prints kpi usage with no subcommand", async () => {
-    await runKpiCommand([]);
-    expect(allOut()).toContain("hivemind kpi — manage goal KPIs");
-  });
-
-  it("exits 1 on unknown subcommand", async () => {
-    await expectExit(1, () => runKpiCommand(["wat"]));
-    expect(allErr()).toContain("unknown kpi subcommand: wat");
-  });
-});
-
 // ── login gating ────────────────────────────────────────────────────────────
 
 describe("runGoalCommand — requires login", () => {
@@ -156,12 +140,6 @@ describe("runGoalCommand — requires login", () => {
   it("done also gates on login", async () => {
     loadConfigMock.mockReturnValue(null);
     await expectExit(1, () => runGoalCommand(["done", "abc"]));
-    expect(queryMock).not.toHaveBeenCalled();
-  });
-
-  it("kpi add also gates on login", async () => {
-    loadConfigMock.mockReturnValue(null);
-    await expectExit(1, () => runKpiCommand(["add", "g", "k", "5", "PRs"]));
     expect(queryMock).not.toHaveBeenCalled();
   });
 });
@@ -389,150 +367,9 @@ describe("runGoalCommand — done & progress", () => {
   });
 });
 
-// ── kpi add ─────────────────────────────────────────────────────────────────
-
-describe("runKpiCommand — add", () => {
-  it("INSERTs a v1 row into the KPIs table with content carrying name/target/unit", async () => {
-    await runKpiCommand(["add", "g-uuid", "k-prs", "5", "PRs", "Pull requests shipped"]);
-    expect(ensureKpisTableMock).toHaveBeenCalledExactlyOnceWith("hivemind_kpis_test");
-    expect(queryMock).toHaveBeenCalledTimes(1);
-    const sql = queryMock.mock.calls[0][0] as string;
-    expect(sql).toMatch(/^INSERT INTO "hivemind_kpis_test" \(id, goal_id, kpi_id, content, version, created_at, updated_at, agent, plugin_version\)/);
-    expect(sql).toContain("'g-uuid'");
-    expect(sql).toContain("'k-prs'");
-    expect(sql).toContain("'manual'");
-    expect(sql).toContain(", 1, ");
-    // content body — source builds it with real "\n" (template literal)
-    expect(sql).toContain("Pull requests shipped\n\n- target: 5\n- current: 0\n- unit: PRs");
-    expect(allOut()).toContain("g-uuid/k-prs");
-  });
-
-  it("defaults the human-readable name to kpi_id when no [name] is given", async () => {
-    await runKpiCommand(["add", "g-uuid", "k-prs", "5", "PRs"]);
-    const sql = queryMock.mock.calls[0][0] as string;
-    expect(sql).toContain("k-prs\n\n- target: 5\n- current: 0\n- unit: PRs");
-  });
-
-  it("rejects non-positive integer targets (silent skip would create a /-1 KPI)", async () => {
-    await expectExit(1, () => runKpiCommand(["add", "g", "k", "0", "x"]));
-    expect(allErr()).toContain("invalid target: 0");
-    expect(queryMock).not.toHaveBeenCalled();
-
-    await expectExit(1, () => runKpiCommand(["add", "g", "k", "-3", "x"]));
-    expect(allErr()).toContain("invalid target: -3");
-
-    await expectExit(1, () => runKpiCommand(["add", "g", "k", "abc", "x"]));
-    expect(allErr()).toContain("invalid target: abc");
-  });
-
-  it("rejects missing args with the usage line", async () => {
-    await expectExit(1, () => runKpiCommand(["add", "g", "k", "5"]));
-    expect(allErr()).toContain("usage: hivemind kpi add");
-    expect(queryMock).not.toHaveBeenCalled();
-  });
-});
-
-// ── kpi list ────────────────────────────────────────────────────────────────
-
-describe("runKpiCommand — list", () => {
-  it("SELECTs by goal_id, prints kpi_id + first content line as TSV", async () => {
-    queryMock.mockResolvedValueOnce([
-      { kpi_id: "k1", content: "PRs shipped\n\n- target: 5" },
-      { kpi_id: "k2", content: "Lines reviewed\n\n- target: 100" },
-    ]);
-    await runKpiCommand(["list", "g-uuid"]);
-    const sql = queryMock.mock.calls[0][0] as string;
-    expect(sql).toContain(`WHERE goal_id = 'g-uuid'`);
-    expect(sql).toContain("ORDER BY created_at ASC LIMIT 50");
-    expect(allOut()).toContain("k1\tPRs shipped\n");
-    expect(allOut()).toContain("k2\tLines reviewed\n");
-  });
-
-  it("prints '(no kpis)' on empty result", async () => {
-    queryMock.mockResolvedValueOnce([]);
-    await runKpiCommand(["list", "g-uuid"]);
-    expect(allOut()).toContain("(no kpis)");
-  });
-
-  it("exits 1 with usage when goal_id is missing", async () => {
-    await expectExit(1, () => runKpiCommand(["list"]));
-    expect(allErr()).toContain("usage: hivemind kpi list");
-  });
-
-  it("exits 1 with the API error message on query failure", async () => {
-    queryMock.mockRejectedValueOnce(new Error("read timeout"));
-    await expectExit(1, () => runKpiCommand(["list", "g-uuid"]));
-    expect(allErr()).toContain("hivemind kpi list: read timeout");
-  });
-});
-
-// ── kpi bump ────────────────────────────────────────────────────────────────
-
-describe("runKpiCommand — bump", () => {
-  it("reads current content, rewrites the `- current: N` line, then UPDATEs", async () => {
-    queryMock
-      .mockResolvedValueOnce([
-        { content: "PRs shipped\n\n- target: 5\n- current: 2\n- unit: PRs" },
-      ])
-      // UPDATE — empty result
-      .mockResolvedValueOnce([]);
-    await runKpiCommand(["bump", "g-uuid", "k-prs", "1"]);
-    // Heals the schema first so a preexisting table without `updated_at` can't fail.
-    expect(ensureKpisTableMock).toHaveBeenCalledExactlyOnceWith("hivemind_kpis_test");
-    expect(queryMock).toHaveBeenCalledTimes(2);
-    const select = queryMock.mock.calls[0][0] as string;
-    expect(select).toMatch(/^SELECT content FROM "hivemind_kpis_test"/);
-    expect(select).toContain(`WHERE goal_id = 'g-uuid' AND kpi_id = 'k-prs'`);
-    const update = queryMock.mock.calls[1][0] as string;
-    expect(update).toMatch(/^UPDATE "hivemind_kpis_test"/);
-    expect(update).toContain("- current: 3");
-    // make sure we didn't mistakenly clobber target / unit
-    expect(update).toContain("- target: 5");
-    expect(update).toContain("- unit: PRs");
-    expect(allOut()).toContain("g-uuid/k-prs +1");
-  });
-
-  it("handles negative deltas (bump -2 should decrement)", async () => {
-    queryMock
-      .mockResolvedValueOnce([{ content: "x\n\n- current: 10\n- unit: count" }])
-      .mockResolvedValueOnce([]);
-    await runKpiCommand(["bump", "g", "k", "-2"]);
-    const update = queryMock.mock.calls[1][0] as string;
-    expect(update).toContain("- current: 8");
-  });
-
-  it("exits 1 when the KPI row doesn't exist (no UPDATE issued)", async () => {
-    queryMock.mockResolvedValueOnce([]); // SELECT returns nothing
-    await expectExit(1, () => runKpiCommand(["bump", "g", "k", "1"]));
-    expect(allErr()).toContain("kpi not found: g/k");
-    // SELECT was issued once but no UPDATE
-    expect(queryMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("exits 1 when the content has no `current:` line (no UPDATE issued)", async () => {
-    queryMock.mockResolvedValueOnce([
-      { content: "PRs shipped\n\n- target: 5\n- unit: PRs" }, // missing `current:`
-    ]);
-    await expectExit(1, () => runKpiCommand(["bump", "g", "k", "1"]));
-    expect(allErr()).toContain("could not find 'current:' line");
-    expect(queryMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("rejects non-numeric delta", async () => {
-    await expectExit(1, () => runKpiCommand(["bump", "g", "k", "lots"]));
-    expect(allErr()).toContain("invalid delta: lots");
-    expect(queryMock).not.toHaveBeenCalled();
-  });
-
-  it("exits 1 with usage when args are missing", async () => {
-    await expectExit(1, () => runKpiCommand(["bump", "g", "k"]));
-    expect(allErr()).toContain("usage: hivemind kpi bump");
-  });
-});
-
 // ── negative SQL patterns: UPDATE coalescing guard ──────────────────────────
 
-describe("goal/kpi CLI — does NOT issue back-to-back UPDATEs on the same row", () => {
+describe("goal CLI — does NOT issue back-to-back UPDATEs on the same row", () => {
   // Backend coalesces two rapid UPDATEs against the same row, silently
   // dropping one (see CLAUDE.md "UPDATE coalescing" note). The CLI must
   // never split a single logical mutation into two UPDATEs.
@@ -540,16 +377,5 @@ describe("goal/kpi CLI — does NOT issue back-to-back UPDATEs on the same row",
     await runGoalCommand(["done", "abc"]);
     const updates = queryMock.mock.calls.filter(c => /^UPDATE\b/.test(c[0]));
     expect(updates).toHaveLength(1);
-  });
-
-  it("`kpi bump` issues one SELECT + one UPDATE — never a second UPDATE on a side column", async () => {
-    queryMock
-      .mockResolvedValueOnce([{ content: "x\n\n- current: 1\n- unit: y" }])
-      .mockResolvedValueOnce([]);
-    await runKpiCommand(["bump", "g", "k", "1"]);
-    const updates = queryMock.mock.calls.filter(c => /^UPDATE\b/.test(c[0]));
-    expect(updates).toHaveLength(1);
-    // sanity: SELECT preceded UPDATE
-    expect(/^SELECT/.test(queryMock.mock.calls[0][0])).toBe(true);
   });
 });

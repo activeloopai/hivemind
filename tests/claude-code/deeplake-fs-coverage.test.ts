@@ -24,22 +24,19 @@ afterEach(() => {
 // ── Mock clients ──────────────────────────────────────────────────────────────
 
 interface GoalRow { id?: string; goal_id: string; owner: string; status: string; content: string; created_at?: string }
-interface KpiRow { id?: string; goal_id: string; kpi_id: string; content: string; created_at?: string }
 
-/** Stateful client backing the goal/kpi structured tables plus a generic
+/** Stateful client backing the goals structured table plus a generic
  *  memory table. Maintains in-memory arrays so UPDATE-vs-INSERT, bootstrap,
  *  rm soft-close and mv status-transition all exercise real SQL shapes. */
-function makeGoalClient(init: { goals?: GoalRow[]; kpis?: KpiRow[]; memory?: string[] } = {}) {
+function makeGoalClient(init: { goals?: GoalRow[]; memory?: string[] } = {}) {
   const goals: GoalRow[] = (init.goals ?? []).map(g => ({ id: g.id ?? `seed-${g.goal_id}`, ...g }));
-  const kpis: KpiRow[] = (init.kpis ?? []).map(k => ({ id: k.id ?? `seed-${k.goal_id}-${k.kpi_id}`, ...k }));
   const memory = [...(init.memory ?? [])];
 
   const client = {
     applyStorageCreds: vi.fn().mockResolvedValue(undefined),
     ensureTable: vi.fn().mockResolvedValue(undefined),
     ensureGoalsTable: vi.fn().mockResolvedValue(undefined),
-    ensureKpisTable: vi.fn().mockResolvedValue(undefined),
-    listTables: vi.fn().mockResolvedValue(["memory", "goals", "kpis"]),
+    listTables: vi.fn().mockResolvedValue(["memory", "goals"]),
     query: vi.fn(async (sql: string) => {
       // ── bootstrap ──
       if (sql.includes("SELECT path, size_bytes, mime_type")) {
@@ -47,9 +44,6 @@ function makeGoalClient(init: { goals?: GoalRow[]; kpis?: KpiRow[]; memory?: str
       }
       if (sql.includes("SELECT goal_id, owner, status, content, created_at")) {
         return goals.map(g => ({ goal_id: g.goal_id, owner: g.owner, status: g.status, content: g.content, created_at: g.created_at ?? "2026-01-01" }));
-      }
-      if (sql.includes("SELECT goal_id, kpi_id, content, created_at")) {
-        return kpis.map(k => ({ goal_id: k.goal_id, kpi_id: k.kpi_id, content: k.content, created_at: k.created_at ?? "2026-01-01" }));
       }
       // ── goal upsert ──
       if (sql.startsWith("SELECT id") && sql.includes('"goals"')) {
@@ -71,37 +65,17 @@ function makeGoalClient(init: { goals?: GoalRow[]; kpis?: KpiRow[]; memory?: str
         if (m) goals.push({ id: m[1], goal_id: m[2], owner: m[3], status: m[4], content: m[5].replace(/''/g, "'") });
         return [];
       }
-      // ── kpi upsert ──
-      if (sql.startsWith("SELECT id") && sql.includes('"kpis"')) {
-        const gid = sql.match(/goal_id = '([^']+)'/)?.[1];
-        const kid = sql.match(/kpi_id = '([^']+)'/)?.[1];
-        return kpis.filter(k => k.goal_id === gid && k.kpi_id === kid).map(k => ({ id: k.id }));
-      }
-      if (sql.startsWith("UPDATE") && sql.includes('"kpis"')) {
-        const gid = sql.match(/WHERE goal_id = '([^']+)'/)?.[1];
-        const kid = sql.match(/kpi_id = '([^']+)'/)?.[1];
-        const row = kpis.find(k => k.goal_id === gid && k.kpi_id === kid);
-        if (row) row.content = (sql.match(/content = E'((?:[^']|'')*)'/)?.[1] ?? row.content).replace(/''/g, "'");
-        return [];
-      }
-      if (sql.startsWith("INSERT") && sql.includes('"kpis"')) {
-        const m = sql.match(/VALUES \(\s*'([^']*)',\s*'([^']*)',\s*'([^']*)',\s*E'((?:[^']|'')*)'/);
-        if (m) kpis.push({ id: m[1], goal_id: m[2], kpi_id: m[3], content: m[4].replace(/''/g, "'") });
-        return [];
-      }
       return [];
     }),
     _goals: goals,
-    _kpis: kpis,
   };
   return client;
 }
 
-async function makeGoalFs(init: { goals?: GoalRow[]; kpis?: KpiRow[]; memory?: string[] } = {}) {
+async function makeGoalFs(init: { goals?: GoalRow[]; memory?: string[] } = {}) {
   const client = makeGoalClient(init);
   const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", {
     goalsTable: "goals",
-    kpisTable: "kpis",
   });
   return { fs, client };
 }
@@ -245,54 +219,29 @@ describe("goals bootstrap", () => {
 });
 
 // ── Bootstrap null-coalescing (defensive ?? "" paths) ────────────────────────
-describe("goals/kpis bootstrap with null columns", () => {
-  function rawClient(goalRows: Record<string, unknown>[], kpiRows: Record<string, unknown>[]) {
+describe("goals bootstrap with null columns", () => {
+  function rawClient(goalRows: Record<string, unknown>[]) {
     return {
       applyStorageCreds: vi.fn().mockResolvedValue(undefined),
       ensureTable: vi.fn().mockResolvedValue(undefined),
       ensureGoalsTable: vi.fn().mockResolvedValue(undefined),
-      ensureKpisTable: vi.fn().mockResolvedValue(undefined),
       query: vi.fn(async (sql: string) => {
         if (sql.includes("SELECT goal_id, owner, status, content, created_at")) return goalRows;
-        if (sql.includes("SELECT goal_id, kpi_id, content, created_at")) return kpiRows;
         return [];
       }),
     };
   }
 
-  it("coalesces null goal/kpi columns and keeps only well-formed rows", async () => {
-    const client = rawClient(
-      [
-        { goal_id: null, owner: null, status: null, content: null },             // every field null → skipped
-        { goal_id: "g1", owner: "alice", status: "opened", content: null },      // valid path, null content → ""
-      ],
-      [
-        { goal_id: null, kpi_id: null, content: null },                          // skipped
-        { goal_id: "g1", kpi_id: "k1", content: null },                          // valid, null content → ""
-      ],
-    );
+  it("coalesces null goal columns and keeps only well-formed rows", async () => {
+    const client = rawClient([
+      { goal_id: null, owner: null, status: null, content: null },             // every field null → skipped
+      { goal_id: "g1", owner: "alice", status: "opened", content: null },      // valid path, null content → ""
+    ]);
     const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", {
       goalsTable: "goals",
-      kpisTable: "kpis",
     });
     expect(await fs.readdir("/goal/alice/opened")).toEqual(["g1.md"]);
     expect(await fs.readFile("/goal/alice/opened/g1.md")).toBe("");
-    expect(await fs.readdir("/kpi/g1")).toEqual(["k1.md"]);
-    expect(await fs.readFile("/kpi/g1/k1.md")).toBe("");
-  });
-});
-
-// ── KPIs bootstrap ──────────────────────────────────────────────────────────
-describe("kpis bootstrap", () => {
-  it("synthesizes kpi paths and skips rows missing ids", async () => {
-    const { fs } = await makeGoalFs({
-      kpis: [
-        { goal_id: "g1", kpi_id: "k1", content: "kpi-body" },
-        { goal_id: "", kpi_id: "k2", content: "skip" }, // skip (327)
-      ],
-    });
-    expect(await fs.readdir("/kpi/g1")).toEqual(["k1.md"]);
-    expect(await fs.readFile("/kpi/g1/k1.md")).toBe("kpi-body");
   });
 });
 
@@ -317,27 +266,6 @@ describe("goal write routing", () => {
     await fs.flush();
     expect(client._goals.find(g => g.goal_id === "g1")!.content).toBe("v1");
     const updates = (client.query.mock.calls as [string][]).filter(c => c[0].startsWith("UPDATE") && c[0].includes('"goals"'));
-    expect(updates.length).toBe(1);
-  });
-});
-
-// ── KPI write routing (upsertRow → upsertKpiRow) ─────────────────────────────
-describe("kpi write routing", () => {
-  it("INSERTs a new kpi into the kpis table on flush", async () => {
-    const { fs, client } = await makeGoalFs({});
-    await fs.writeFile("/kpi/g1/k1.md", "metric");
-    await fs.flush();
-    expect(client._kpis).toContainEqual(expect.objectContaining({ goal_id: "g1", kpi_id: "k1", content: "metric" }));
-  });
-
-  it("UPDATEs an existing kpi row in place", async () => {
-    const { fs, client } = await makeGoalFs({
-      kpis: [{ goal_id: "g1", kpi_id: "k1", content: "0" }],
-    });
-    await fs.writeFile("/kpi/g1/k1.md", "42");
-    await fs.flush();
-    expect(client._kpis.find(k => k.kpi_id === "k1")!.content).toBe("42");
-    const updates = (client.query.mock.calls as [string][]).filter(c => c[0].startsWith("UPDATE") && c[0].includes('"kpis"'));
     expect(updates.length).toBe(1);
   });
 });

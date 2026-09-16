@@ -234,7 +234,7 @@ async function makeFs(seed: Record<string, string | Buffer> = {}, mount = "/memo
   return { fs, client };
 }
 
-// ── goal/kpi namespace isolation from the generic memory table ────────────────
+// ── goal namespace isolation from the generic memory table ────────────────────
 // Regression for the VFS↔goals-table version skew: pre-routing hook versions
 // (<=0.7.4) wrote goals as plain files into the generic memory table. The
 // bootstrap must NOT re-surface those goal-shaped memory rows into the VFS goal
@@ -248,8 +248,7 @@ function makeSkewClient(opts: {
     applyStorageCreds: vi.fn().mockResolvedValue(undefined),
     ensureTable: vi.fn().mockResolvedValue(undefined),
     ensureGoalsTable: vi.fn().mockResolvedValue(undefined),
-    ensureKpisTable: vi.fn().mockResolvedValue(undefined),
-    listTables: vi.fn().mockResolvedValue(["memory", "goals", "kpis"]),
+    listTables: vi.fn().mockResolvedValue(["memory", "goals"]),
     query: vi.fn().mockImplementation(async (sql: string) => {
       if (sql.includes("SELECT path, size_bytes, mime_type")) {
         return opts.memoryPaths.map(p => ({ path: p, size_bytes: 1, mime_type: "text/markdown" }));
@@ -262,7 +261,7 @@ function makeSkewClient(opts: {
   };
 }
 
-describe("DeeplakeFs goal/kpi namespace isolation", () => {
+describe("DeeplakeFs goal namespace isolation", () => {
   it("excludes legacy goal-shaped rows from the memory table when goalsTable is set", async () => {
     const client = makeSkewClient({
       // Legacy phantom goal written to the generic memory table by the old hook,
@@ -273,7 +272,6 @@ describe("DeeplakeFs goal/kpi namespace isolation", () => {
     });
     const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", {
       goalsTable: "goals",
-      kpisTable: "kpis",
     });
     const opened = await fs.readdir("/goal/alice/opened");
     expect(opened).toContain("real.md");        // structured goal surfaces
@@ -297,8 +295,7 @@ describe("DeeplakeFs goal/kpi namespace isolation", () => {
       applyStorageCreds: vi.fn().mockResolvedValue(undefined),
       ensureTable: vi.fn().mockResolvedValue(undefined),
       ensureGoalsTable: vi.fn().mockResolvedValue(undefined),
-      ensureKpisTable: vi.fn().mockResolvedValue(undefined),
-      listTables: vi.fn().mockResolvedValue(["memory", "goals", "kpis"]),
+        listTables: vi.fn().mockResolvedValue(["memory", "goals"]),
       query: vi.fn().mockImplementation(async (q: string) => {
         sql.push(q);
         if (q.includes("SELECT path, size_bytes, mime_type")) return [];
@@ -312,7 +309,6 @@ describe("DeeplakeFs goal/kpi namespace isolation", () => {
     };
     const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", {
       goalsTable: "goals",
-      kpisTable: "kpis",
     });
 
     await fs.mv("/goal/alice/opened/g1.md", "/goal/alice/closed/g1.md");
@@ -329,8 +325,7 @@ describe("DeeplakeFs goal/kpi namespace isolation", () => {
       applyStorageCreds: vi.fn().mockResolvedValue(undefined),
       ensureTable: vi.fn().mockResolvedValue(undefined),
       ensureGoalsTable: vi.fn().mockResolvedValue(undefined),
-      ensureKpisTable: vi.fn().mockResolvedValue(undefined),
-      listTables: vi.fn().mockResolvedValue(["memory", "goals", "kpis"]),
+        listTables: vi.fn().mockResolvedValue(["memory", "goals"]),
       query: vi.fn().mockImplementation(async (q: string) => {
         sql.push(q);
         // upsertGoalRow existence check → no row, take the INSERT branch.
@@ -339,7 +334,6 @@ describe("DeeplakeFs goal/kpi namespace isolation", () => {
     };
     const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", {
       goalsTable: "goals",
-      kpisTable: "kpis",
     });
 
     await fs.writeFileWithMeta("/goal/alice/opened/g2.md", "do it later", {
@@ -1345,7 +1339,7 @@ describe("docs VFS routing in the shell", () => {
     return {
       query: vi.fn(async (sql: string) => onQuery(sql)),
       ensureTable: async () => {},
-      ensureGoalsTable: async () => {}, ensureKpisTable: async () => {},
+      ensureGoalsTable: async () => {},
     };
   }
 

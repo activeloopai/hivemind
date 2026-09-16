@@ -4,14 +4,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  * Integration tests for the agent-facing tools registered by the openclaw
  * hivemind plugin:
  *   - hivemind_search / hivemind_read / hivemind_index (read-side)
- *   - hivemind_goal_add / hivemind_kpi_add          (write-side, team-shared
- *     goals + KPIs — openclaw can't intercept Write tool calls so it must
+ *   - hivemind_goal_add                              (write-side, team-shared
+ *     goals — openclaw can't intercept Write tool calls so it must
  *     expose explicit tools instead of the VFS Path A used by claude-code /
  *     codex; see PR #193 body, section "runtime intercept scope").
  *
  * Tests mock DeeplakeApi at the SQL-query boundary and assert that:
  *   1. read-side queries target BOTH memory + sessions tables
- *   2. write-side INSERTs into the goal/kpi tables under the expected shape
+ *   2. write-side INSERTs into the goals table under the expected shape
  */
 
 const queryMock = vi.fn();
@@ -19,7 +19,6 @@ const listTablesMock = vi.fn();
 const ensureSessionsTableMock = vi.fn();
 const ensureTableMock = vi.fn();
 const ensureGoalsTableMock = vi.fn();
-const ensureKpisTableMock = vi.fn();
 const loadConfigMock = vi.fn();
 const loadCredsMock = vi.fn();
 const handleGraphVfsMock = vi.fn();
@@ -58,7 +57,6 @@ vi.mock("../../src/deeplake-api.js", () => ({
     ensureSessionsTable(n: string) { return ensureSessionsTableMock(n); }
     ensureTable() { return ensureTableMock(); }
     ensureGoalsTable(n: string) { return ensureGoalsTableMock(n); }
-    ensureKpisTable(n: string) { return ensureKpisTableMock(n); }
   },
 }));
 
@@ -95,7 +93,6 @@ beforeEach(() => {
   ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
   ensureTableMock.mockReset().mockResolvedValue(undefined);
   ensureGoalsTableMock.mockReset().mockResolvedValue(undefined);
-  ensureKpisTableMock.mockReset().mockResolvedValue(undefined);
   loadCredsMock.mockReset().mockReturnValue({
     token: "tok", orgId: "o", orgName: "acme", userName: "alice",
   });
@@ -110,7 +107,6 @@ beforeEach(() => {
     sessionsTableName: "sessions",
     skillsTableName: "skills",
     goalsTableName: "hivemind_goals_test",
-    kpisTableName: "hivemind_kpis_test",
     memoryPath: "/tmp/mem",
   });
 });
@@ -123,7 +119,6 @@ describe("openclaw hivemind tools — registration", () => {
       "hivemind_graph_neighborhood",
       "hivemind_graph_search",
       "hivemind_index",
-      "hivemind_kpi_add",
       "hivemind_read",
       "hivemind_search",
     ]);
@@ -372,7 +367,7 @@ describe("hivemind_goal_add (Path C — write-side via registered tool)", () => 
     expect(sql).toMatch(/E'ship the goals feature'/);
 
     // result echoes the generated goal_id back to the agent so it can use it
-    // in a follow-up hivemind_kpi_add call
+    // in follow-up calls
     const text = result.content[0].text;
     expect(text).toContain("Goal created");
     expect(text).toContain("owner: alice");
@@ -406,72 +401,6 @@ describe("hivemind_goal_add (Path C — write-side via registered tool)", () => 
     const sql = (queryMock.mock.calls.find(c => /INSERT INTO/.test(c[0]))![0]) as string;
     // sqlStr() doubles the single quote: 'Levon''s goal'
     expect(sql).toContain("E'Levon''s goal'");
-  });
-});
-
-describe("hivemind_kpi_add (Path C — write-side via registered tool)", () => {
-  it("INSERTs into the configured KPIs table with content carrying name/target/unit", async () => {
-    queryMock.mockResolvedValue([]);
-    const { tools } = await loadPluginWithTools();
-    const kpiAdd = tools.find(t => t.name === "hivemind_kpi_add")!;
-    const result = await kpiAdd.execute("call-kpi-1", {
-      goal_id: "11111111-2222-3333-4444-555555555555",
-      kpi_id: "k-prs",
-      target: 5,
-      unit: "PRs",
-      name: "Pull requests shipped",
-    });
-
-    expect(ensureKpisTableMock).toHaveBeenCalledWith("hivemind_kpis_test");
-    const kpiInserts = queryMock.mock.calls.filter(c => /INSERT INTO "hivemind_kpis_test"/.test(c[0]));
-    expect(kpiInserts).toHaveLength(1);
-    const sql = kpiInserts[0][0] as string;
-
-    expect(sql).toMatch(/INSERT INTO "hivemind_kpis_test" \(id, goal_id, kpi_id, content, version, created_at, updated_at, agent, plugin_version\)/);
-    expect(sql).toContain("'11111111-2222-3333-4444-555555555555'");
-    expect(sql).toContain("'k-prs'");
-    expect(sql).toContain("'openclaw'");
-    // content is a markdown body with target/current/unit lines — the source
-    // builds it with real "\n" characters via template literals, so the SQL
-    // text contains literal newlines (NOT backslash-n escape sequences).
-    expect(sql).toContain("Pull requests shipped\n\n- target: 5\n- current: 0\n- unit: PRs");
-
-    expect(result.content[0].text).toContain("KPI added");
-    expect(result.content[0].text).toContain("target: 5 PRs");
-  });
-
-  it("defaults the human-readable name to kpi_id when name is omitted", async () => {
-    queryMock.mockResolvedValue([]);
-    const { tools } = await loadPluginWithTools();
-    const kpiAdd = tools.find(t => t.name === "hivemind_kpi_add")!;
-    await kpiAdd.execute("call-kpi-2", {
-      goal_id: "abc", kpi_id: "k-noname", target: 1, unit: "count",
-    });
-    const sql = (queryMock.mock.calls.find(c => /INSERT INTO/.test(c[0]))![0]) as string;
-    expect(sql).toContain("k-noname\n\n- target: 1\n- current: 0\n- unit: count");
-  });
-
-  it("returns a friendly error and logs when the INSERT throws", async () => {
-    queryMock.mockRejectedValue(new Error("table missing"));
-    const { tools, mockApi } = await loadPluginWithTools();
-    const kpiAdd = tools.find(t => t.name === "hivemind_kpi_add")!;
-    const result = await kpiAdd.execute("call-kpi-3", {
-      goal_id: "g", kpi_id: "k", target: 1, unit: "x",
-    });
-    expect(result.content[0].text).toMatch(/KPI add failed: table missing/);
-    expect(mockApi.logger.error).toHaveBeenCalled();
-  });
-
-  it("returns 'Not logged in' (no INSERT) when config is missing", async () => {
-    loadConfigMock.mockReturnValue(null);
-    const { tools } = await loadPluginWithTools();
-    const kpiAdd = tools.find(t => t.name === "hivemind_kpi_add")!;
-    const result = await kpiAdd.execute("call-kpi-4", {
-      goal_id: "g", kpi_id: "k", target: 1, unit: "x",
-    });
-    expect(result.content[0].text).toMatch(/Not logged in/);
-    expect(queryMock).not.toHaveBeenCalled();
-    expect(ensureKpisTableMock).not.toHaveBeenCalled();
   });
 });
 

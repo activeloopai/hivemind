@@ -24,7 +24,6 @@ function base(): Config {
     skillsTableName: "skills",
     rulesTableName: "hivemind_rules",
     goalsTableName: "hivemind_goals",
-    kpisTableName: "hivemind_kpis",
     codebaseTableName: "codebase",
     docsTableName: "docs",
     memoryPath: "/tmp/mem",
