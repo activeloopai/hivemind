@@ -297,6 +297,9 @@ describe("redactSecrets — JSON-serialized capture entries stay valid JSON", ()
     expect(redactSecrets("password=trailing\\\\ next")).toBe("password=******** next");
     expect(redactSecrets("password=\\\\\\\\")).toBe("password=********");
     expect(redactSecrets("--password \\ end")).toBe("--password ******** end");
+    // Entirely backslashes and a quote follows: nothing to keep as an escape.
+    expect(redactSecrets('password=\\\\"')).toBe('password=********"');
+    expect(redactSecrets('--password "\\\\\\\\"')).toBe('--password "********"');
   });
 
   it("keeps a literal trailing backslash escaped when the entry is serialized", () => {
