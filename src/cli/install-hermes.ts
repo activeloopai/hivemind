@@ -1,7 +1,7 @@
-import { existsSync, lstatSync, writeFileSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, writeFileSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import * as yaml from "js-yaml";
-import { HOME, pkgRoot, ensureDir, copyDir, symlinkForce, writeVersionStamp, log } from "./util.js";
+import { HOME, pkgRoot, ensureDir, syncDir, pruneDir, reportPruned, symlinkForce, writeVersionStamp, log } from "./util.js";
 import { getVersion } from "./version.js";
 import { ensureMcpServerInstalled, MCP_SERVER_PATH } from "./install-mcp-shared.js";
 
@@ -30,7 +30,8 @@ import { ensureMcpServerInstalled, MCP_SERVER_PATH } from "./install-mcp-shared.
 //   - https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks
 
 const HERMES_HOME = join(HOME, ".hermes");
-const SKILLS_DIR = join(HERMES_HOME, "skills", "hivemind-memory");
+const SKILLS_ROOT = join(HERMES_HOME, "skills");
+const SKILLS_DIR = join(SKILLS_ROOT, "hivemind-memory");
 const HIVEMIND_DIR = join(HERMES_HOME, "hivemind");
 const BUNDLE_DIR = join(HIVEMIND_DIR, "bundle");
 const CONFIG_PATH = join(HERMES_HOME, "config.yaml");
@@ -181,12 +182,36 @@ function writeConfig(cfg: HermesConfig): void {
   writeFileSync(CONFIG_PATH, dumped);
 }
 
+// Skills shipped as files under harnesses/hermes/skills/<name>/ (goals, graph).
+// Hermes loads them from ~/.hermes/skills/<name>/ next to hivemind-memory;
+// each dir is synced whole so a skill dropped from the package disappears
+// on the next install instead of lingering with instructions for commands
+// that no longer exist.
+function packagedSkillsSrc(): string {
+  return join(pkgRoot(), "harnesses", "hermes", "skills");
+}
+
+function packagedSkillNames(): string[] {
+  const src = packagedSkillsSrc();
+  if (!existsSync(src)) return [];
+  return readdirSync(src, { withFileTypes: true })
+    .filter(e => e.isDirectory())
+    .map(e => e.name);
+}
+
 export function installHermes(): void {
-  // 1. Skill — agent context.
+  // 1. Skills — agent context. hivemind-memory is written inline; everything
+  //    else the installer ever put in that dir (an older version's
+  //    templates/) is pruned so only the current skill body remains.
   ensureDir(SKILLS_DIR);
   writeFileSync(join(SKILLS_DIR, "SKILL.md"), SKILL_BODY);
   writeVersionStamp(SKILLS_DIR, getVersion());
+  reportPruned("Hermes", pruneDir(SKILLS_DIR, ["SKILL.md", ".hivemind_version"]));
   log(`  Hermes         skill installed -> ${SKILLS_DIR}`);
+  for (const name of packagedSkillNames()) {
+    reportPruned("Hermes", syncDir(join(packagedSkillsSrc(), name), join(SKILLS_ROOT, name)));
+    log(`  Hermes         skill installed -> ${join(SKILLS_ROOT, name)}`);
+  }
 
   // 2. Hook bundle — auto-capture via Hermes shell-hooks.
   const srcBundle = join(pkgRoot(), "harnesses", "hermes", "bundle");
@@ -194,7 +219,7 @@ export function installHermes(): void {
     throw new Error(`Hermes bundle missing at ${srcBundle}. Run 'npm run build' first.`);
   }
   ensureDir(HIVEMIND_DIR);
-  copyDir(srcBundle, BUNDLE_DIR);
+  reportPruned("Hermes", syncDir(srcBundle, BUNDLE_DIR));
   const pluginNm = join(HIVEMIND_DIR, "node_modules");
   const embedDepsNm = join(HOME, ".hivemind", "embed-deps", "node_modules");
   if (existsSync(embedDepsNm)) {
@@ -224,9 +249,10 @@ export function installHermes(): void {
 }
 
 export function uninstallHermes(): void {
-  if (existsSync(SKILLS_DIR)) {
-    rmSync(SKILLS_DIR, { recursive: true, force: true });
-    log(`  Hermes         removed ${SKILLS_DIR}`);
+  for (const dir of [SKILLS_DIR, ...packagedSkillNames().map(n => join(SKILLS_ROOT, n))]) {
+    if (!existsSync(dir)) continue;
+    rmSync(dir, { recursive: true, force: true });
+    log(`  Hermes         removed ${dir}`);
   }
 
   if (existsSync(HIVEMIND_DIR)) {

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { HOME, pkgRoot, ensureDir, copyDir, writeVersionStamp, log } from "./util.js";
+import { HOME, pkgRoot, ensureDir, syncDir, writeVersionStamp, log, reportPruned } from "./util.js";
 import { getVersion } from "./version.js";
 
 // Shared installer logic for the hivemind MCP server.
@@ -23,7 +23,7 @@ export function ensureMcpServerInstalled(): void {
     );
   }
   ensureDir(MCP_DIR);
-  copyDir(srcDir, MCP_DIR);
+  reportPruned("hivemind-mcp", syncDir(srcDir, MCP_DIR));
   writeVersionStamp(HIVEMIND_DIR, getVersion());
   log(`  hivemind-mcp   server installed -> ${MCP_SERVER_PATH}`);
 }

@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { HOME, pkgRoot, ensureDir, copyDir, readJson, writeJson, writeJsonIfChanged, symlinkForce, writeVersionStamp, log } from "./util.js";
+import { HOME, pkgRoot, ensureDir, syncDir, readJson, writeJson, writeJsonIfChanged, symlinkForce, writeVersionStamp, log, reportPruned } from "./util.js";
 import { getVersion } from "./version.js";
 
 // Cursor 1.7+ hooks API: https://cursor.com/docs/agent/hooks
@@ -105,7 +105,7 @@ export function installCursor(): void {
   }
 
   ensureDir(PLUGIN_DIR);
-  copyDir(srcBundle, join(PLUGIN_DIR, "bundle"));
+  reportPruned("Cursor", syncDir(srcBundle, join(PLUGIN_DIR, "bundle")));
 
   const existing = readJson<Record<string, unknown>>(HOOKS_PATH);
   const merged = mergeHooks(existing);

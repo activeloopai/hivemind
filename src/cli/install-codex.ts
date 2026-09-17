@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { HOME, pkgRoot, ensureDir, copyDir, writeJson, writeJsonIfChanged, symlinkForce, writeVersionStamp, log, warn } from "./util.js";
+import { HOME, pkgRoot, ensureDir, syncDir, writeJson, writeJsonIfChanged, symlinkForce, writeVersionStamp, log, warn, reportPruned } from "./util.js";
 import { getVersion } from "./version.js";
 import { upsertMarkedBlock, stripMarkedBlock, HIVEMIND_BLOCK_START, HIVEMIND_BLOCK_END } from "./agents-md.js";
 
@@ -300,8 +300,8 @@ export function installCodex(): void {
   }
 
   ensureDir(PLUGIN_DIR);
-  copyDir(srcBundle, join(PLUGIN_DIR, "bundle"));
-  if (existsSync(srcSkills)) copyDir(srcSkills, join(PLUGIN_DIR, "skills"));
+  reportPruned("Codex", syncDir(srcBundle, join(PLUGIN_DIR, "bundle")));
+  if (existsSync(srcSkills)) reportPruned("Codex", syncDir(srcSkills, join(PLUGIN_DIR, "skills")));
 
   tryEnableCodexHooks();
   // Idempotent: only rewrite hooks.json when the merged result actually

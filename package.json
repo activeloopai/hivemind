@@ -19,6 +19,7 @@
     "harnesses/codex/skills",
     "harnesses/cursor/bundle",
     "harnesses/hermes/bundle",
+    "harnesses/hermes/skills",
     "mcp/bundle",
     "harnesses/pi/extension-source",
     "harnesses/openclaw/dist",
