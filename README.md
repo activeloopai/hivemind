@@ -231,7 +231,7 @@ Auto-capture is enabled the same way as Claude Code / Codex / OpenClaw.
 <details>
   <summary><b>Hermes Agent</b></summary>
 
-Wires shell hooks into `~/.hermes/config.yaml` (`pre_llm_call` / `post_tool_call` / `post_llm_call` / `on_session_end`) for auto-capture, drops the bundle at `~/.hermes/hivemind/bundle/`, registers the shared MCP server (`~/.hivemind/mcp/server.js`) under `mcp_servers.hivemind`, and installs an `agentskills.io`-compatible skill at `~/.hermes/skills/hivemind-memory/` for recall.
+Wires shell hooks into `~/.hermes/config.yaml` (`pre_llm_call` / `post_tool_call` / `post_llm_call` / `on_session_end`) for auto-capture, drops the bundle at `~/.hermes/hivemind/bundle/`, registers the shared MCP server (`~/.hivemind/mcp/server.js`) under `mcp_servers.hivemind`, and installs `agentskills.io`-compatible skills at `~/.hermes/skills/hivemind-memory/` (recall), `hivemind-goals/` and `hivemind-graph/`. Re-running install (or `hivemind update`) syncs these directories: files a previous version wrote that the current one no longer ships are removed; anything else under `~/.hermes/skills/` is left untouched.
 
 ```bash
 hivemind hermes install
