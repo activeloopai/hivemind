@@ -182,23 +182,24 @@ const RULES: Rule[] = [
   { re: /([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)([^\s:/@]+)(@)/gi, replace: `$1${MASK}$3` },
 
   // ── 4. Generic labeled assignments ───────────────────────────────────────
-  // The value may contain backslashes but never ends with one: every capturer
-  // redacts the JSON-serialized entry, where a value followed by an escaped
-  // quote reads `...VALUE\"`. Swallowing that backslash left `********""`
-  // behind, invalid JSON that the queue then stored as an opaque raw_message.
+  // A trailing run of backslashes stays outside the mask when a quote follows:
+  // every capturer redacts the JSON-serialized entry, where a value followed
+  // by an escaped quote reads `...VALUE\\"`. Masking that backslash left
+  // `********""` behind, invalid JSON that the queue then stored as an opaque
+  // raw_message. Backslashes anywhere else are part of the value and masked.
   {
     re: new RegExp(
-      `((?:${SECRET_KEY_WORDS})(?![A-Za-z0-9])["']?\\s*[:=]\\s*["']?)([^\\s"',;{}()\\[\\]]*[^\\s"',;{}()\\[\\]\\\\])`,
+      `((?:${SECRET_KEY_WORDS})(?![A-Za-z0-9])["']?\\s*[:=]\\s*["']?)([^\\s"',;{}()\\[\\]]{1,})(?=(["']?))`,
       "gi",
     ),
-    replace: (match, keep: string, value: string) =>
-      NON_SECRET_VALUE.test(value) ? match : `${keep}${MASK}`,
+    replace: (match, keep: string, value: string, quote: string) =>
+      maskBeforeQuote(match, keep, "", value, quote),
   },
   // CLI-flag form: `--password VALUE` / `-p=VALUE`.
   {
-    re: /(--?(?:password|passwd|pwd|token|secret|api[_-]?key)[\s=]+)(["']?)([^\s"']*[^\s"'\\])/gi,
-    replace: (match, keep: string, quote: string, value: string) =>
-      NON_SECRET_VALUE.test(value) ? match : `${keep}${quote}${MASK}`,
+    re: /(--?(?:password|passwd|pwd|token|secret|api[_-]?key)[\s=]+)(["']?)([^\s"']{1,})(?=(["']?))/gi,
+    replace: (match, keep: string, open: string, value: string, quote: string) =>
+      maskBeforeQuote(match, keep, open, value, quote),
   },
 
   // ── 5. High-entropy backstop for bare, unlabeled secrets ─────────────────
@@ -213,6 +214,13 @@ const RULES: Rule[] = [
     replace: (m) => (looksLikeSecret(m) ? MASK : m),
   },
 ];
+
+function maskBeforeQuote(match: string, keep: string, open: string, value: string, quote: string): string {
+  const escape = quote ? (value.match(/\\+$/)?.[0] ?? "") : "";
+  const secret = value.slice(0, value.length - escape.length);
+  if (secret && NON_SECRET_VALUE.test(secret)) return match;
+  return `${keep}${open}${MASK}${escape}`;
+}
 
 /**
  * Mask tokens, passwords, API keys and other secrets in `text` with stars.
