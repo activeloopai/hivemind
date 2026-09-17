@@ -157,6 +157,24 @@ describe("installHermes — update over a previous version", () => {
     uninstallHermes();
     expect(readdirSync(skillsRoot())).toEqual(["my-own-skill"]);
   });
+
+  it("never writes through or removes a user symlink at hivemind-memory / hivemind-goals, on install or uninstall", async () => {
+    const userSkill = join(tmpRoot, "user-skill");
+    mkdirSync(userSkill);
+    writeFileSync(join(userSkill, "SKILL.md"), "user content");
+    mkdirSync(skillsRoot(), { recursive: true });
+    symlinkSync(userSkill, join(skillsRoot(), "hivemind-memory"));
+    symlinkSync(userSkill, join(skillsRoot(), "hivemind-goals"));
+
+    const { installHermes, uninstallHermes } = await importInstaller<typeof import("../../src/cli/install-hermes.js")>("../../src/cli/install-hermes.js");
+    installHermes();
+    expect(readdirSync(userSkill)).toEqual(["SKILL.md"]);
+    expect(readFileSync(join(userSkill, "SKILL.md"), "utf-8")).toBe("user content");
+    uninstallHermes();
+    expect(lstatSync(join(skillsRoot(), "hivemind-memory")).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(skillsRoot(), "hivemind-goals")).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(userSkill, "SKILL.md"), "utf-8")).toBe("user content");
+  });
 });
 
 describe("installPi — update over a previous version", () => {

@@ -181,6 +181,18 @@ describe("syncDir / pruneDir", () => {
     expect(existsSync(join(dst, "skilify-worker.js"))).toBe(true);
   });
 
+  it("replaces a file with a directory and a directory with a file when the payload changed kind", () => {
+    mkdirSync(join(src, "was-file"));
+    writeFileSync(join(src, "was-file", "inner.js"), "now a dir");
+    writeFileSync(join(src, "was-dir"), "now a file");
+    writeFileSync(join(dst, "was-file"), "old file");
+    mkdirSync(join(dst, "was-dir"));
+    writeFileSync(join(dst, "was-dir", "old.js"), "old dir content");
+    syncDir(src, dst);
+    expect(readFileSync(join(dst, "was-file", "inner.js"), "utf-8")).toBe("now a dir");
+    expect(readFileSync(join(dst, "was-dir"), "utf-8")).toBe("now a file");
+  });
+
   it("pruneDir keeps only the named entries and is a no-op on a missing dir", () => {
     const removed = pruneDir(dst, ["capture.js", "graph-chunks"]);
     expect(removed.sort()).toEqual([join(dst, "dropped-dir"), join(dst, "skilify-worker.js")].sort());
