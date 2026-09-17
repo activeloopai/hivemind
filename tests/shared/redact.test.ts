@@ -273,3 +273,27 @@ describe("redactSecrets — idempotency & multi-secret", () => {
     expect(out.match(/\*{8}/g)?.length).toBeGreaterThanOrEqual(3);
   });
 });
+
+describe("redactSecrets — JSON-serialized capture entries stay valid JSON", () => {
+  // Every capturer runs redactSecrets(JSON.stringify(entry)). A secret value
+  // followed by an escaped quote inside the serialized line must not swallow
+  // the backslash, or the queued row is no longer parseable.
+  it("masks a key=value secret nested in an escaped JSON string without breaking the JSON", () => {
+    const entry = {
+      type: "tool_result",
+      tool_use_id: "t1",
+      tool_response: JSON.stringify("AWS_SECRET_ACCESS_KEY=AKIACCCCCCCCCCCCCCCC/wJalrXUtnFEMI"),
+    };
+    const line = redactSecrets(JSON.stringify(entry));
+    const parsed = JSON.parse(line) as typeof entry;
+    expect(parsed.type).toBe("tool_result");
+    expect(JSON.parse(parsed.tool_response)).toBe("AWS_SECRET_ACCESS_KEY=********");
+    expect(line).not.toContain("wJalrXUtnFEMI");
+  });
+
+  it("masks a --password flag whose value ends at an escaped quote", () => {
+    const line = redactSecrets(JSON.stringify({ content: JSON.stringify("psql --password hunter2secret") }));
+    const parsed = JSON.parse(line) as { content: string };
+    expect(JSON.parse(parsed.content)).toBe("psql --password ********");
+  });
+});
