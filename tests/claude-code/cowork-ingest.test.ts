@@ -10,6 +10,34 @@ import {
   COWORK_AGENT,
   type IngestState,
 } from "../../src/mcp/cowork-ingest.js";
+import { redactSecrets } from "../../src/hooks/shared/redact.js";
+import { buildQueuedSessionRow, buildSessionPath } from "../../src/hooks/session-queue.js";
+
+// Build fixture secrets from split literals at runtime so the source file never
+// contains a scannable vendor token (GitHub secret scanning would block this file).
+const j = (...parts: string[]): string => parts.join("");
+
+const fakeSessionConfig = { userName: "test-user", orgName: "test-org", workspaceId: "test-ws" };
+
+/**
+ * Simulate the exact serialization + redaction that ingestCoworkSessions does
+ * for each entry: redactSecrets(JSON.stringify(entry)).
+ * Returns the parsed message field from the resulting QueuedSessionRow so tests
+ * can assert on the stored payload without wiring up the full ingest loop.
+ */
+function queuedMessageFor(entry: Record<string, unknown>): Record<string, unknown> {
+  const row = buildQueuedSessionRow({
+    sessionPath: buildSessionPath(fakeSessionConfig, String(entry.session_id ?? "test-sid")),
+    line: redactSecrets(JSON.stringify(entry)),
+    userName: fakeSessionConfig.userName,
+    projectName: "claude_cowork",
+    description: String(entry.type ?? ""),
+    agent: COWORK_AGENT,
+    pluginVersion: "0.0.0-test",
+    timestamp: String(entry.timestamp ?? new Date().toISOString()),
+  });
+  return JSON.parse(row.message) as Record<string, unknown>;
+}
 
 const fakeConfig = {} as Parameters<typeof summarizeIdleSessions>[0];
 
@@ -167,5 +195,59 @@ describe("coworkDataNoticeOnce", () => {
       if (prev === undefined) delete process.env.HIVEMIND_CAPTURE;
       else process.env.HIVEMIND_CAPTURE = prev;
     }
+  });
+});
+
+describe("secret redaction on the Cowork ingest path (#308)", () => {
+  const base = {
+    id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    session_id: "b27efa59-a8bc-4ea3-8b02-18cbc608ae17",
+    timestamp: "2026-06-26T15:02:13.529Z",
+    cwd: "/some/cowork/outputs",
+    agent: COWORK_AGENT,
+  };
+
+  it("masks an OpenAI API key in a user_message content field", () => {
+    const secret = j("sk-", "ABCDEFGHIJKLMNOPQRSTUVWX");
+    const entry = { ...base, type: "user_message", content: `my key is ${secret}` };
+    const msg = queuedMessageFor(entry);
+    expect(msg.content).not.toContain(secret);
+    expect(String(msg.content)).toContain("sk-");    // scheme prefix kept as a hint
+    expect(String(msg.content)).toContain("********");
+  });
+
+  it("masks a GitHub PAT in a tool_input field (e.g. curl auth header)", () => {
+    const secret = j("ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+    const entry = {
+      ...base,
+      type: "tool_call",
+      tool_name: "bash",
+      tool_use_id: "toolu_1",
+      tool_input: JSON.stringify({ cmd: `curl -H "Authorization: token ${secret}" https://api.github.com` }),
+    };
+    const msg = queuedMessageFor(entry);
+    expect(msg.tool_input).not.toContain(secret);
+    expect(String(msg.tool_input)).toContain("ghp_");
+    expect(String(msg.tool_input)).toContain("********");
+  });
+
+  it("masks a secret in a tool_response field", () => {
+    const secret = j("sk-", "ant-api03-ABCDEFGHIJKLMNOPQRSTUV_wx");
+    const entry = {
+      ...base,
+      type: "tool_result",
+      tool_use_id: "toolu_2",
+      tool_response: JSON.stringify({ api_key: secret }),
+    };
+    const msg = queuedMessageFor(entry);
+    expect(msg.tool_response).not.toContain(secret);
+    expect(String(msg.tool_response)).toContain("sk-ant-");
+    expect(String(msg.tool_response)).toContain("********");
+  });
+
+  it("leaves non-secret content untouched", () => {
+    const entry = { ...base, type: "user_message", content: "what is the weather in Tokyo?" };
+    const msg = queuedMessageFor(entry);
+    expect(msg.content).toBe("what is the weather in Tokyo?");
   });
 });

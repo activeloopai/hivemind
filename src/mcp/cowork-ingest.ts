@@ -51,6 +51,7 @@ import {
 } from "../hooks/session-queue.js";
 import { spawnWikiWorker, bundleDirFromImportMeta } from "../hooks/spawn-wiki-worker.js";
 import { forceSessionEndTrigger } from "../skillify/triggers.js";
+import { redactSecrets } from "../hooks/shared/redact.js";
 import { basename } from "node:path";
 import { log } from "../utils/debug.js";
 
@@ -455,7 +456,11 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
 
         const rows = entriesForLine(parsed).map(entry => buildQueuedSessionRow({
           sessionPath: buildSessionPath(config, String(entry.session_id)),
-          line: JSON.stringify(entry),
+          // Mask secrets (tokens, passwords, API keys) before the payload is
+          // queued or embedded — same pattern as every other agent capturer.
+          // Redacting the serialized line covers every field (content /
+          // tool_input / tool_response) in one pass.
+          line: redactSecrets(JSON.stringify(entry)),
           userName: config.userName,
           projectName: COWORK_PROJECT,
           description: String(entry.type ?? ""),
