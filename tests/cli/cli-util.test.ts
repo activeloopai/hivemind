@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, statSync, symlinkSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, statSync, symlinkSync, mkdtempSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { tmpdir, homedir } from "node:os";
 
@@ -129,7 +129,7 @@ describe("syncDir / pruneDir", () => {
   let src: string;
   let dst: string;
   beforeEach(() => {
-    root = join(tmpdir(), `hm-sync-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    root = mkdtempSync(join(tmpdir(), "hm-sync-"));
     src = join(root, "src");
     dst = join(root, "dst");
     mkdirSync(join(src, "graph-chunks"), { recursive: true });
