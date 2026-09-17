@@ -215,8 +215,12 @@ const RULES: Rule[] = [
   },
 ];
 
+// In a JSON-serialized entry a quote is escaped by an odd run of backslashes:
+// the last one is the escape and stays outside the mask, the rest are literal
+// content of the secret. An even run is all content, and the quote is real.
 function maskBeforeQuote(match: string, keep: string, open: string, value: string, quote: string): string {
-  const escape = quote ? (value.match(/(?<=[^\\])\\+$/)?.[0] ?? "") : "";
+  const run = quote ? (value.match(/\\+$/)?.[0].length ?? 0) : 0;
+  const escape = run % 2 === 1 && run < value.length ? "\\" : "";
   const secret = value.slice(0, value.length - escape.length);
   if (NON_SECRET_VALUE.test(secret)) return match;
   return `${keep}${open}${MASK}${escape}`;
