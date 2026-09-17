@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, statSync, symlinkSync, mkdtempSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, statSync, symlinkSync, mkdtempSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { tmpdir, homedir } from "node:os";
 
@@ -171,6 +171,24 @@ describe("syncDir / pruneDir", () => {
     expect(isLink(join(dst, "linked"))).toBe(false);
     expect(existsSync(join(dst, "linked"))).toBe(false);
     expect(readFileSync(join(target, "keep.txt"), "utf-8")).toBe("user data");
+  });
+
+  it("replaces a symlink sitting at a shipped name instead of writing through it", () => {
+    const outside = join(root, "outside-file");
+    writeFileSync(outside, "user data");
+    const outsideDir = join(root, "outside-dir");
+    mkdirSync(outsideDir);
+    rmSync(join(dst, "capture.js"));
+    symlinkSync(outside, join(dst, "capture.js"));
+    rmSync(join(dst, "graph-chunks"), { recursive: true });
+    symlinkSync(outsideDir, join(dst, "graph-chunks"));
+    syncDir(src, dst);
+    expect(isLink(join(dst, "capture.js"))).toBe(false);
+    expect(readFileSync(join(dst, "capture.js"), "utf-8")).toBe("new capture");
+    expect(readFileSync(outside, "utf-8")).toBe("user data");
+    expect(isLink(join(dst, "graph-chunks"))).toBe(false);
+    expect(existsSync(join(dst, "graph-chunks", "graph-NEW.js"))).toBe(true);
+    expect(readdirSync(outsideDir)).toEqual([]);
   });
 
   it("refuses to sync into a destination that is itself a symlink", () => {
