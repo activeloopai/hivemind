@@ -70,23 +70,29 @@ export function syncDir(src: string, dst: string): string[] {
     warn(`  skipping ${dst}: it is a symlink, not a hivemind-owned directory`);
     return [];
   }
-  const removed = dropTypeMismatches(src, dst);
+  const removed = dropUnreplaceable(src, dst);
   copyDir(src, dst);
   removed.push(...pruneToSource(src, dst));
   return removed;
 }
 
-// cpSync cannot replace a file with a directory or vice versa, so an entry
-// whose kind changed between versions is removed before the copy.
-function dropTypeMismatches(src: string, dst: string): string[] {
+// Clear what cpSync cannot replace in place: an entry whose kind changed
+// between versions (file <-> directory), and a symlink at a shipped name,
+// which cpSync would otherwise write through into whatever it points at.
+function dropUnreplaceable(src: string, dst: string): string[] {
   if (!existsSync(dst) || isLink(dst)) return [];
   const removed: string[] = [];
   for (const entry of readdirSync(src, { withFileTypes: true })) {
     const target = join(dst, entry.name);
     let st;
     try { st = lstatSync(target); } catch { continue; }
-    if (st.isSymbolicLink() || st.isDirectory() === entry.isDirectory()) {
-      if (entry.isDirectory() && st.isDirectory()) removed.push(...dropTypeMismatches(join(src, entry.name), target));
+    if (st.isSymbolicLink()) {
+      unlinkSync(target);
+      removed.push(target);
+      continue;
+    }
+    if (st.isDirectory() === entry.isDirectory()) {
+      if (entry.isDirectory()) removed.push(...dropUnreplaceable(join(src, entry.name), target));
       continue;
     }
     rmSync(target, { recursive: true, force: true });
