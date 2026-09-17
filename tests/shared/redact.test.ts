@@ -302,10 +302,12 @@ describe("redactSecrets — JSON-serialized capture entries stay valid JSON", ()
     expect(redactSecrets('--password "\\\\\\\\"')).toBe('--password "********"');
   });
 
-  it("keeps a literal trailing backslash escaped when the entry is serialized", () => {
-    const line = redactSecrets(JSON.stringify({ content: JSON.stringify("password=abc\\") }));
-    const parsed = JSON.parse(line) as { content: string };
-    expect(JSON.parse(parsed.content)).toBe("password=********\\");
+  it("masks a literal trailing backslash of the secret and keeps the serialized entry valid", () => {
+    for (const secret of ["password=abc\\", "password=abc\\\\", "token=xy\\z\\"]) {
+      const line = redactSecrets(JSON.stringify({ content: JSON.stringify(secret) }));
+      const parsed = JSON.parse(line) as { content: string };
+      expect(JSON.parse(parsed.content)).toBe(secret.slice(0, secret.indexOf("=") + 1) + "********");
+    }
   });
 
   it("masks a --password flag whose value ends at an escaped quote", () => {
