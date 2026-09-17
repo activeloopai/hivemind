@@ -182,13 +182,13 @@ const RULES: Rule[] = [
   { re: /([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)([^\s:/@]+)(@)/gi, replace: `$1${MASK}$3` },
 
   // ── 4. Generic labeled assignments ───────────────────────────────────────
-  // A backslash ends the value: every capturer redacts the JSON-serialized
-  // entry, where a value followed by an escaped quote reads `...VALUE\"`.
-  // Swallowing that backslash left `********""` behind, invalid JSON that the
-  // queue then stored as an opaque raw_message row.
+  // The value may contain backslashes but never ends with one: every capturer
+  // redacts the JSON-serialized entry, where a value followed by an escaped
+  // quote reads `...VALUE\"`. Swallowing that backslash left `********""`
+  // behind, invalid JSON that the queue then stored as an opaque raw_message.
   {
     re: new RegExp(
-      `((?:${SECRET_KEY_WORDS})(?![A-Za-z0-9])["']?\\s*[:=]\\s*["']?)([^\\s"',;{}()\\[\\]\\\\]{1,})`,
+      `((?:${SECRET_KEY_WORDS})(?![A-Za-z0-9])["']?\\s*[:=]\\s*["']?)([^\\s"',;{}()\\[\\]]*[^\\s"',;{}()\\[\\]\\\\])`,
       "gi",
     ),
     replace: (match, keep: string, value: string) =>
@@ -196,7 +196,7 @@ const RULES: Rule[] = [
   },
   // CLI-flag form: `--password VALUE` / `-p=VALUE`.
   {
-    re: /(--?(?:password|passwd|pwd|token|secret|api[_-]?key)[\s=]+)(["']?)([^\s"'\\]{1,})/gi,
+    re: /(--?(?:password|passwd|pwd|token|secret|api[_-]?key)[\s=]+)(["']?)([^\s"']*[^\s"'\\])/gi,
     replace: (match, keep: string, quote: string, value: string) =>
       NON_SECRET_VALUE.test(value) ? match : `${keep}${quote}${MASK}`,
   },
