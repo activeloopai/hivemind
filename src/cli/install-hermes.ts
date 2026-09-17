@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readdirSync, writeFileSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import * as yaml from "js-yaml";
-import { HOME, pkgRoot, ensureDir, syncDir, pruneDir, reportPruned, symlinkForce, writeVersionStamp, log } from "./util.js";
+import { HOME, pkgRoot, ensureDir, syncDir, pruneDir, reportPruned, symlinkForce, isLink, writeVersionStamp, log, warn } from "./util.js";
 import { getVersion } from "./version.js";
 import { ensureMcpServerInstalled, MCP_SERVER_PATH } from "./install-mcp-shared.js";
 
@@ -203,11 +203,15 @@ export function installHermes(): void {
   // 1. Skills — agent context. hivemind-memory is written inline; everything
   //    else the installer ever put in that dir (an older version's
   //    templates/) is pruned so only the current skill body remains.
-  ensureDir(SKILLS_DIR);
-  writeFileSync(join(SKILLS_DIR, "SKILL.md"), SKILL_BODY);
-  writeVersionStamp(SKILLS_DIR, getVersion());
-  reportPruned("Hermes", pruneDir(SKILLS_DIR, ["SKILL.md", ".hivemind_version"]));
-  log(`  Hermes         skill installed -> ${SKILLS_DIR}`);
+  if (isLink(SKILLS_DIR)) {
+    warn(`  Hermes         skipping ${SKILLS_DIR}: it is a symlink, not a hivemind-owned directory`);
+  } else {
+    ensureDir(SKILLS_DIR);
+    writeFileSync(join(SKILLS_DIR, "SKILL.md"), SKILL_BODY);
+    writeVersionStamp(SKILLS_DIR, getVersion());
+    reportPruned("Hermes", pruneDir(SKILLS_DIR, ["SKILL.md", ".hivemind_version"]));
+    log(`  Hermes         skill installed -> ${SKILLS_DIR}`);
+  }
   for (const name of packagedSkillNames()) {
     reportPruned("Hermes", syncDir(join(packagedSkillsSrc(), name), join(SKILLS_ROOT, name)));
     log(`  Hermes         skill installed -> ${join(SKILLS_ROOT, name)}`);
@@ -250,7 +254,8 @@ export function installHermes(): void {
 
 export function uninstallHermes(): void {
   for (const dir of [SKILLS_DIR, ...packagedSkillNames().map(n => join(SKILLS_ROOT, n))]) {
-    if (!existsSync(dir)) continue;
+    // A symlink at one of our names is the user's, never something we wrote.
+    if (!existsSync(dir) || isLink(dir)) continue;
     rmSync(dir, { recursive: true, force: true });
     log(`  Hermes         removed ${dir}`);
   }
