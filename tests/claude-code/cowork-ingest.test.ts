@@ -7,37 +7,16 @@ import {
   extractText,
   coworkDataNoticeOnce,
   summarizeIdleSessions,
+  buildCoworkQueueRow,
   COWORK_AGENT,
   type IngestState,
 } from "../../src/mcp/cowork-ingest.js";
-import { redactSecrets } from "../../src/hooks/shared/redact.js";
-import { buildQueuedSessionRow, buildSessionPath } from "../../src/hooks/session-queue.js";
 
 // Build fixture secrets from split literals at runtime so the source file never
 // contains a scannable vendor token (GitHub secret scanning would block this file).
 const j = (...parts: string[]): string => parts.join("");
 
 const fakeSessionConfig = { userName: "test-user", orgName: "test-org", workspaceId: "test-ws" };
-
-/**
- * Simulate the exact serialization + redaction that ingestCoworkSessions does
- * for each entry: redactSecrets(JSON.stringify(entry)).
- * Returns the parsed message field from the resulting QueuedSessionRow so tests
- * can assert on the stored payload without wiring up the full ingest loop.
- */
-function queuedMessageFor(entry: Record<string, unknown>): Record<string, unknown> {
-  const row = buildQueuedSessionRow({
-    sessionPath: buildSessionPath(fakeSessionConfig, String(entry.session_id ?? "test-sid")),
-    line: redactSecrets(JSON.stringify(entry)),
-    userName: fakeSessionConfig.userName,
-    projectName: "claude_cowork",
-    description: String(entry.type ?? ""),
-    agent: COWORK_AGENT,
-    pluginVersion: "0.0.0-test",
-    timestamp: String(entry.timestamp ?? new Date().toISOString()),
-  });
-  return JSON.parse(row.message) as Record<string, unknown>;
-}
 
 const fakeConfig = {} as Parameters<typeof summarizeIdleSessions>[0];
 
@@ -207,28 +186,31 @@ describe("secret redaction on the Cowork ingest path (#308)", () => {
     agent: COWORK_AGENT,
   };
 
+  // Parse the queued row message back to an object so we can assert field values.
+  function queuedMessage(entry: Record<string, unknown>): Record<string, unknown> {
+    return JSON.parse(buildCoworkQueueRow(entry, fakeSessionConfig).message) as Record<string, unknown>;
+  }
+
   it("masks an OpenAI API key in a user_message content field", () => {
     const secret = j("sk-", "ABCDEFGHIJKLMNOPQRSTUVWX");
     const entry = { ...base, type: "user_message", content: `my key is ${secret}` };
-    const msg = queuedMessageFor(entry);
-    expect(msg.content).not.toContain(secret);
-    expect(String(msg.content)).toContain("sk-");    // scheme prefix kept as a hint
-    expect(String(msg.content)).toContain("********");
+    const msg = queuedMessage(entry);
+    expect(msg.content).toBe("my key is sk-********");
   });
 
   it("masks a GitHub PAT in a tool_input field (e.g. curl auth header)", () => {
     const secret = j("ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+    const cmd = `curl -H "Authorization: token ${secret}" https://api.github.com`;
     const entry = {
       ...base,
       type: "tool_call",
       tool_name: "bash",
       tool_use_id: "toolu_1",
-      tool_input: JSON.stringify({ cmd: `curl -H "Authorization: token ${secret}" https://api.github.com` }),
+      tool_input: JSON.stringify({ cmd }),
     };
-    const msg = queuedMessageFor(entry);
-    expect(msg.tool_input).not.toContain(secret);
-    expect(String(msg.tool_input)).toContain("ghp_");
-    expect(String(msg.tool_input)).toContain("********");
+    const msg = queuedMessage(entry);
+    const toolInput = JSON.parse(String(msg.tool_input)) as { cmd: string };
+    expect(toolInput.cmd).toBe(`curl -H "Authorization: token ghp_********" https://api.github.com`);
   });
 
   it("masks a secret in a tool_response field", () => {
@@ -239,15 +221,15 @@ describe("secret redaction on the Cowork ingest path (#308)", () => {
       tool_use_id: "toolu_2",
       tool_response: JSON.stringify({ api_key: secret }),
     };
-    const msg = queuedMessageFor(entry);
-    expect(msg.tool_response).not.toContain(secret);
-    expect(String(msg.tool_response)).toContain("sk-ant-");
-    expect(String(msg.tool_response)).toContain("********");
+    const msg = queuedMessage(entry);
+    const toolResponse = JSON.parse(String(msg.tool_response)) as { api_key: string };
+    // redactSecrets keeps the scheme prefix as a hint (sk-ant-) and masks the rest
+    expect(toolResponse.api_key).toBe("sk-ant-********");
   });
 
   it("leaves non-secret content untouched", () => {
     const entry = { ...base, type: "user_message", content: "what is the weather in Tokyo?" };
-    const msg = queuedMessageFor(entry);
+    const msg = queuedMessage(entry);
     expect(msg.content).toBe("what is the weather in Tokyo?");
   });
 });

@@ -400,6 +400,35 @@ export function summarizeIdleSessions(
 }
 
 /**
+ * Serialize a Cowork session entry, redact secrets, and build the queued row.
+ *
+ * Extracted as a named function so the redaction + serialization step is
+ * testable in isolation — tests that import this function exercise the
+ * production code path rather than duplicating the redaction logic themselves.
+ *
+ * Matches the pattern used by every other agent capturer:
+ *   `line = redactSecrets(JSON.stringify(entry))`
+ */
+export function buildCoworkQueueRow(
+  entry: Record<string, unknown>,
+  config: { userName: string; orgName: string; workspaceId: string },
+): ReturnType<typeof buildQueuedSessionRow> {
+  return buildQueuedSessionRow({
+    sessionPath: buildSessionPath(config, String(entry.session_id ?? "")),
+    // Mask secrets (tokens, passwords, API keys) before the payload is
+    // queued or embedded. Redacting the serialized line covers every field
+    // (content / tool_input / tool_response) in one pass.
+    line: redactSecrets(JSON.stringify(entry)),
+    userName: config.userName,
+    projectName: COWORK_PROJECT,
+    description: String(entry.type ?? ""),
+    agent: COWORK_AGENT,
+    pluginVersion: getVersion(),
+    timestamp: String(entry.timestamp ?? new Date().toISOString()),
+  });
+}
+
+/**
  * Tail Cowork transcripts and write new messages to the sessions table.
  * Safe to call repeatedly; never throws and never writes to stdout (which
  * would corrupt the MCP stdio channel).
@@ -454,20 +483,7 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
           continue;
         }
 
-        const rows = entriesForLine(parsed).map(entry => buildQueuedSessionRow({
-          sessionPath: buildSessionPath(config, String(entry.session_id)),
-          // Mask secrets (tokens, passwords, API keys) before the payload is
-          // queued or embedded — same pattern as every other agent capturer.
-          // Redacting the serialized line covers every field (content /
-          // tool_input / tool_response) in one pass.
-          line: redactSecrets(JSON.stringify(entry)),
-          userName: config.userName,
-          projectName: COWORK_PROJECT,
-          description: String(entry.type ?? ""),
-          agent: COWORK_AGENT,
-          pluginVersion: getVersion(),
-          timestamp: String(entry.timestamp),
-        }));
+        const rows = entriesForLine(parsed).map(entry => buildCoworkQueueRow(entry, config));
         if (rows.length === 0) {
           processed += 1;
           continue;
