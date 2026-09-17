@@ -216,9 +216,9 @@ const RULES: Rule[] = [
 ];
 
 function maskBeforeQuote(match: string, keep: string, open: string, value: string, quote: string): string {
-  const escape = quote ? (value.match(/\\+$/)?.[0] ?? "") : "";
+  const escape = quote ? (value.match(/(?<=[^\\])\\+$/)?.[0] ?? "") : "";
   const secret = value.slice(0, value.length - escape.length);
-  if (secret && NON_SECRET_VALUE.test(secret)) return match;
+  if (NON_SECRET_VALUE.test(secret)) return match;
   return `${keep}${open}${MASK}${escape}`;
 }
 
