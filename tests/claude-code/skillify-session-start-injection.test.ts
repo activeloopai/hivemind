@@ -208,13 +208,13 @@ describe("Pi skillify worker (mining) wiring", () => {
     expect(cfg).toMatch(/dist\/src\/skillify\/skillify-worker\.js[^"]*"\s*,\s*out:\s*"skillify-worker"/);
   });
 
-  it("install-pi.ts copies harnesses/pi/bundle/skillify-worker.js to ~/.pi/agent/hivemind/", () => {
+  it("install-pi.ts syncs harnesses/pi/bundle/ (skillify-worker.js included) to ~/.pi/agent/hivemind/", () => {
     const src = readFileSync(resolve(BUNDLE_ROOT, "src", "cli", "install-pi.ts"), "utf-8");
-    expect(src).toMatch(/SKILLIFY_WORKER_PATH\s*=/);
-    // join(pkgRoot(), "harnesses", "pi", "bundle", "skillify-worker.js") — the source path
-    expect(src).toMatch(/"pi",\s*"bundle",\s*"skillify-worker\.js"/);
-    // copyFileSync(srcSkillifyWorker, SKILLIFY_WORKER_PATH) — the install step
-    expect(src).toMatch(/copyFileSync\(srcSkillifyWorker,\s*SKILLIFY_WORKER_PATH\)/);
+    expect(src).toMatch(/WIKI_WORKER_DIR\s*=\s*join\(PI_AGENT_DIR,\s*"hivemind"\)/);
+    // join(pkgRoot(), "harnesses", "pi", "bundle") — the whole worker bundle dir
+    expect(src).toMatch(/"harnesses",\s*"pi",\s*"bundle"\)/);
+    // syncDir(srcWorkers, WIKI_WORKER_DIR) — the install step (tests/cli/install-prune.test.ts drives it)
+    expect(src).toMatch(/syncDir\(srcWorkers,\s*WIKI_WORKER_DIR\)/);
   });
 
   it("pi extension defines spawnPiSkillifyWorker and wires it into session_shutdown", () => {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, statSync, symlinkSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { tmpdir, homedir } from "node:os";
 
@@ -8,6 +8,8 @@ import {
   pkgRoot,
   ensureDir,
   copyDir,
+  syncDir,
+  pruneDir,
   symlinkForce,
   isLink,
   readJson,
@@ -119,6 +121,71 @@ describe("copyDir", () => {
     writeFileSync(join(dst, "a.js"), "stale");
     copyDir(src, dst);
     expect(readFileSync(join(dst, "a.js"), "utf-8")).toBe("console.log('a')");
+  });
+});
+
+describe("syncDir / pruneDir", () => {
+  let root: string;
+  let src: string;
+  let dst: string;
+  beforeEach(() => {
+    root = join(tmpdir(), `hm-sync-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    src = join(root, "src");
+    dst = join(root, "dst");
+    mkdirSync(join(src, "graph-chunks"), { recursive: true });
+    writeFileSync(join(src, "capture.js"), "new capture");
+    writeFileSync(join(src, "graph-chunks", "graph-NEW.js"), "new chunk");
+    // A previous install: same layout plus files the new payload no longer ships.
+    mkdirSync(join(dst, "graph-chunks"), { recursive: true });
+    mkdirSync(join(dst, "dropped-dir"), { recursive: true });
+    writeFileSync(join(dst, "capture.js"), "old capture");
+    writeFileSync(join(dst, "skilify-worker.js"), "renamed away");
+    writeFileSync(join(dst, "graph-chunks", "graph-OLD.js"), "stale chunk");
+    writeFileSync(join(dst, "dropped-dir", "x.md"), "stale");
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it("copies the payload and removes files and dirs the payload no longer ships, recursively", () => {
+    const removed = syncDir(src, dst);
+    expect(readFileSync(join(dst, "capture.js"), "utf-8")).toBe("new capture");
+    expect(existsSync(join(dst, "graph-chunks", "graph-NEW.js"))).toBe(true);
+    expect(existsSync(join(dst, "skilify-worker.js"))).toBe(false);
+    expect(existsSync(join(dst, "graph-chunks", "graph-OLD.js"))).toBe(false);
+    expect(existsSync(join(dst, "dropped-dir"))).toBe(false);
+    expect(removed.sort()).toEqual([
+      join(dst, "dropped-dir"),
+      join(dst, "graph-chunks", "graph-OLD.js"),
+      join(dst, "skilify-worker.js"),
+    ].sort());
+  });
+
+  it("unlinks a stray symlink inside the owned dir without touching its target", () => {
+    const target = join(root, "outside");
+    mkdirSync(target);
+    writeFileSync(join(target, "keep.txt"), "user data");
+    symlinkSync(target, join(dst, "linked"));
+    syncDir(src, dst);
+    expect(isLink(join(dst, "linked"))).toBe(false);
+    expect(existsSync(join(dst, "linked"))).toBe(false);
+    expect(readFileSync(join(target, "keep.txt"), "utf-8")).toBe("user data");
+  });
+
+  it("refuses to sync into a destination that is itself a symlink", () => {
+    const linked = join(root, "linked-dst");
+    symlinkSync(dst, linked);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    expect(syncDir(src, linked)).toEqual([]);
+    expect(existsSync(join(dst, "skilify-worker.js"))).toBe(true);
+  });
+
+  it("pruneDir keeps only the named entries and is a no-op on a missing dir", () => {
+    const removed = pruneDir(dst, ["capture.js", "graph-chunks"]);
+    expect(removed.sort()).toEqual([join(dst, "dropped-dir"), join(dst, "skilify-worker.js")].sort());
+    expect(existsSync(join(dst, "graph-chunks", "graph-OLD.js"))).toBe(true);
+    expect(pruneDir(join(root, "nope"), [])).toEqual([]);
   });
 });
 
