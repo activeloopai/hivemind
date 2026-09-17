@@ -291,9 +291,18 @@ describe("redactSecrets — JSON-serialized capture entries stay valid JSON", ()
     expect(line).not.toContain("wJalrXUtnFEMI");
   });
 
-  it("still masks the whole value when a backslash sits inside the secret", () => {
+  it("still masks the whole value when backslashes sit inside or at the end of the secret", () => {
     expect(redactSecrets("psql --password hunter\\!2secret")).toBe("psql --password ********");
     expect(redactSecrets("client_secret=My\\Sekret123456")).toBe("client_secret=********");
+    expect(redactSecrets("password=trailing\\\\ next")).toBe("password=******** next");
+    expect(redactSecrets("password=\\\\\\\\")).toBe("password=********");
+    expect(redactSecrets("--password \\ end")).toBe("--password ******** end");
+  });
+
+  it("keeps a literal trailing backslash escaped when the entry is serialized", () => {
+    const line = redactSecrets(JSON.stringify({ content: JSON.stringify("password=abc\\") }));
+    const parsed = JSON.parse(line) as { content: string };
+    expect(JSON.parse(parsed.content)).toBe("password=********\\");
   });
 
   it("masks a --password flag whose value ends at an escaped quote", () => {
