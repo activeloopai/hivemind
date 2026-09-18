@@ -103,6 +103,47 @@ function isSymbolicLink(path: string): boolean {
   try { return lstatSync(path).isSymbolicLink(); } catch { return false; }
 }
 
+type ExecFileSyncFn = typeof execFileSync;
+
+/**
+ * Run `npm install` for the shared embedding deps, falling back to
+ * `--ignore-scripts` if the first attempt fails (e.g. sharp has no prebuilt
+ * binary for Node v26 on macOS and requires node-gyp). After a successful
+ * fallback, explicitly re-runs onnxruntime-node's postinstall so its binary
+ * is still downloaded. Exported for unit testing.
+ */
+export function _installWithFallback(
+  sharedDir: string,
+  sharedNodeModules: string,
+  exec: ExecFileSyncFn = execFileSync,
+): void {
+  const npmArgs = ["install", "--omit=dev", "--no-package-lock", "--no-audit", "--no-fund"];
+  try {
+    exec("npm", npmArgs, { cwd: sharedDir, stdio: "inherit" });
+  } catch (err) {
+    warn(`  Embeddings     install failed (${err instanceof Error ? err.message : String(err)}); retrying without install scripts`);
+    warn(`  Embeddings     (sharp image support unavailable — text embeddings unaffected)`);
+    try {
+      exec("npm", [...npmArgs, "--ignore-scripts"], { cwd: sharedDir, stdio: "inherit" });
+    } catch (retryErr) {
+      throw new Error(
+        `Embedding deps install failed even without scripts: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`
+      );
+    }
+    const onnxScript = join(sharedNodeModules, "onnxruntime-node", "script", "install.js");
+    if (existsSync(onnxScript)) {
+      try {
+        exec("node", [onnxScript], {
+          cwd: join(sharedNodeModules, "onnxruntime-node"),
+          stdio: "inherit",
+        });
+      } catch (onnxErr) {
+        warn(`  Embeddings     onnxruntime-node install script failed — embeddings may not work: ${onnxErr instanceof Error ? onnxErr.message : String(onnxErr)}`);
+      }
+    }
+  }
+}
+
 function ensureSharedDeps(): void {
   if (!isSharedDepsInstalled()) {
     log(`  Embeddings     installing ${TRANSFORMERS_PKG}@${TRANSFORMERS_RANGE} into ${SHARED_DIR}`);
@@ -120,10 +161,7 @@ function ensureSharedDeps(): void {
       private: true,
       dependencies: { ...(existing.dependencies ?? {}), [TRANSFORMERS_PKG]: TRANSFORMERS_RANGE },
     });
-    execFileSync("npm", ["install", "--omit=dev", "--no-package-lock", "--no-audit", "--no-fund"], {
-      cwd: SHARED_DIR,
-      stdio: "inherit",
-    });
+    _installWithFallback(SHARED_DIR, SHARED_NODE_MODULES);
   } else {
     log(`  Embeddings     shared deps already present at ${SHARED_DIR}`);
   }
