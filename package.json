@@ -22,6 +22,7 @@
     "harnesses/hermes/skills",
     "mcp/bundle",
     "harnesses/pi/extension-source",
+    "harnesses/pi/bundle",
     "harnesses/openclaw/dist",
     "harnesses/openclaw/skills",
     "harnesses/openclaw/openclaw.plugin.json",
