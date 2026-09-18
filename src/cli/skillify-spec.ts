@@ -49,6 +49,7 @@ export const SKILLIFY_COMMANDS: SkillifyCommand[] = [
   { cmd: "hivemind skillify push <skill-name>",          desc: "upload a local skill to the org table (inverse of pull)" },
   { cmd: "hivemind skillify push --from <project|global>", desc: "which local skills dir to read (default: project)" },
   { cmd: "hivemind skillify push --dry-run",             desc: "preview without writing to the org table" },
+  { cmd: "hivemind skillify push --review",              desc: "show the exact candidate and proposed version without publishing" },
   { cmd: "hivemind skillify unpull",                     desc: "remove every skill previously installed by pull" },
   { cmd: "hivemind skillify unpull --user <email>",      desc: "remove only that author's pulls" },
   { cmd: "hivemind skillify unpull --not-mine",          desc: "remove all pulls except your own" },
@@ -114,6 +115,7 @@ export const SKILLIFY_SPEC: SkillifySubcommand[] = [
     options: [
       { flag: "--from <project|global>", desc: "which local skills dir to read (default: project)" },
       { flag: "--dry-run",               desc: "preview without writing to the org table" },
+      { flag: "--review",                desc: "show the exact candidate and proposed version without publishing" },
     ],
     note: "the manual counterpart to mining — push a skill Claude wrote locally straight to the org table (append-only: re-pushing an existing skill lands a new version). Authorship/lineage is preserved; you're added as a contributor.",
   },
