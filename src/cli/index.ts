@@ -377,7 +377,18 @@ async function runInstallAll(args: string[]): Promise<void> {
     await runAuthGate(args);
   }
 
-  for (const id of targets) runSingleInstall(id);
+  let failed = false;
+  for (const id of targets) {
+    if (!runSingleInstall(id)) failed = true;
+  }
+
+  // A background updater treats the child process exit status as proof that
+  // agent bundles were refreshed. Do not claim success when one installer
+  // failed, even though the remaining platforms should still be attempted.
+  if (failed) {
+    process.exitCode = 1;
+    return;
+  }
 
   if (withEmbeddings) {
     log("");
@@ -451,7 +462,7 @@ async function runInstallAll(args: string[]): Promise<void> {
   log("Done. Restart each assistant to activate hooks.");
 }
 
-function runSingleInstall(id: PlatformId): void {
+function runSingleInstall(id: PlatformId): boolean {
   try {
     if (id === "claude") installClaude();
     else if (id === "codex") installCodex();
@@ -460,12 +471,14 @@ function runSingleInstall(id: PlatformId): void {
     else if (id === "hermes") installHermes();
     else if (id === "pi") installPi();
     else if (id === "claude_cowork") installCowork();
+    return true;
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${(err as Error).message}`);
+    return false;
   }
 }
 
-function runSingleUninstall(id: PlatformId): void {
+function runSingleUninstall(id: PlatformId): boolean {
   try {
     if (id === "claude") uninstallClaude();
     else if (id === "codex") uninstallCodex();
@@ -474,8 +487,10 @@ function runSingleUninstall(id: PlatformId): void {
     else if (id === "hermes") uninstallHermes();
     else if (id === "pi") uninstallPi();
     else if (id === "claude_cowork") uninstallCowork();
+    return true;
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${(err as Error).message}`);
+    return false;
   }
 }
 
@@ -506,7 +521,11 @@ async function main(): Promise<void> {
   if (cmd === "uninstall") {
     const only = parseOnly(args.slice(1));
     const targets: PlatformId[] = only ?? detectPlatforms().map(p => p.id);
-    for (const id of targets) runSingleUninstall(id);
+    let failed = false;
+    for (const id of targets) {
+      if (!runSingleUninstall(id)) failed = true;
+    }
+    if (failed) process.exitCode = 1;
     return;
   }
 
@@ -620,13 +639,19 @@ async function main(): Promise<void> {
   if (platformCmds.includes(cmd as PlatformId)) {
     const sub = args[1];
     if (sub === "install") {
-      runSingleInstall(cmd as PlatformId);
+      const installed = runSingleInstall(cmd as PlatformId);
+      if (!installed) {
+        process.exitCode = 1;
+        return;
+      }
       if (hasFlag(args.slice(2), "--with-embeddings")) {
         log("");
         installEmbeddings();
       }
     }
-    else if (sub === "uninstall") runSingleUninstall(cmd as PlatformId);
+    else if (sub === "uninstall") {
+      if (!runSingleUninstall(cmd as PlatformId)) process.exitCode = 1;
+    }
     else { warn(`Usage: hivemind ${cmd} install [--with-embeddings] | uninstall`); process.exit(1); }
     return;
   }

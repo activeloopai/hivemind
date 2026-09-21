@@ -157,6 +157,7 @@ beforeEach(() => {
 
 afterEach(() => {
   process.argv = originalArgv;
+  process.exitCode = undefined;
   // Restore process.stdin.isTTY in case a test mutated it — otherwise the
   // mutation leaks into later tests in the same worker and makes them
   // order-dependent.
@@ -296,6 +297,20 @@ describe("hivemind install", () => {
     expect(installs.installClaude).toHaveBeenCalled();
     expect(installs.installCodex).toHaveBeenCalled();
     expect(stderrText()).toContain("FAILED: boom");
+    // The old dispatcher logged the failure but exited 0, so autoupdate
+    // reported a successful refresh even though Claude was not installed.
+    expect(process.exitCode).toBe(1);
+    expect(maybeShowOrgChoiceMock).not.toHaveBeenCalled();
+  });
+
+  it("propagates an uninstall failure through the process exit status", async () => {
+    detectPlatformsMock.mockReturnValue([{ id: "cursor", markerDir: "/x/.cursor" }]);
+    installs.uninstallCursor.mockImplementation(() => { throw new Error("cannot read config"); });
+
+    await runCli(["uninstall"]);
+
+    expect(stderrText()).toContain("FAILED: cannot read config");
+    expect(process.exitCode).toBe(1);
   });
 });
 
