@@ -21,11 +21,12 @@ import {
   existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync,
   lstatSync, readlinkSync, symlinkSync, unlinkSync,
 } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { assertValidSkillName, capSkillName, composeDescription, parseFrontmatter, type SkillFrontmatter } from "./skill-writer.js";
 import type { InstallLocation } from "./scope-config.js";
-import { entriesForRoot, loadManifest, pruneOrphanedEntries, recordPull, removePullEntry, unlinkSymlinks } from "./manifest.js";
+import { entriesForRoot, loadManifest, pruneOrphanedEntries, recordPull, removePullEntry, unlinkSymlinks, type PulledEntry } from "./manifest.js";
 import { detectAgentSkillsRoots } from "./agent-roots.js";
 
 /**
@@ -99,6 +100,84 @@ export interface PullSummary {
   skipped: number;
   dryrun: number;
   entries: PullResultEntry[];
+}
+
+const PENDING_PULL_MARKER = ".hivemind-pull-pending.json";
+
+interface PendingPullRepair {
+  version: 1;
+  entry: PulledEntry;
+  contentSha256: string;
+}
+
+function pendingPullPath(skillDir: string): string {
+  return join(skillDir, PENDING_PULL_MARKER);
+}
+
+function sha256File(path: string): string | null {
+  try { return createHash("sha256").update(readFileSync(path)).digest("hex"); }
+  catch { return null; }
+}
+
+function isSafePulledEntry(value: unknown): value is PulledEntry {
+  if (!value || typeof value !== "object") return false;
+  const e = value as Record<string, unknown>;
+  return typeof e.dirName === "string" && e.dirName.length > 0
+    && !e.dirName.includes("/") && !e.dirName.includes("\\") && !e.dirName.includes("..")
+    && typeof e.name === "string" && e.name.length > 0
+    && (e.rawName === undefined || (typeof e.rawName === "string" && e.rawName.length > 0))
+    && typeof e.author === "string"
+    && typeof e.projectKey === "string"
+    && typeof e.remoteVersion === "number"
+    && (e.install === "global" || e.install === "project")
+    && typeof e.installRoot === "string" && e.installRoot.length > 0
+    && typeof e.pulledAt === "string"
+    && Array.isArray(e.symlinks)
+    && e.symlinks.every((p: unknown) => typeof p === "string" && p.length > 0
+      && (p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p)) && !p.includes(".."));
+}
+
+function readPendingPull(skillDir: string): PendingPullRepair | null {
+  try {
+    const parsed = JSON.parse(readFileSync(pendingPullPath(skillDir), "utf-8")) as Record<string, unknown>;
+    if (parsed.version !== 1 || typeof parsed.contentSha256 !== "string"
+        || !/^[0-9a-f]{64}$/.test(parsed.contentSha256)
+        || !isSafePulledEntry(parsed.entry)) return null;
+    return parsed as unknown as PendingPullRepair;
+  } catch { return null; }
+}
+
+function savePendingPull(skillDir: string, entry: PulledEntry, skillFile: string): void {
+  const contentSha256 = sha256File(skillFile);
+  if (!contentSha256) return;
+  const path = pendingPullPath(skillDir);
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify({ version: 1, entry, contentSha256 }, null, 2) + "\n", { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    try { unlinkSync(tmp); } catch { /* best effort */ }
+  }
+}
+
+function removePendingPull(skillDir: string): void {
+  try { unlinkSync(pendingPullPath(skillDir)); } catch { /* already absent */ }
+}
+
+function pendingMatches(
+  pending: PendingPullRepair,
+  entry: PulledEntry,
+  skillFile: string,
+): boolean {
+  return pending.entry.dirName === entry.dirName
+    && pending.entry.name === entry.name
+    && pending.entry.rawName === entry.rawName
+    && pending.entry.author === entry.author
+    && pending.entry.projectKey === entry.projectKey
+    && pending.entry.remoteVersion === entry.remoteVersion
+    && pending.entry.install === entry.install
+    && pending.entry.installRoot === entry.installRoot
+    && pending.contentSha256 === sha256File(skillFile);
 }
 
 function esc(s: string): string {
@@ -663,29 +742,61 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
       const symlinks = opts.install === "global"
         ? fanOutSymlinks(skillDir, dirName, detectAgentSkillsRoots(root))
         : [];
+      const pullEntry: PulledEntry = {
+        dirName,
+        name,
+        rawName,
+        author,
+        projectKey: String(row.project_key ?? ""),
+        remoteVersion,
+        install: opts.install,
+        installRoot: root,
+        pulledAt: new Date().toISOString(),
+        symlinks,
+      };
       // Record in manifest so `unpull` can identify this entry as
       // pull-managed without relying on the `--<author>` dirname heuristic
       // and so the symlinks created above can be reversed by a single
       // manifest-driven unlink pass.
       try {
-        recordPull({
-          dirName,
-          name,
-          rawName,
-          author,
-          projectKey: String(row.project_key ?? ""),
-          remoteVersion,
-          install: opts.install,
-          installRoot: root,
-          pulledAt: new Date().toISOString(),
-          symlinks,
-        });
+        recordPull(pullEntry);
+        removePendingPull(skillDir);
       } catch (e: any) {
         // Skill is on disk but the manifest didn't record it — surface
-        // this in the entry so the dispatcher can warn. `unpull` will
-        // not be able to clean this entry via the manifest path until
-        // a successful re-pull populates it.
+        // this in the entry so the dispatcher can warn. Keep a content-bound
+        // repair marker beside the file so a later same-version pull can
+        // retry this exact publication without adopting an arbitrary user
+        // skill that merely happens to share its name and version.
         manifestError = e?.message ?? String(e);
+        savePendingPull(skillDir, pullEntry, skillFile);
+      }
+    } else if (action === "skipped" && !(opts.dryRun ?? false) && existsSync(skillFile)) {
+      // A previous pull may have published the file successfully and failed
+      // only while recording its manifest entry. The normal same-version
+      // decision is "skipped", so repair only when the durable marker written
+      // by that failed publication matches the current row and file bytes.
+      const currentEntries = entriesForRoot(loadManifest(), opts.install, root);
+      const hasManifestEntry = currentEntries.some(e => e.dirName === dirName);
+      const pending = hasManifestEntry ? null : readPendingPull(skillDir);
+      const expectedEntry: PulledEntry = {
+        dirName,
+        name,
+        rawName,
+        author,
+        projectKey: String(row.project_key ?? ""),
+        remoteVersion,
+        install: opts.install,
+        installRoot: root,
+        pulledAt: pending?.entry.pulledAt ?? new Date().toISOString(),
+        symlinks: pending?.entry.symlinks ?? [],
+      };
+      if (pending && pendingMatches(pending, expectedEntry, skillFile)) {
+        try {
+          recordPull(pending.entry);
+          removePendingPull(skillDir);
+        } catch (e: any) {
+          manifestError = e?.message ?? String(e);
+        }
       }
     }
 
