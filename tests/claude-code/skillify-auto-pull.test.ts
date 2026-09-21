@@ -213,6 +213,29 @@ describe("autoPullSkills — failures swallowed", () => {
     // Must complete well under 1s — the 100ms timeout is the upper bound.
     expect(elapsed).toBeLessThan(1000);
   });
+
+  it("does not write when a timed-out query resolves later", async () => {
+    let resolveLate!: (rows: Record<string, unknown>[]) => void;
+    let querySignal: AbortSignal | undefined;
+    const lateQuery: QueryFn = (_sql, signal) => {
+      querySignal = signal;
+      return new Promise(resolve => { resolveLate = resolve; });
+    };
+
+    const result = await autoPullSkills({
+      loadConfigFn: () => makeConfig(),
+      queryFn: lateQuery,
+      install: "project",
+      cwd: tmpHome,
+      timeoutMs: 10,
+    });
+    expect(result).toEqual({ pulled: 0, skipped: true, reason: "error" });
+    expect(querySignal?.aborted).toBe(true);
+
+    resolveLate([sampleRow()]);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(existsSync(join(tmpHome, ".claude/skills/shared-skill--alice/SKILL.md"))).toBe(false);
+  });
 });
 
 // ─── autoPullSkills — install location default ────────────────────────────────

@@ -56,10 +56,13 @@ export interface AutoPullDeps {
 }
 
 /** Bound a promise by `ms` milliseconds. Reject with a tagged error on timeout. */
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+function withTimeout<T>(p: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`autopull timeout after ${ms}ms`)), ms);
+    timer = setTimeout(() => {
+      onTimeout?.();
+      reject(new Error(`autopull timeout after ${ms}ms`));
+    }, ms);
     // Don't keep the event loop alive solely for this timer.
     if (typeof timer.unref === "function") timer.unref();
   });
@@ -123,7 +126,7 @@ export async function autoPullSkills(deps: AutoPullDeps = {}): Promise<AutoPullR
       config.workspaceId,
       config.skillsTableName,
     );
-    query = (sql: string) => api.query(sql) as Promise<Record<string, unknown>[]>;
+    query = (sql: string, signal?: AbortSignal) => api.query(sql, signal) as Promise<Record<string, unknown>[]>;
     discoverTableExists = async () => {
       const known = await api.knownTablesOrNull();
       return known ? (name: string) => known.includes(name) : undefined;
@@ -132,6 +135,7 @@ export async function autoPullSkills(deps: AutoPullDeps = {}): Promise<AutoPullR
 
   const install = deps.install ?? "global";
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
 
   try {
     const summary = await withTimeout(
@@ -140,7 +144,7 @@ export async function autoPullSkills(deps: AutoPullDeps = {}): Promise<AutoPullR
       (async () => {
         const tableExists = await discoverTableExists();
         return runPull({
-          query,
+          query: (sql, signal) => query(sql, signal),
           tableName: config.skillsTableName,
           install,
           cwd: install === "project" ? (deps.cwd ?? process.cwd()) : undefined,
@@ -148,9 +152,11 @@ export async function autoPullSkills(deps: AutoPullDeps = {}): Promise<AutoPullR
           dryRun: false,
           force: false,
           tableExists,
+          signal: controller.signal,
         });
       })(),
       timeoutMs,
+      () => controller.abort(),
     );
     log(`pulled scanned=${summary.scanned} wrote=${summary.wrote} skipped=${summary.skipped}`);
     return { pulled: summary.wrote, skipped: false };

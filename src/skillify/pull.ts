@@ -42,7 +42,7 @@ export function assertValidAuthor(author: string): void {
   }
 }
 
-export type QueryFn = (sql: string) => Promise<Record<string, unknown>[]>;
+export type QueryFn = (sql: string, signal?: AbortSignal) => Promise<Record<string, unknown>[]>;
 
 export interface PullOptions {
   query: QueryFn;
@@ -68,6 +68,8 @@ export interface PullOptions {
    * couldn't be fetched) falls back to the SELECT-then-catch path below.
    */
   tableExists?: (name: string) => boolean;
+  /** Abort an in-flight pull before it can publish any filesystem changes. */
+  signal?: AbortSignal;
 }
 
 export interface PullResultEntry {
@@ -457,6 +459,11 @@ export function decideAction(args: {
  * prevents cross-project overwrites.
  */
 export async function runPull(opts: PullOptions): Promise<PullSummary> {
+  const throwIfAborted = (): void => {
+    if (opts.signal?.aborted) throw new Error("skillify pull aborted");
+  };
+
+  throwIfAborted();
   // Sweep stale manifest entries before fetching: anything whose canonical
   // dir was rm-ed by hand has dangling fan-out symlinks that need to go,
   // and a phantom row would otherwise survive into this pull's manifest
@@ -483,7 +490,7 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     rows = [];
   } else {
     try {
-      rows = await opts.query(sql);
+      rows = await opts.query(sql, opts.signal);
     } catch (e: any) {
       if (isMissingTableError(e?.message)) {
         rows = [];
@@ -494,12 +501,16 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
           skillName: opts.skillName,
           includeContributors: false,
         });
-        rows = await opts.query(legacySql);
+        rows = await opts.query(legacySql, opts.signal);
       } else {
         throw e;
       }
     }
   }
+  // QueryFn remains backward-compatible with one-argument implementations,
+  // but a timed-out auto-pull can still abort the publication phase even when
+  // an injected or legacy query ignores the signal and resolves later.
+  throwIfAborted();
   const latest = selectLatestPerName(rows);
 
   const root = resolvePullDestination(opts.install, opts.cwd);
@@ -513,6 +524,7 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
   const claimedDirs = new Map<string, string>();
 
   for (const row of latest) {
+    throwIfAborted();
     const rawName = String(row.name ?? "");
     if (!rawName) continue;
     const author = String(row.author ?? "");
@@ -767,6 +779,7 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
   // Skip on dry-run (no disk mutations) and on project installs (no
   // fan-out for them by design).
   if (!opts.dryRun && opts.install === "global") {
+    throwIfAborted();
     backfillSymlinks(root);
   }
 
