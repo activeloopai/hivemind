@@ -388,12 +388,23 @@ export async function archiveDoc(
   input: { doc_id: string; agent?: string; plugin_version?: string },
   opts: { project?: string; scope?: string } = {},
 ): Promise<WriteResult> {
-  return editDoc(query, tableName, {
+  // Archive is the one direct write that must retain legacy project='' rows
+  // after callers begin selecting a repository. Resolve with the intentional
+  // read-side project-or-legacy selector, then update by the resolved row id;
+  // normal edit callers remain strict-project and cannot broaden accidentally.
+  const previous = await getDocLatest(query, tableName, input.doc_id, {
+    projectOrLegacy: opts.project,
+    scope: opts.scope,
+  });
+  if (!previous) {
+    throw new Error(`Doc not found: ${input.doc_id}`);
+  }
+  return updateInPlace(query, tableName, previous, {
     doc_id: input.doc_id,
     status: "archived",
     agent: input.agent,
     plugin_version: input.plugin_version,
-  }, opts);
+  });
 }
 
 /**
