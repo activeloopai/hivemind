@@ -111,9 +111,22 @@ function isHivemindHook(entry: unknown): boolean {
   return cmd.replace(/\\/g, "/").includes("/.hermes/hivemind/bundle/");
 }
 
+function quoteHookCommandPath(path: string): string {
+  // Hermes tokenizes hook commands before spawning with shell=false. On
+  // POSIX it uses shlex semantics, where single quotes preserve every byte;
+  // the close/escaped-quote/reopen sequence handles a literal apostrophe and
+  // is also safe if an older runner forwards the command through /bin/sh.
+  if (process.platform !== "win32") return `'${path.replace(/'/g, `'\\''`)}'`;
+
+  // Hermes uses shlex(posix=false) on native Windows and removes one matching
+  // quote layer. Keep its established double-quoted path shape there; `"` is
+  // not a legal Windows filename character, so no embedded quote can break it.
+  return `"${path}"`;
+}
+
 function buildHookEntry(bundleFile: string, timeout: number, matcher?: string): HermesHookEntry {
   const entry: HermesHookEntry = {
-    command: `node ${join(BUNDLE_DIR, bundleFile)}`,
+    command: `node ${quoteHookCommandPath(join(BUNDLE_DIR, bundleFile))}`,
     timeout,
   };
   if (matcher) entry.matcher = matcher;
