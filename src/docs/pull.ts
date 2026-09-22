@@ -7,8 +7,10 @@
  *   - file doc   `src/foo.ts`        → `src/foo.ts.hivemind.md`
  *
  * Delta protocol: a local manifest (`.hivemind/docs-pull.json`, gitignored)
- * stores the `updated_at` cursor of the last pull. Each pull reads only rows
- * with `updated_at > cursor` for this (project, scope) — O(changed docs), not
+ * stores an `updated_at` cursor per (project, scope) pull context. A cursor is
+ * reused only while that context remains materialized; switching contexts
+ * re-reads the view because their docs share physical local paths. Same-view
+ * pulls read only rows with `updated_at >= cursor` — O(changed docs), not
  * O(corpus). Rows are targeted by their composite id prefix
  * (`<project>|<scope>|`) so the read never selects the `scope` column and
  * works on tables that predate it.
@@ -34,8 +36,17 @@ export const PULL_MANIFEST_FILE = "docs-pull.json";
 export const GITIGNORE_ENTRIES = ["*.hivemind.md", ".hivemind/"];
 
 export interface PullManifest {
-  /** Max `updated_at` already materialized. Empty = never pulled. */
+  /** Max `updated_at` from the most recent context pull (legacy field). */
   cursor: string;
+  /** Max `updated_at` already materialized, keyed by project and scope. */
+  contexts?: Record<string, string>;
+  /** Context whose view currently owns the shared local materialization. */
+  activeContext?: string;
+}
+
+/** Stable manifest key for one project's branch/scope view. */
+export function pullContextKey(project: string, scope: string): string {
+  return JSON.stringify([project, scope]);
 }
 
 /**
@@ -56,7 +67,17 @@ export function localDocPath(docId: string): string | null {
 export function readPullManifest(repoRoot: string): PullManifest {
   try {
     const raw = JSON.parse(readFileSync(join(repoRoot, PULL_MANIFEST_DIR, PULL_MANIFEST_FILE), "utf-8"));
-    return { cursor: typeof raw?.cursor === "string" ? raw.cursor : "" };
+    const contexts: Record<string, string> = {};
+    if (raw?.contexts && typeof raw.contexts === "object" && !Array.isArray(raw.contexts)) {
+      for (const [key, value] of Object.entries(raw.contexts)) {
+        if (typeof value === "string") contexts[key] = value;
+      }
+    }
+    return {
+      cursor: typeof raw?.cursor === "string" ? raw.cursor : "",
+      ...(Object.keys(contexts).length > 0 ? { contexts } : {}),
+      ...(typeof raw?.activeContext === "string" ? { activeContext: raw.activeContext } : {}),
+    };
   } catch {
     return { cursor: "" };
   }
@@ -115,7 +136,14 @@ export interface PullReport {
 export async function pullDocs(args: PullArgs): Promise<PullReport> {
   const scope = args.scope ?? "main";
   const manifest = readPullManifest(args.repoRoot);
-  const cursor = args.force ? "" : manifest.cursor;
+  const contextKey = pullContextKey(args.project, scope);
+  // A pre-context manifest has no reliable project/scope ownership. Ignore
+  // its single cursor once, then persist an isolated cursor for this view.
+  const contextCursor = manifest.contexts?.[contextKey] ?? "";
+  // A context cursor is valid only while its view still owns the shared local
+  // paths. Missing/ambiguous active metadata deliberately falls back to a full
+  // read so legacy or downgraded manifests cannot lose older documents.
+  const cursor = args.force || manifest.activeContext !== contextKey ? "" : contextCursor;
 
   const safe = sqlIdent(args.tableName);
   const idPrefix = docRowId(args.project, scope, "");
@@ -147,7 +175,7 @@ export async function pullDocs(args: PullArgs): Promise<PullReport> {
   const written: string[] = [];
   const removed: string[] = [];
   let unchanged = 0;
-  let maxSeen = manifest.cursor;
+  let maxSeen = contextCursor;
   const rootAbs = resolve(args.repoRoot);
 
   for (const doc of latest.values()) {
@@ -181,6 +209,10 @@ export async function pullDocs(args: PullArgs): Promise<PullReport> {
   }
 
   ensureGitignoreEntries(args.repoRoot);
-  writePullManifest(args.repoRoot, { cursor: maxSeen });
+  writePullManifest(args.repoRoot, {
+    cursor: maxSeen,
+    contexts: { ...(manifest.contexts ?? {}), [contextKey]: maxSeen },
+    activeContext: contextKey,
+  });
   return { written, removed, unchanged, cursor: maxSeen };
 }
