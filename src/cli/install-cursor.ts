@@ -1,6 +1,6 @@
-import { existsSync, lstatSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, rmSync, unlinkSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOME, pkgRoot, ensureDir, syncDir, readJson, writeJson, writeJsonIfChanged, symlinkForce, writeVersionStamp, log, reportPruned } from "./util.js";
+import { HOME, pkgRoot, ensureDir, syncDir, writeJson, writeJsonIfChanged, symlinkForce, writeVersionStamp, log, reportPruned } from "./util.js";
 import { getVersion } from "./version.js";
 
 // Cursor 1.7+ hooks API: https://cursor.com/docs/agent/hooks
@@ -84,6 +84,27 @@ function mergeHooks(existing: Record<string, unknown> | null): Record<string, un
   return root as unknown as Record<string, unknown>;
 }
 
+function readHooksConfig(): Record<string, unknown> | null {
+  let raw: string;
+  try {
+    raw = readFileSync(HOOKS_PATH, "utf-8");
+  } catch (err) {
+    if (typeof err === "object" && err !== null && "code" in err && err.code === "ENOENT") return null;
+    const detail = err instanceof Error && err.message ? `: ${err.message}` : "";
+    throw new Error(`Cursor hooks config at ${HOOKS_PATH} could not be read${detail}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`Cursor hooks config at ${HOOKS_PATH} is not valid JSON; fix or remove it, then rerun.`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Cursor hooks config at ${HOOKS_PATH} must contain a JSON object; fix or remove it, then rerun.`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
 export function stripHooksFromConfig(existing: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!existing) return null;
   const root = existing as { hooks?: Record<string, unknown[]> };
@@ -104,10 +125,13 @@ export function installCursor(): void {
     throw new Error(`Cursor bundle missing at ${srcBundle}. Run 'npm run build' first.`);
   }
 
+  // Validate before copying payloads. A malformed user hooks file cannot be
+  // merged safely and must not be replaced with a fresh Hivemind config.
+  const existing = readHooksConfig();
+
   ensureDir(PLUGIN_DIR);
   reportPruned("Cursor", syncDir(srcBundle, join(PLUGIN_DIR, "bundle")));
 
-  const existing = readJson<Record<string, unknown>>(HOOKS_PATH);
   const merged = mergeHooks(existing);
   // Idempotent (same rationale as codex): skip the rewrite when unchanged so
   // we don't perturb the hooks.json Cursor/Codex-style trust fingerprints.
@@ -125,7 +149,9 @@ export function installCursor(): void {
 }
 
 export function uninstallCursor(): void {
-  const existing = readJson<Record<string, unknown>>(HOOKS_PATH);
+  // Validation errors propagate to the dispatcher, which reports FAILED.
+  // Nothing is removed or rewritten before this read succeeds.
+  const existing = readHooksConfig();
   if (!existing) {
     log("  Cursor         no hooks.json to clean");
     return;

@@ -4,7 +4,7 @@ import { userInfo } from "node:os";
 import { join } from "node:path";
 import { HOME, ensureDir, log, pkgRoot, symlinkForce, warn, writeJson } from "./util.js";
 import { pidPathFor, socketPathFor } from "../embeddings/protocol.js";
-import { getEmbeddingsEnabled, setEmbeddingsEnabled } from "../user-config.js";
+import { assertUserConfigWritable, getEmbeddingsEnabled, setEmbeddingsEnabled } from "../user-config.js";
 import { ensureGraphDeps } from "./graph-deps.js";
 
 /**
@@ -176,6 +176,7 @@ function linkAgent(install: AgentInstall): void {
  * prior `disable`).
  */
 export function installEmbeddings(): void {
+  assertUserConfigWritable();
   ensureSharedDeps();
   // Provision the code-graph parsers into the same shared dir so the
   // graph-on-stop hook (which symlinks here) can auto-build the graph.
@@ -216,6 +217,7 @@ export function enableEmbeddings(): void {
  * effect immediately. Counterpart to `install`.
  */
 export function uninstallEmbeddings(opts?: { prune?: boolean }): void {
+  assertUserConfigWritable();
   const installs = findHivemindInstalls();
   for (const inst of installs) {
     const link = join(inst.pluginDir, "node_modules");

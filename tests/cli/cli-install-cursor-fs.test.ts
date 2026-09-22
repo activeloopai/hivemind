@@ -118,6 +118,23 @@ describe("installCursor", () => {
     expect(() => installCursor()).toThrow(/Cursor bundle missing/);
   });
 
+  it("refuses a malformed hooks.json without overwriting it or touching payloads", async () => {
+    const hooksPath = join(tmpHome, ".cursor", "hooks.json");
+    writeFileSync(hooksPath, "{ not json");
+    const { installCursor } = await importInstaller();
+    expect(() => installCursor()).toThrow(/not valid JSON/);
+    expect(readFileSync(hooksPath, "utf-8")).toBe("{ not json");
+    expect(existsSync(join(tmpHome, ".cursor", "hivemind"))).toBe(false);
+  });
+
+  it("uninstall on a malformed hooks.json reports failure and leaves the file untouched", async () => {
+    const hooksPath = join(tmpHome, ".cursor", "hooks.json");
+    writeFileSync(hooksPath, "{ not json");
+    const { uninstallCursor } = await importInstaller();
+    expect(() => uninstallCursor()).toThrow(/not valid JSON/);
+    expect(readFileSync(hooksPath, "utf-8")).toBe("{ not json");
+  });
+
   it("creates embed-deps symlink when ~/.hivemind/embed-deps/node_modules exists", async () => {
     const embedDepsNm = join(tmpHome, ".hivemind", "embed-deps", "node_modules");
     mkdirSync(embedDepsNm, { recursive: true });
