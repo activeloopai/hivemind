@@ -454,4 +454,22 @@ describe("bash-command-compiler execution", () => {
     );
     expect(output).toBe("/summaries/a.md");
   });
+
+  it("does not compile `tail -n +N`, which starts at line N rather than keeping the last N lines", async () => {
+    expect(parseCompiledSegment("tail -n +3 /a.md")).toBeNull();
+
+    const readVirtualPathContentsFn = vi.fn(async () => new Map([["/a.md", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8"]]));
+    const output = await executeCompiledBashCommand(
+      { query: vi.fn() } as any,
+      "memory",
+      "sessions",
+      "tail -n +3 /a.md",
+      { readVirtualPathContentsFn: readVirtualPathContentsFn as any },
+    );
+    // GNU tail prints l3..l8 here; the compiled fast path used to answer with the
+    // last three lines (l6..l8). Returning null hands the command to the VFS shell,
+    // whose tail implements the +N form.
+    expect(output).toBeNull();
+    expect(readVirtualPathContentsFn).not.toHaveBeenCalled();
+  });
 });
