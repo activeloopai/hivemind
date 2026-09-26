@@ -114,7 +114,7 @@ function loadCreds(): Creds | null {
 // from cwd for the nearest `.hivemind.local` / `.hivemind` (nearest wins,
 // `.local` beats committed), and overlay org/workspace onto creds. Precedence
 // is env > file > login: HIVEMIND_ORG_ID / HIVEMIND_WORKSPACE_ID lock a field.
-interface PiDirConfig { orgId?: string; orgName?: string; workspaceId?: string; collect?: boolean; }
+interface PiDirConfig { orgId?: string; orgName?: string; workspaceId?: string; collect?: boolean; enabled?: boolean; }
 
 function findHivemindDir(startDir: string): PiDirConfig | null {
   let dir = startDir || process.cwd();
@@ -128,6 +128,7 @@ function findHivemindDir(startDir: string): PiDirConfig | null {
           if (typeof raw.orgName === "string") out.orgName = raw.orgName;
           if (typeof raw.workspaceId === "string") out.workspaceId = raw.workspaceId;
           if (typeof raw.collect === "boolean") out.collect = raw.collect;
+          if (typeof raw.enabled === "boolean") out.enabled = raw.enabled;
           return out;
         }
       } catch { /* absent / unparseable — keep walking up */ }
@@ -137,6 +138,40 @@ function findHivemindDir(startDir: string): PiDirConfig | null {
     dir = parent;
   }
 }
+
+// Activation gate — self-contained mirror of src/activation.ts. Global mode
+// from HIVEMIND_ACTIVATION, else ~/.deeplake/config.json `activation.mode`
+// ("always" default | "opt-in"). A nearest `.hivemind` with `enabled: false`
+// turns Hivemind fully off; in opt-in mode only `enabled: true` turns it on.
+function piActivationMode(): "always" | "opt-in" {
+  const norm = (v: unknown): "always" | "opt-in" | null => {
+    if (typeof v !== "string") return null;
+    const s = v.trim().toLowerCase();
+    if (s === "opt-in" || s === "optin" || s === "opt_in") return "opt-in";
+    if (s === "always" || s === "on" || s === "default") return "always";
+    return null;
+  };
+  const fromEnv = norm(process.env.HIVEMIND_ACTIVATION);
+  if (fromEnv) return fromEnv;
+  try {
+    const path = process.env.HIVEMIND_CONFIG_PATH ?? join(homedir(), ".deeplake", "config.json");
+    const cfg = JSON.parse(readFileSync(path, "utf-8"));
+    return norm(cfg?.activation?.mode) ?? "always";
+  } catch {
+    return "always";
+  }
+}
+
+function piIsActive(cwd: string): boolean {
+  const mode = piActivationMode();
+  let dir: PiDirConfig | null = null;
+  try { dir = findHivemindDir(cwd || process.cwd()); } catch { return mode !== "opt-in"; }
+  if (dir?.enabled === false) return false;
+  if (mode === "opt-in") return dir?.enabled === true;
+  return true;
+}
+
+const INACTIVE_TEXT = "Hivemind is not active in this directory (opt-in mode or `.hivemind` \"enabled\": false).";
 
 /** Overlay env + the nearest `.hivemind` onto `creds` for `cwd`, in the
  *  conventional env > file > login order. Returns the effective creds, whether
@@ -1409,6 +1444,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
       required: ["query"],
     },
     async execute(_toolCallId: string, params: { query: string; limit?: number }) {
+      if (!piIsActive(process.cwd())) return textResult(INACTIVE_TEXT);
       const creds = loadCreds();
       if (!creds) return textResult("Hivemind: not authenticated. Run `hivemind login` in a terminal.");
       try {
@@ -1428,6 +1464,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
       required: ["path"],
     },
     async execute(_toolCallId: string, params: { path: string }) {
+      if (!piIsActive(process.cwd())) return textResult(INACTIVE_TEXT);
       const creds = loadCreds();
       if (!creds) return textResult("Hivemind: not authenticated.");
       const path = params.path;
@@ -1456,6 +1493,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
       },
     },
     async execute(_toolCallId: string, params: { prefix?: string; limit?: number }) {
+      if (!piIsActive(process.cwd())) return textResult(INACTIVE_TEXT);
       const creds = loadCreds();
       if (!creds) return textResult("Hivemind: not authenticated.");
       const where = params.prefix
@@ -1486,6 +1524,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
   // themselves don't carry them.
 
   pi.on("session_start", async (_event: any, ctx: any) => {
+    if (!piIsActive(ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd())) { logHm(`session_start: hivemind inactive for this directory, skipping`); return; }
     logHm(`session_start: fired (capture=${captureEnabled}, embed=${process.env.HIVEMIND_EMBEDDINGS !== "false"}, table=${SESSIONS_TABLE})`);
 
     // Tell the user about anything that needs their attention — most
@@ -1665,6 +1704,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("input", async (event: any, ctx: any) => {
+    if (!piIsActive(ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd())) { logHm(`input: hivemind inactive for this directory, skipping`); return; }
     logHm(`input: fired source=${event?.source ?? "?"}`);
     if (!captureEnabled) { logHm(`input: capture disabled, skipping`); return; }
     if (event.source === "extension") { logHm(`input: extension-injected, skipping`); return; }
@@ -1694,6 +1734,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_result", async (event: any, ctx: any) => {
+    if (!piIsActive(ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd())) { logHm(`tool_result: hivemind inactive for this directory, skipping`); return; }
     logHm(`tool_result: fired tool=${event?.toolName ?? "?"} isError=${event?.isError === true}`);
     if (!captureEnabled) { logHm(`tool_result: capture disabled, skipping`); return; }
     let creds = loadCreds();
@@ -1731,6 +1772,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("message_end", async (event: any, ctx: any) => {
+    if (!piIsActive(ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd())) { logHm(`message_end: hivemind inactive for this directory, skipping`); return; }
     logHm(`message_end: fired role=${event?.message?.role ?? "?"}`);
     if (!captureEnabled) { logHm(`message_end: capture disabled, skipping`); return; }
     let creds = loadCreds();
@@ -1770,6 +1812,7 @@ export default function hivemindExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async (_event: any, ctx: any) => {
+    if (!piIsActive(ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd())) { logHm(`session_shutdown: hivemind inactive for this directory, skipping`); return; }
     logHm(`session_shutdown: fired`);
     if (process.env.HIVEMIND_CAPTURE === "false") return;
     let creds = loadCreds();

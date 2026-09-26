@@ -27,6 +27,8 @@
  */
 
 import { readStdin } from "../../utils/stdin.js";
+import { isHivemindActive } from "../../activation.js";
+import { resolveCursorCwd } from "./cwd.js";
 import { deriveProjectKey } from "../../utils/repo-identity.js";
 import { loadRoutedConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
@@ -54,6 +56,9 @@ interface CursorPreToolUseInput {
 
 async function main(): Promise<void> {
   const input = await readStdin<CursorPreToolUseInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(resolveCursorCwd(input), log)) return;
   if (input.tool_name !== "Shell") return; // only intercept Shell, not Read/Write/MCP
 
   const command = (input.tool_input as CursorShellToolInput | undefined)?.command;
@@ -70,7 +75,7 @@ async function main(): Promise<void> {
   // would otherwise fall through and leave Cursor blind to the graph (the
   // exact gap that made Cursor silently lack graph queries). See
   // src/graph/graph-command.ts (shared with the Claude Code intercept).
-  const graphBody = tryGraphRead(rewritten, input.cwd ?? process.cwd());
+  const graphBody = tryGraphRead(rewritten, resolveCursorCwd(input));
   if (graphBody !== null) {
     log(`graph vfs intercept: ${command.slice(0, 80)}`);
     const echoCmd = `cat <<'__HIVEMIND_RESULT__'\n${graphBody}\n__HIVEMIND_RESULT__`;
@@ -82,7 +87,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const config = loadRoutedConfig(input.cwd ?? process.cwd());
+  const config = loadRoutedConfig(resolveCursorCwd(input));
   if (!config) {
     log("no config — falling through to Cursor's bash");
     return;
@@ -104,7 +109,7 @@ async function main(): Promise<void> {
   // without a decision and let a memory-touching command reach the host shell.
   let docsBody: string | null = null;
   try {
-    docsBody = await tryDocsRead(rewritten, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(input.cwd ?? process.cwd()).key });
+    docsBody = await tryDocsRead(rewritten, (sql) => api.query(sql), docsTable, { embedQuery: makeQueryEmbedder(), project: deriveProjectKey(resolveCursorCwd(input)).key });
   } catch (err) {
     log(`docs vfs failed: ${(err as Error).message}`);
     docsBody = "(docs temporarily unavailable — try again)";

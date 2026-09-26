@@ -21,6 +21,7 @@ import { renderSkillifyCommands } from "../../cli/skillify-spec.js";
 import { countLocalManifestEntries } from "../../skillify/local-manifest.js";
 import { maybeAutoMineLocal } from "../../skillify/spawn-mine-local-worker.js";
 import { readStdin } from "../../utils/stdin.js";
+import { isHivemindActive } from "../../activation.js";
 import { log as _log } from "../../utils/debug.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
 import { autoUpdate } from "../shared/autoupdate.js";
@@ -90,6 +91,9 @@ async function createPlaceholder(
 async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
   const input = await readStdin<HermesSessionStartInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(input.cwd ?? process.cwd(), log)) return;
   const sessionId = input.session_id ?? `hermes-${Date.now()}`;
   const cwd = input.cwd ?? process.cwd();
 

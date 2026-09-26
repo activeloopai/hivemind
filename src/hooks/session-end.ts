@@ -9,6 +9,7 @@
  */
 
 import { readStdin } from "../utils/stdin.js";
+import { isHivemindActive } from "../activation.js";
 import { loadConfig, type Config } from "../config.js";
 import { resolveDirConfig } from "../dir-config.js";
 import { log as _log } from "../utils/debug.js";
@@ -59,6 +60,9 @@ async function main(): Promise<void> {
   if (!entrypointPassesOnlyCliGate()) return;
 
   const input = await readStdin<StopInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(input.cwd ?? process.cwd(), log)) return;
   const sessionId = input.session_id;
   const cwd = input.cwd ?? "";
   if (!sessionId) return;

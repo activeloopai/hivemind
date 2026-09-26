@@ -21,6 +21,7 @@
  */
 
 import { readStdin } from "../../utils/stdin.js";
+import { isHivemindActive } from "../../activation.js";
 import { loadRoutedConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { log as _log } from "../../utils/debug.js";
@@ -41,6 +42,9 @@ interface HermesPreToolUseInput {
 
 async function main(): Promise<void> {
   const input = await readStdin<HermesPreToolUseInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(input.cwd ?? process.cwd(), log)) return;
   // SkillOpt: hermes USES an org skill by shelling a read of its SKILL.md (the path is in the
   // terminal command). Arm the judgment window on it. Swallowed; never affects the decision below.
   armSkillOptOnSkillUse(input.session_id ?? "", input.tool_name ?? "", input.tool_input);

@@ -31,6 +31,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { loadConfig, type Config } from "./config.js";
 import { resolveWorkspaceRef } from "./commands/auth-creds.js";
+import { isHivemindActive } from "./activation.js";
 
 /** Committed (shared) and local (personal, gitignored) filenames, local first. */
 export const DIR_CONFIG_FILENAMES = [".hivemind.local", ".hivemind"] as const;
@@ -41,6 +42,12 @@ export interface DirConfigFile {
   workspaceId?: string;
   /** false → never capture traces from this directory. Default true. */
   collect?: boolean;
+  /**
+   * Activation switch (see src/activation.ts). `false` → Hivemind is fully
+   * inactive for this tree (no context, no recall, no capture, no network).
+   * `true` → opts this tree in when the global activation mode is `opt-in`.
+   */
+  enabled?: boolean;
 }
 
 export interface FoundDirConfig {
@@ -90,13 +97,18 @@ export function parseDirConfig(contents: string): DirConfigFile | null {
   if (typeof o.orgName === "string") out.orgName = o.orgName;
   if (typeof o.workspaceId === "string") out.workspaceId = o.workspaceId;
   if (typeof o.collect === "boolean") out.collect = o.collect;
+  if (typeof o.enabled === "boolean") out.enabled = o.enabled;
   return out;
 }
 
 export interface ResolvedDirConfig {
   /** Config to capture with — org/workspace-overlaid when a `.hivemind` routes. */
   config: Config;
-  /** false → caller must skip capture entirely for this cwd. */
+  /**
+   * false → caller must skip capture entirely for this cwd. Also false when
+   * Hivemind is inactive here (activation gate — `enabled: false`, or opt-in
+   * mode without an `enabled: true`), so every capture path honors it.
+   */
   collect: boolean;
   /** The file that applied, if any (for the session-start banner / diagnostics). */
   found: FoundDirConfig | null;
@@ -134,7 +146,8 @@ export function resolveDirConfig(
   envOverride?: { HIVEMIND_ORG_ID?: string; HIVEMIND_WORKSPACE_ID?: string },
 ): ResolvedDirConfig {
   const found = findDirConfig(cwd);
-  if (!found) return { config: base, collect: true, found: null };
+  const active = isHivemindActive(cwd);
+  if (!found) return { config: base, collect: active, found: null };
 
   const orgLocked = !!(envOverride ? envOverride.HIVEMIND_ORG_ID : process.env.HIVEMIND_ORG_ID);
   const envWs = envOverride ? envOverride.HIVEMIND_WORKSPACE_ID : process.env.HIVEMIND_WORKSPACE_ID;
@@ -149,7 +162,7 @@ export function resolveDirConfig(
     orgName: orgLocked ? base.orgName : (found.raw.orgName ?? found.raw.orgId ?? base.orgName),
     workspaceId: resolveWorkspaceRef(base.workspaceAliases, orgId, wsRef),
   };
-  return { config, collect: found.raw.collect !== false, found };
+  return { config, collect: active && found.raw.collect !== false, found };
 }
 
 /**

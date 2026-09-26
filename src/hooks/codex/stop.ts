@@ -15,6 +15,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readStdin } from "../../utils/stdin.js";
+import { isHivemindActive } from "../../activation.js";
 import { loadConfig } from "../../config.js";
 import { resolveDirConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
@@ -53,6 +54,9 @@ async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<CodexStopInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(input.cwd ?? process.cwd(), log)) return;
   const sessionId = input.session_id;
   if (!sessionId) return;
 

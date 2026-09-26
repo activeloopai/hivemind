@@ -17,6 +17,7 @@ import { loadConfig } from "../config.js";
 import { resolveDirConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { readStdin } from "../utils/stdin.js";
+import { isHivemindActive } from "../activation.js";
 import { log as _log } from "../utils/debug.js";
 import { getInstalledVersion } from "../utils/version-check.js";
 import { makeWikiLogger } from "../utils/wiki-log.js";
@@ -124,6 +125,9 @@ async function main(): Promise<void> {
   log(`hook entered (pid=${process.pid})`);
 
   const input = await readStdin<SessionStartInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(input.cwd ?? process.cwd(), log)) return;
 
   // A fresh start or --resume of this session re-activates it: drop any stale
   // ended marker and record the owning `claude` process so other sessions can

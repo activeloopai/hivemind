@@ -300,6 +300,16 @@ HIVEMIND_CAPTURE=false claude
 
 Disable capture for a specific directory tree (persistent, travels with the repo) by dropping a `.hivemind` file with `{ "collect": false }`. See [Per-directory config](#per-directory-config-hivemind).
 
+Run Hivemind **only** in the repos you choose, and keep it completely inactive everywhere else (no context injection, recall, notifications, network calls or capture):
+
+```bash
+hivemind activation opt-in                 # once, machine-wide
+cd ~/src/my-repo && hivemind activation enable   # per repo you want it in
+hivemind activation                        # is it active here, and why?
+```
+
+See [Opt-in only (`activation`)](#opt-in-only-activation).
+
 Enable debug logging:
 
 ```bash
@@ -333,6 +343,7 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | `HIVEMIND_SESSIONS_TABLE` | `sessions`                | SQL table for per-event session capture    |
 | `HIVEMIND_MEMORY_PATH`    | `~/.deeplake/memory`      | Path that triggers interception            |
 | `HIVEMIND_CAPTURE`        | `true`                    | Set to `false` to disable capture          |
+| `HIVEMIND_ACTIVATION`     | _(config file, else `always`)_ | `opt-in` → Hivemind inactive except in trees with `"enabled": true`; `always` → active everywhere. Overrides `activation.mode` in `~/.deeplake/config.json` (set with `hivemind activation opt-in\|always`). |
 | `HIVEMIND_CAPTURE_ONLY_CLI` | _(none)_                | Set to `true` to capture only interactive CLI sessions. Sessions spawned by the Claude Agent SDK (Python/TypeScript) are skipped; their `CLAUDE_CODE_ENTRYPOINT` is `sdk-py` / `sdk-ts`, so they fail the substring check for `cli`. |
 | `HIVEMIND_SKILLIFY_EVERY_N_TURNS` | `20`              | Assistant turns between auto skill-mining attempts. Lower = more frequent mining (cheaper sessions, noisier output); higher = fewer attempts on longer histories. |
 | `HIVEMIND_SUMMARY_EVERY_N_MSGS` | `50`                | Captured events between periodic session summaries. The first summary of a session runs at 10 events regardless. Raise it to cut background summary runs. |
@@ -363,6 +374,7 @@ Drop a `.hivemind` JSON file at the root of the tree you want to configure:
 | `orgId`       | Route this tree to this org — captured traces **and** memory reads.           |
 | `workspaceId` | Route to this workspace.                                                       |
 | `collect`     | `false` → **never** capture traces from this tree. Reads still route.          |
+| `enabled`     | `false` → Hivemind is **completely inactive** in this tree (no context, recall, network, capture). `true` → opts the tree in under [opt-in mode](#opt-in-only-activation). |
 
 Any field may be omitted; omitted fields fall back to your global identity.
 
@@ -382,6 +394,37 @@ Any field may be omitted; omitted fields fall back to your global identity.
 ```
 
 Routing never carries a token — auth stays in `~/.deeplake/credentials.json`, so a `.hivemind` only ever takes effect against orgs your existing login already authorizes. An `HIVEMIND_ORG_ID` / `HIVEMIND_WORKSPACE_ID` set in your environment **wins over** a `.hivemind` for that field; `hivemind whoami` discloses which one is in effect.
+
+> **`collect: false` is not "off".** It stops *writes* only. Sessions in that tree still log in, inject the Hivemind context, read team rules and memory, and fetch notifications. To make Hivemind fully inactive in a tree use `{ "enabled": false }`, or switch to [opt-in mode](#opt-in-only-activation).
+
+### Opt-in only (`activation`)
+
+By default Hivemind runs in every directory. To flip that so it is **completely inactive** except in trees you have explicitly opted in:
+
+```bash
+hivemind activation opt-in       # writes { "activation": { "mode": "opt-in" } } to ~/.deeplake/config.json
+```
+
+Then, in each repo where you want Hivemind:
+
+```bash
+cd ~/src/deeplake
+hivemind activation enable            # writes { "enabled": true } to ./.hivemind.local (personal, gitignore it)
+hivemind activation enable --shared   # or to ./.hivemind (commit it; opts in the whole team)
+```
+
+| Global mode | Nearest `.hivemind` / `.hivemind.local` | Hivemind in that tree |
+|-------------|------------------------------------------|-----------------------|
+| `always` (default) | none, or no `enabled` field | active |
+| `always` | `"enabled": false` | **inactive** |
+| `opt-in` | `"enabled": true` | active |
+| `opt-in` | anything else (none, routing only, `collect` only) | **inactive** |
+
+"Inactive" means the agent hooks exit immediately: no context is injected, no memory interception, no notifications, no autoupdate check, no skill auto-pull, no graph workers, no capture, and **no network calls**. `enabled` follows the same nearest-file-wins rule as every other field, so a repo's `.hivemind.local` with `{ "enabled": true }` re-enables it under a parent that says `false`. `hivemind activation enable` keeps the other fields of an existing file, and seeds a new `.hivemind.local` from a sibling `.hivemind` so the repo's routing isn't lost.
+
+`hivemind activation` (no argument) prints the mode, the file that decided, and whether Hivemind is active in the current directory; `hivemind whoami` shows the same verdict. `HIVEMIND_ACTIVATION=opt-in|always` overrides the config file for a single process. The gate covers the Claude Code, Codex, Cursor, Hermes and pi hooks. MCP servers registered for Claude Desktop / Cowork have no working directory and aren't affected; uninstall them if you don't want them.
+
+Changes take effect on the next agent session (restart Cursor or open a new chat).
 
 ### Committed vs local
 

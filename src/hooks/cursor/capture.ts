@@ -14,6 +14,8 @@
  */
 
 import { readStdin } from "../../utils/stdin.js";
+import { isHivemindActive } from "../../activation.js";
+import { resolveCursorCwd } from "./cwd.js";
 import { resolveCaptureConfig } from "../shared/dir-gate.js";
 import { redactSecrets } from "../shared/redact.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
@@ -93,6 +95,9 @@ async function main(): Promise<void> {
   if (!CAPTURE) return;
   if (!isHivemindPluginEnabled()) { log("plugin disabled, skipping capture"); return; }
   const input = await readStdin<CursorCaptureInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(resolveCursorCwd(input), log)) return;
   const config = resolveCaptureConfig(resolveCwd(input), log);
   if (!config) return;
 

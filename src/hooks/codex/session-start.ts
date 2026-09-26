@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { loadCredentials, healDriftedOrgToken, resolveWorkspaceOverride } from "../../commands/auth.js";
 import { readStdin } from "../../utils/stdin.js";
+import { isHivemindActive } from "../../activation.js";
 import { countLocalManifestEntries } from "../../skillify/local-manifest.js";
 import { maybeAutoMineLocal } from "../../skillify/spawn-mine-local-worker.js";
 import { log as _log } from "../../utils/debug.js";
@@ -79,6 +80,9 @@ async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<CodexSessionStartInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(input.cwd ?? process.cwd(), log)) return;
 
   let creds = loadCredentials();
   let workspaceWarning = "";

@@ -14,6 +14,7 @@
 
 import { loadCredentials } from "../commands/auth.js";
 import { readStdin } from "../utils/stdin.js";
+import { isHivemindActive } from "../activation.js";
 import { drainSessionStart, registerRule } from "../notifications/index.js";
 import { bumpSessionCount } from "../notifications/state.js";
 import { referralInviteRule } from "../notifications/rules/referral-invite.js";
@@ -50,6 +51,9 @@ async function main(): Promise<void> {
   // session — two parallel hook fires for the same session share the
   // same id and dedupe to one emission via the atomic claim file.
   const input = await readStdin<SessionStartInput>().catch(() => ({} as SessionStartInput));
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(input?.cwd ?? process.cwd(), log)) return;
   // Trim + non-empty check: an empty or whitespace-only session_id would
   // collapse the dedupKey across unrelated sessions. pickPrimaryBanner
   // returns null when sessionId is undefined; route there instead of

@@ -14,6 +14,7 @@ import { loadConfig } from "../../config.js";
 import { resolveDirConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { readStdin } from "../../utils/stdin.js";
+import { isHivemindActive } from "../../activation.js";
 import { createPlaceholderSummary } from "../shared/placeholder-summary.js";
 import { log as _log } from "../../utils/debug.js";
 import { makeWikiLogger } from "../../utils/wiki-log.js";
@@ -49,6 +50,9 @@ async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<CodexSessionStartInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(input.cwd ?? process.cwd(), log)) return;
 
   // Provision the code-graph tree-sitter parsers into the shared embed-deps
   // dir so the graph-on-stop hook can auto-build the graph. Spawned as a

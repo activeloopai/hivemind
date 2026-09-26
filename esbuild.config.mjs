@@ -640,6 +640,9 @@ const openclawGraphWorkerDefine = {
     "process.env.HIVEMIND_GRAPH_TICK_INTERVAL_MS": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_TICK_INTERVAL_MS",
     "process.env.HIVEMIND_GRAPH_PULL": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_PULL",
     "process.env.HIVEMIND_GRAPH_PULL_TIMEOUT_MS": "globalThis.__hivemind_tuning__.HIVEMIND_GRAPH_PULL_TIMEOUT_MS",
+    // Activation gate (src/activation.ts), pulled in via graph-on-stop and
+    // dir-config. Same env-harvesting rationale as the entries below.
+    "process.env.HIVEMIND_ACTIVATION": "globalThis.__hivemind_tuning__.HIVEMIND_ACTIVATION",
     "process.env.HIVEMIND_DOCS_AUTO_FILE": "undefined",
     "process.env.HIVEMIND_DOCS_TABLE": "globalThis.__hivemind_tuning__.HIVEMIND_DOCS_TABLE",
     // Transitively imported via DeeplakeApi -> index-marker-store.ts. Without

@@ -54,6 +54,7 @@ import { readLastBuild } from "../graph/last-build.js";
 import { repoDir } from "../graph/snapshot.js";
 import { isDirectRun } from "../utils/direct-run.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
+import { isHivemindActive } from "../activation.js";
 
 /**
  * Mirror of workTreeIdFor in src/commands/graph.ts. Kept inline (rather
@@ -221,6 +222,10 @@ export async function main(deps: MainDeps = {}): Promise<void> {
     intervalMs: tickIntervalMs(),
     envDisable,
   };
+
+  // Activation gate: where Hivemind is inactive (opt-in mode without an
+  // `enabled: true`, or `enabled: false`) the hook does nothing at all.
+  if (!isHivemindActive(ctx.cwd)) return;
 
   let decision: GateDecision;
   try {

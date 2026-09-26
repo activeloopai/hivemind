@@ -8,6 +8,7 @@
  */
 
 import { readStdin } from "../utils/stdin.js";
+import { isHivemindActive } from "../activation.js";
 import { type Config } from "../config.js";
 import { resolveCaptureConfig } from "./shared/dir-gate.js";
 import { redactSecrets } from "./shared/redact.js";
@@ -85,6 +86,9 @@ async function main(): Promise<void> {
   if (!isHivemindPluginEnabled()) { log("plugin disabled, skipping capture"); return; }
   if (!entrypointPassesOnlyCliGate()) return;
   const input = await readStdin<HookInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(input.cwd ?? process.cwd(), log)) return;
   // Per-directory `.hivemind`: skip capture where opted out, and route to the
   // configured org/workspace otherwise.
   const config = resolveCaptureConfig(input.cwd ?? process.cwd(), log);

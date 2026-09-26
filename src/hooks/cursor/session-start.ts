@@ -30,6 +30,8 @@ import { renderSkillifyCommands } from "../../cli/skillify-spec.js";
 import { countLocalManifestEntries } from "../../skillify/local-manifest.js";
 import { maybeAutoMineLocal } from "../../skillify/spawn-mine-local-worker.js";
 import { readStdin } from "../../utils/stdin.js";
+import { isHivemindActive } from "../../activation.js";
+import { resolveCursorCwd } from "./cwd.js";
 import { log as _log } from "../../utils/debug.js";
 import { getInstalledVersion } from "../../utils/version-check.js";
 import { autoUpdate } from "../shared/autoupdate.js";
@@ -95,13 +97,7 @@ function resolveSessionId(input: CursorSessionStartInput): string {
   return input.session_id ?? input.conversation_id ?? `cursor-${Date.now()}`;
 }
 
-function resolveCwd(input: CursorSessionStartInput): string {
-  const roots = input.workspace_roots;
-  if (Array.isArray(roots) && roots.length > 0 && typeof roots[0] === "string") {
-    return roots[0];
-  }
-  return process.cwd();
-}
+const resolveCwd = (input: CursorSessionStartInput): string => resolveCursorCwd(input);
 
 /** Create a placeholder summary via the shared race-safe writer (see placeholder-summary.ts). */
 async function createPlaceholder(
@@ -124,6 +120,9 @@ async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<CursorSessionStartInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(resolveCursorCwd(input), log)) return;
   const sessionId = resolveSessionId(input);
   const cwd = resolveCwd(input);
 

@@ -21,6 +21,15 @@ export interface UserConfig {
     /** Which host CLI authors the docs (claude | codex | pi | cursor). */
     llmAgent?: string;
   };
+  activation?: {
+    /**
+     * "always" (default) → Hivemind runs everywhere unless a `.hivemind` says
+     * `enabled: false`. "opt-in" → Hivemind is inactive except in trees whose
+     * nearest `.hivemind` / `.hivemind.local` says `enabled: true`.
+     * See src/activation.ts.
+     */
+    mode?: string;
+  };
 }
 
 let _configPath: () => string = () =>

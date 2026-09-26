@@ -16,6 +16,7 @@
 import type { Config } from "../config.js";
 import type { Credentials } from "./auth.js";
 import { resolveDirConfig } from "../dir-config.js";
+import { resolveActivation } from "../activation.js";
 
 const DEFAULT_API = "https://api.deeplake.ai";
 
@@ -54,7 +55,10 @@ export function renderWhoami(config: Config | null, creds: Credentials, cwd: str
   if (notes.length) {
     notes.push(`Stored identity: ${storedOrg} / ${storedWs}`);
   }
-  if (res.found && !res.collect) {
+  const act = resolveActivation(cwd);
+  if (!act.active) {
+    notes.push(`Hivemind: INACTIVE in this directory (${act.reason})`);
+  } else if (res.found && !res.collect) {
     notes.push(`Capture: disabled for this directory by ${res.found.path}`);
   }
   if (notes.length) lines.push("", ...notes);

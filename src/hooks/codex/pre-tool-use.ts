@@ -26,6 +26,7 @@ import { deriveProjectKey } from "../../utils/repo-identity.js";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { readStdin } from "../../utils/stdin.js";
+import { isHivemindActive } from "../../activation.js";
 import { loadConfig } from "../../config.js";
 import { resolveDirConfig } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
@@ -461,6 +462,9 @@ export async function processCodexPreToolUse(
 /* c8 ignore start */
 async function main(): Promise<void> {
   const input = await readStdin<CodexPreToolUseInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(input.cwd ?? process.cwd(), log)) return;
   // SkillOpt: codex USES an org skill by shelling a read of its SKILL.md — arm the judgment
   // window on that command. Guarded at the call site too (armSkillOptOnSkillUse is already
   // internally swallowed): a throw here must NOT short-circuit the memory-path gate below, whose

@@ -31,6 +31,7 @@ import { runDocsCommand } from "../commands/docs.js";
 import { runContextCommand } from "../commands/context.js";
 import { runBackfillMemory } from "../commands/backfill-memory.js";
 import { runFlushMemory } from "../commands/flush-memory.js";
+import { runActivationCommand } from "../commands/activation.js";
 import { maybeAutoBackfillMemory } from "../skillify/spawn-backfill-memory-worker.js";
 import { confirm, detectPlatforms, allPlatformIds, log, promptLine, warn, type PlatformId } from "./util.js";
 import { getVersion } from "./version.js";
@@ -87,6 +88,12 @@ Usage:
                             Run device-flow login (open browser). --ref
                             attributes a new signup to a referrer code.
   hivemind status           Show which assistants are wired up.
+
+  hivemind activation [status | opt-in | always | enable | disable]
+      Control WHERE Hivemind runs. "opt-in" makes it fully inactive (no
+      context, recall, notifications or capture) except in directory trees
+      opted in with "hivemind activation enable". Run with no argument to see
+      whether Hivemind is active in the current directory and why.
   hivemind update [--dry-run]
       Check npm for a newer @deeplake/hivemind, upgrade the CLI, and refresh
       every detected agent bundle. Single command for all agents.
@@ -515,6 +522,12 @@ async function main(): Promise<void> {
   if (cmd === "update") {
     const code = await runUpdate({ dryRun: hasFlag(args.slice(1), "--dry-run") });
     process.exit(code);
+  }
+
+  if (cmd === "activation") {
+    const code = runActivationCommand(args.slice(1), { log, warn, cwd: process.cwd() });
+    if (code !== 0) process.exit(code);
+    return;
   }
 
   if (cmd === "skillify") {

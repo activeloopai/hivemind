@@ -6,6 +6,7 @@
  */
 
 import { readStdin } from "../../utils/stdin.js";
+import { isHivemindActive } from "../../activation.js";
 import { log as _log } from "../../utils/debug.js";
 import { loadConfig } from "../../config.js";
 import { resolveDirConfig } from "../../dir-config.js";
@@ -24,6 +25,9 @@ interface HermesSessionEndInput {
 async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
   const input = await readStdin<HermesSessionEndInput>();
+  // Activation gate: Hivemind stays fully silent (no context, recall, network
+  // or capture) where it isn't active — see src/activation.ts.
+  if (!isHivemindActive(input.cwd ?? process.cwd(), log)) return;
   const sessionId = input.session_id ?? "";
   log(`session=${sessionId || "?"} cwd=${input.cwd ?? "?"}`);
   if (!sessionId) return;
