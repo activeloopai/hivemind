@@ -153,6 +153,16 @@ export function resolveDirConfig(
 }
 
 /**
+ * False when the nearest `.hivemind` / `.hivemind.local` says `"collect": false`.
+ * Session-start, notification and pre-tool-use hooks return early on false, so
+ * Hivemind is completely silent in that tree (not just capture-off). A nearer
+ * `{ "collect": true }` re-enables a repo below an opted-out parent.
+ */
+export function isHivemindEnabled(cwd: string): boolean {
+  return findDirConfig(cwd)?.raw.collect !== false;
+}
+
+/**
  * THE single entry point for a workspace-scoped Config.
  *
  * Any code path that builds a `DeeplakeApi` against per-directory workspace data

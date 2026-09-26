@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { loadCredentials, healDriftedOrgToken, resolveWorkspaceOverride } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
-import { resolveDirConfig } from "../../dir-config.js";
+import { resolveDirConfig, isHivemindEnabled } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { renderContextBlock } from "../shared/context-renderer.js";
 import { createPlaceholderSummary } from "../shared/placeholder-summary.js";
@@ -124,6 +124,7 @@ async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<CursorSessionStartInput>();
+  if (!isHivemindEnabled(resolveCwd(input))) return; // .hivemind "collect": false → fully inactive
   const sessionId = resolveSessionId(input);
   const cwd = resolveCwd(input);
 

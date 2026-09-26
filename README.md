@@ -298,7 +298,7 @@ Disable capture entirely:
 HIVEMIND_CAPTURE=false claude
 ```
 
-Disable capture for a specific directory tree (persistent, travels with the repo) by dropping a `.hivemind` file with `{ "collect": false }`. See [Per-directory config](#per-directory-config-hivemind).
+Turn Hivemind off for a specific directory tree (persistent, travels with the repo) by dropping a `.hivemind` file with `{ "collect": false }`. See [Per-directory config](#per-directory-config-hivemind).
 
 Enable debug logging:
 
@@ -362,26 +362,30 @@ Drop a `.hivemind` JSON file at the root of the tree you want to configure:
 |---------------|-------------------------------------------------------------------------------|
 | `orgId`       | Route this tree to this org — captured traces **and** memory reads.           |
 | `workspaceId` | Route to this workspace.                                                       |
-| `collect`     | `false` → **never** capture traces from this tree. Reads still route.          |
+| `collect`     | `false` → Hivemind is **completely inactive** in this tree: no capture, context, memory reads or notifications. |
 
 Any field may be omitted; omitted fields fall back to your global identity.
 
-`orgId` / `workspaceId` are **identity** (they apply to reads and writes alike); `collect` is a **capture switch** (writes only). The two are independent, which is what makes the read-only recipe below work.
+`orgId` / `workspaceId` are **identity** (they apply to reads and writes alike); `collect: false` switches Hivemind **off** for the tree.
 
-**Three common recipes:**
+**Common recipes:**
 
 ```jsonc
 // route this repo to a client org/workspace — reads and writes both land there
 { "orgId": "acme-corp", "workspaceId": "client-work" }
 
-// never collect traces from this folder (e.g. a personal or sensitive repo)
+// Hivemind fully off in this folder (e.g. a personal or sensitive repo)
 { "collect": false }
-
-// read a shared workspace's memory, but never write to it
-{ "workspaceId": "client-work", "collect": false }
 ```
 
 Routing never carries a token — auth stays in `~/.deeplake/credentials.json`, so a `.hivemind` only ever takes effect against orgs your existing login already authorizes. An `HIVEMIND_ORG_ID` / `HIVEMIND_WORKSPACE_ID` set in your environment **wins over** a `.hivemind` for that field; `hivemind whoami` discloses which one is in effect.
+
+**Run Hivemind only in chosen repos.** Turn it off for a whole tree and back on per repo (nearest file wins):
+
+```bash
+echo '{ "collect": false }' > ~/.hivemind.local                 # or at the root of your source tree
+echo '{ "collect": true }'  > ~/src/my-repo/.hivemind.local     # repeat per repo
+```
 
 ### Committed vs local
 
@@ -426,7 +430,7 @@ Because a `.hivemind` travels with a repo, cloning someone's repo could in princ
 |------------------------------|------------------------------------------------------------|
 | Dir with a routing `.hivemind` | The pinned org/workspace, **unaffected** by `org switch`. |
 | Dir with **no** `.hivemind`  | Follows your current global default (i.e. `org switch`).   |
-| Dir with `collect: false`    | Nothing captured, regardless of the global default.        |
+| Dir with `collect: false`    | Hivemind inactive, regardless of the global default.       |
 
 So `org switch` moves everything that *isn't* explicitly pinned; a pin stays put by design (that's the point of routing a client repo to a fixed org). The session-start banner always shows the **effective** identity for your current directory, so a pinned tree never silently surprises you.
 

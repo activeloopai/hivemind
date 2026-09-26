@@ -7,6 +7,7 @@ import {
   findDirConfig,
   parseDirConfig,
   resolveDirConfig,
+  isHivemindEnabled,
 } from "../../src/dir-config.js";
 
 let root: string;
@@ -211,5 +212,24 @@ describe("resolveDirConfig — env precedence (env > .hivemind)", () => {
     write(dir("proj"), ".hivemind", { collect: false });
     const res = resolveDirConfig(base(), dir("proj"), { HIVEMIND_ORG_ID: "env-org" });
     expect(res.collect).toBe(false);
+  });
+});
+
+describe("isHivemindEnabled (collect:false = fully inactive)", () => {
+  it("collect:false at a source root turns Hivemind off for every repo below it", () => {
+    write(dir("src"), ".hivemind", { collect: false });
+    expect(isHivemindEnabled(dir("src", "unrelated", "pkg"))).toBe(false);
+  });
+
+  it("a nearer collect:true opts a repo back in", () => {
+    write(dir("src"), ".hivemind", { collect: false });
+    write(dir("src", "deeplake"), ".hivemind.local", { collect: true });
+    expect(isHivemindEnabled(dir("src", "deeplake", "pkg"))).toBe(true);
+  });
+
+  it("enabled with no file or a routing-only file (unchanged behavior)", () => {
+    expect(isHivemindEnabled(dir("plain"))).toBe(true);
+    write(dir("team"), ".hivemind", { workspaceId: "w" });
+    expect(isHivemindEnabled(dir("team"))).toBe(true);
   });
 });

@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials, healDriftedOrgToken, resolveWorkspaceOverride } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
-import { resolveDirConfig } from "../dir-config.js";
+import { resolveDirConfig, isHivemindEnabled } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
@@ -124,6 +124,7 @@ async function main(): Promise<void> {
   log(`hook entered (pid=${process.pid})`);
 
   const input = await readStdin<SessionStartInput>();
+  if (!isHivemindEnabled(input.cwd ?? process.cwd())) return; // .hivemind "collect": false → fully inactive
 
   // A fresh start or --resume of this session re-activates it: drop any stale
   // ended marker and record the owning `claude` process so other sessions can

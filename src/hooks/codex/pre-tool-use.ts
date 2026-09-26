@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { readStdin } from "../../utils/stdin.js";
 import { loadConfig } from "../../config.js";
-import { resolveDirConfig } from "../../dir-config.js";
+import { resolveDirConfig, isHivemindEnabled } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { sqlLike } from "../../utils/sql.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
@@ -461,6 +461,7 @@ export async function processCodexPreToolUse(
 /* c8 ignore start */
 async function main(): Promise<void> {
   const input = await readStdin<CodexPreToolUseInput>();
+  if (!isHivemindEnabled(input.cwd ?? process.cwd())) return; // .hivemind "collect": false → fully inactive
   // SkillOpt: codex USES an org skill by shelling a read of its SKILL.md — arm the judgment
   // window on that command. Guarded at the call site too (armSkillOptOnSkillUse is already
   // internally swallowed): a throw here must NOT short-circuit the memory-path gate below, whose

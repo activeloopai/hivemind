@@ -247,12 +247,11 @@ describe("session-start hook — guards", () => {
       expect(ensureTableMock).toHaveBeenCalled();
     });
 
-    it("collect:false skips the placeholder/table setup and says capture is disabled", async () => {
+    it("collect:false makes the hook fully inactive — no context, no API calls", async () => {
       withHivemind({ collect: false });
       const out = await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
-      const ctx = JSON.parse(out!).hookSpecificOutput.additionalContext;
-      expect(ctx).toContain("capture is disabled for this directory");
-      // No capture → no DDL and no placeholder INSERT for this directory.
+      expect(out).toBeNull();
+      expect(queryMock).not.toHaveBeenCalled();
       expect(ensureTableMock).not.toHaveBeenCalled();
       expect(ensureSessionsTableMock).not.toHaveBeenCalled();
     });
