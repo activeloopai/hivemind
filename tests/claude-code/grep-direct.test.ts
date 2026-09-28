@@ -428,6 +428,11 @@ describe("parseBashGrep: repeated patterns", () => {
     } as any;
     const result = await handleGrepDirect(api, "memory", "sessions", parsed!);
     expect(result).toBe("apple pie\nbanana bread");
+    const sql = api.query.mock.calls[0][0] as string;
+    expect(sql).toContain("summary::text ILIKE '%apple%'");
+    expect(sql).toContain("summary::text ILIKE '%banana%'");
+    expect(sql).toContain("message::text ILIKE '%apple%'");
+    expect(sql).toContain("message::text ILIKE '%banana%'");
   });
 
   it("keeps repeated -F expressions literal", async () => {

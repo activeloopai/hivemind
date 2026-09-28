@@ -304,7 +304,9 @@ export function parseBashGrep(cmd: string): GrepParams | null {
     const alternatives = explicitPatterns.map((p) =>
       fixedString ? p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : p,
     );
-    pattern = alternatives.map((p) => `(?:${p})`).join("|");
+    // A bare alternation preserves grep's per-pattern OR semantics and keeps
+    // the alternatives visible to grep-core's SQL prefilter extractor.
+    pattern = alternatives.join("|");
     fixedString = false;
   }
 
