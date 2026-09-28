@@ -419,6 +419,28 @@ describe("parseBashGrep", () => {
   });
 });
 
+describe("parseBashGrep: repeated patterns", () => {
+  it("matches lines for every -e expression", async () => {
+    const parsed = parseBashGrep("grep -e apple -e banana /notes");
+    expect(parsed).not.toBeNull();
+    const api = {
+      query: vi.fn().mockResolvedValueOnce([{ path: "/notes/a.md", content: "apple pie\nbanana bread" }]),
+    } as any;
+    const result = await handleGrepDirect(api, "memory", "sessions", parsed!);
+    expect(result).toBe("apple pie\nbanana bread");
+  });
+
+  it("keeps repeated -F expressions literal", async () => {
+    const parsed = parseBashGrep("grep -F -e a.b -e banana /notes");
+    expect(parsed).not.toBeNull();
+    const api = {
+      query: vi.fn().mockResolvedValueOnce([{ path: "/notes/a.md", content: "a.b\naxb\nbanana" }]),
+    } as any;
+    const result = await handleGrepDirect(api, "memory", "sessions", parsed!);
+    expect(result).toBe("a.b\nbanana");
+  });
+});
+
 // ─── rg (ripgrep) ──────────────────────────────────────────────────────────
 //
 // Modern coding agents reach for `rg` by default for directory searches.
