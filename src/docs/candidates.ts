@@ -34,28 +34,35 @@ export function defaultGit(cwd: string): GitRunner {
   };
 }
 
+/**
+ * Collect NUL-delimited (`-z`) pathnames. Each entry is kept byte-for-byte:
+ * no trimming, and `-z` also disables Git's C-style quoting, so paths with
+ * spaces, newlines or non-ASCII characters come through as the real names.
+ */
 function collect(out: string | null, into: Set<string>): void {
   if (out === null) return;
-  for (const line of out.split("\n")) {
-    const f = line.trim();
-    if (f) into.add(f);
+  for (const f of out.split("\0")) {
+    if (f !== "") into.add(f);
   }
 }
 
 /**
  * Files changed relative to HEAD. `null` means "no git signal" → full scan.
  * An empty array means git works but nothing changed.
+ *
+ * `--no-renames` reports a rename as delete + add, so BOTH the old path (whose
+ * docs are now orphaned) and the new path are candidates.
  */
 export function changedFilesFromGit(cwd: string, git: GitRunner = defaultGit(cwd)): string[] | null {
-  const workingTree = git(["diff", "--name-only", "HEAD"]);
+  const workingTree = git(["diff", "--name-only", "-z", "--no-renames", "HEAD"]);
   if (workingTree === null) return null; // not a repo / git missing
   const files = new Set<string>();
   collect(workingTree, files);
   // Untracked, non-ignored files — a brand-new file doesn't show in `git diff`
   // but is exactly the case that needs a fresh doc generated.
-  collect(git(["ls-files", "--others", "--exclude-standard"]), files);
+  collect(git(["ls-files", "--full-name", "-z", "--others", "--exclude-standard"]), files);
   // The last commit too, for the post-commit path where the tree is clean.
-  collect(git(["diff", "--name-only", "HEAD~1", "HEAD"]), files);
+  collect(git(["diff", "--name-only", "-z", "--no-renames", "HEAD~1", "HEAD"]), files);
   return [...files];
 }
 
