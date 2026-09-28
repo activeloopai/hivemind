@@ -4,7 +4,8 @@
  *
  * Flow per stale doc:
  *   1. Re-anchor: recompute each anchor's hash against the current code
- *      (dropping anchors whose symbol vanished).
+ *      (dropping anchors whose symbol vanished from the graph; a symbol still
+ *      in the graph whose source can't be read skips the doc untouched).
  *   2. Gather the changed symbols' CURRENT source as context.
  *   3. Ask the host LLM (injected `generate`) to produce a bounded rewrite.
  *   4. Gate it (objective invariants — see ./gate.ts).
@@ -102,18 +103,27 @@ export function buildRefreshPrompt(ctx: RefreshContext): string {
 
 /**
  * Recompute anchors against the current snapshot + working tree. Anchors whose
- * symbol no longer resolves are dropped (the doc loses that anchor rather than
- * carrying a dangling one).
+ * symbol is absent from the graph are dropped (the doc loses that anchor rather
+ * than carrying a dangling one). Anchors whose symbol IS in the graph but whose
+ * source slice can't be read (stale/out-of-range location, file unreadable) are
+ * reported in `unreadable` — that symbol was not removed, so the caller must
+ * not treat it as gone.
  */
-function reanchor(doc: DocRow, nodeById: Map<string, GraphNode>, repoRoot: string): DocAnchor[] {
-  const out: DocAnchor[] = [];
+function reanchor(
+  doc: DocRow,
+  nodeById: Map<string, GraphNode>,
+  repoRoot: string,
+): { anchors: DocAnchor[]; unreadable: string[] } {
+  const anchors: DocAnchor[] = [];
+  const unreadable: string[] = [];
   for (const a of doc.anchors) {
     const node = nodeById.get(a.symbol_id);
     if (!node) continue;
     const fresh = buildAnchor(node, repoRoot);
-    if (fresh) out.push(fresh);
+    if (fresh) anchors.push(fresh);
+    else unreadable.push(a.symbol_id);
   }
-  return out;
+  return { anchors, unreadable };
 }
 
 /** Collect the changed symbols' current source for the prompt context. */
@@ -165,7 +175,24 @@ export async function refreshDocs(args: RefreshArgs): Promise<RefreshReport> {
       return;
     }
 
-    const newAnchors = reanchor(doc, nodeById, args.repoRoot);
+    const { anchors: newAnchors, unreadable } = reanchor(doc, nodeById, args.repoRoot);
+
+    // A symbol still in the graph whose source can't be read means the graph
+    // is out of date with the working tree (or the file can't be read) — NOT
+    // that the symbol was removed. Archiving would destroy a valid doc, and
+    // regenerating from only the readable subset would silently drop anchors
+    // and content. Leave the doc untouched and say how to recover.
+    if (unreadable.length > 0) {
+      outcomes.push({
+        doc_id: imp.doc_id,
+        status: "skipped",
+        reasons: [
+          `anchored symbol source unreadable at its graph location (stale graph or source read failure): ${unreadable.join(", ")}; ` +
+            "rebuild the graph (`hivemind graph build`) and check the source file is readable, then retry",
+        ],
+      });
+      return;
+    }
 
     // Fully-orphaned doc: it HAD anchors, and every one of them vanished from
     // the graph (the documented file was deleted or renamed). Re-authoring it

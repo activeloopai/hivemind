@@ -4,7 +4,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 vi.mock("../../src/docs/stable-read.js", () => ({
   stableUnionRows: (q: (sql: string) => unknown, sql: string) => q(sql),
 }));
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -269,6 +269,111 @@ describe("refreshDocs", () => {
     expect(report.refreshed).toBe(1);
     // The INSERT must carry only foo's anchor, not the gone one.
     expect(calls[1]).toContain(foo.id);
+    expect(calls[1]).not.toContain("a.ts:gone:function");
+  });
+
+  // ── present-in-graph but unreadable source: skip, never archive/regenerate ──
+
+  const UNREADABLE_REASON =
+    /^anchored symbol source unreadable at its graph location \(stale graph or source read failure\): .+; rebuild the graph \(`hivemind graph build`\)/;
+
+  it("skips (does not archive) a doc whose only symbol has a stale out-of-range location", async () => {
+    // a.ts has 3 lines (+ trailing newline); the graph still says L10-L20.
+    const staleFoo = node(foo.id, "a.ts", "L10-L20");
+    const d = doc({ anchors: [{ symbol_id: staleFoo.id, content_hash: "x" }] });
+    const { calls, query } = mockQuery([]);
+    const generate = vi.fn(async () => "should never be called");
+    const report = await refreshDocs({
+      query, tableName: "hivemind_docs", snap: snap([staleFoo]), repoRoot: dir,
+      impacted: [{ doc_id: "a.ts", reasons: [{ kind: "symbol_missing", symbol_id: staleFoo.id }] }],
+      docsById: new Map([["a.ts", d]]), generate,
+    });
+    expect(report).toMatchObject({ skipped: 1, archived: 0, refreshed: 0, rejected: 0 });
+    expect(report.outcomes[0].status).toBe("skipped");
+    expect(report.outcomes[0].reasons).toEqual([expect.stringMatching(UNREADABLE_REASON)]);
+    expect(report.outcomes[0].reasons![0]).toContain(staleFoo.id);
+    expect(generate).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0); // doc untouched
+  });
+
+  it("skips a doc with mixed readable/unreadable anchors instead of regenerating from the readable subset", async () => {
+    writeFileSync(join(dir, "b.ts"), "export function bar() {\n  return 2;\n}\n");
+    const bar = node("b.ts:bar:function", "b.ts", "L40-L45"); // stale: b.ts is 4 lines
+    const d = doc({ anchors: [{ symbol_id: foo.id, content_hash: "x" }, { symbol_id: bar.id, content_hash: "y" }] });
+    const { calls, query } = mockQuery([]);
+    const generate = vi.fn(async () => "small");
+    const report = await refreshDocs({
+      query, tableName: "hivemind_docs", snap: snap([foo, bar]), repoRoot: dir,
+      impacted: [{ doc_id: "a.ts", reasons: [{ kind: "code_changed", symbol_id: foo.id }, { kind: "symbol_missing", symbol_id: bar.id }] }],
+      docsById: new Map([["a.ts", d]]), generate,
+    });
+    expect(report).toMatchObject({ skipped: 1, archived: 0, refreshed: 0 });
+    expect(report.outcomes[0].reasons).toEqual([expect.stringMatching(UNREADABLE_REASON)]);
+    expect(report.outcomes[0].reasons![0]).toContain(bar.id);
+    expect(report.outcomes[0].reasons![0]).not.toContain(foo.id);
+    expect(generate).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
+  });
+
+  it("skips (does not archive) when the symbol's source file cannot be read", async () => {
+    // source_file resolves to a directory → readFileSync throws (EISDIR).
+    mkdirSync(join(dir, "c.ts"));
+    const baz = node("c.ts:baz:function", "c.ts", "L1-L3");
+    const d = doc({ doc_id: "c.ts", anchors: [{ symbol_id: baz.id, content_hash: "x" }] });
+    const { calls, query } = mockQuery([]);
+    const generate = vi.fn(async () => "small");
+    const report = await refreshDocs({
+      query, tableName: "hivemind_docs", snap: snap([baz]), repoRoot: dir,
+      impacted: [{ doc_id: "c.ts", reasons: [{ kind: "symbol_missing", symbol_id: baz.id }] }],
+      docsById: new Map([["c.ts", d]]), generate,
+    });
+    expect(report).toMatchObject({ skipped: 1, archived: 0, refreshed: 0 });
+    expect(report.outcomes[0]).toMatchObject({ doc_id: "c.ts", status: "skipped" });
+    expect(report.outcomes[0].reasons).toEqual([expect.stringMatching(UNREADABLE_REASON)]);
+    expect(generate).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
+  });
+
+  it("still archives when the gone symbol is absent from the graph even if the file remains on disk", async () => {
+    // Control: a.ts still exists, but the graph no longer has the node → removed.
+    const d = doc({ anchors: [{ symbol_id: foo.id, content_hash: "x" }] });
+    const { calls, query } = mockQuery([
+      () => [{ id: "r", doc_id: "a.ts", version: 3, content: "old", anchors: "[]", tier: "fast", status: "active", project: "p", created_at: "t", updated_at: "t" }],
+      () => [],
+    ]);
+    const generate = vi.fn(async () => "should never be called");
+    const report = await refreshDocs({
+      query, tableName: "hivemind_docs", snap: snap([]), repoRoot: dir,
+      impacted: [{ doc_id: "a.ts", reasons: [{ kind: "symbol_missing", symbol_id: foo.id }] }],
+      docsById: new Map([["a.ts", d]]), generate,
+    });
+    expect(report).toMatchObject({ archived: 1, skipped: 0 });
+    expect(report.outcomes[0].reasons).toEqual(["all anchored symbols gone (file deleted/renamed)"]);
+    expect(generate).not.toHaveBeenCalled();
+    expect(calls[1]).toContain("status = 'archived'");
+  });
+
+  it("refreshes normally when every present anchor reads, dropping only graph-absent ones", async () => {
+    writeFileSync(join(dir, "b.ts"), "export function bar() {\n  return 2;\n}\n");
+    const bar = node("b.ts:bar:function", "b.ts", "L1-L3");
+    const d = doc({ anchors: [
+      { symbol_id: foo.id, content_hash: "x" },
+      { symbol_id: bar.id, content_hash: "y" },
+      { symbol_id: "a.ts:gone:function", content_hash: "z" },
+    ] });
+    const { calls, query } = mockQuery([
+      () => [{ id: "r", doc_id: "a.ts", version: 3, content: "old doc", anchors: "[]", tier: "fast", status: "active", project: "p", created_at: "t", updated_at: "t" }],
+      () => [],
+    ]);
+    const generate = vi.fn(async () => "new doc body");
+    const report = await refreshDocs({
+      query, tableName: "hivemind_docs", snap: snap([foo, bar]), repoRoot: dir,
+      impacted: impacted(), docsById: new Map([["a.ts", d]]), generate,
+    });
+    expect(report).toMatchObject({ refreshed: 1, skipped: 0, archived: 0 });
+    expect(generate).toHaveBeenCalledOnce();
+    expect(calls[1]).toContain(buildAnchor(foo, dir)!.content_hash);
+    expect(calls[1]).toContain(buildAnchor(bar, dir)!.content_hash);
     expect(calls[1]).not.toContain("a.ts:gone:function");
   });
 });
