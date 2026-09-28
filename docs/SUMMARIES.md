@@ -39,4 +39,15 @@ A lock file at `~/.claude/hooks/summary-state/<sessionId>.lock` prevents two wor
 | `HIVEMIND_PI_MODEL`                | `gemini-2.5-flash` | (pi only) model passed to `pi --print --model` |
 | `HIVEMIND_CAPTURE=false`           | unset          | Disable both capture and summary generation         |
 
+For hermes summaries, the provider is whatever you pass as `HIVEMIND_HERMES_PROVIDER`. Besides `openrouter` (the default), any provider hermes knows is valid — including a named custom endpoint. To route wiki summaries through [OrcaRouter](https://www.orcarouter.ai), set `HIVEMIND_HERMES_PROVIDER=orcarouter` (with a matching `HIVEMIND_HERMES_MODEL`, e.g. `anthropic/claude-haiku-4.5`) and register OrcaRouter in `~/.hermes/config.yaml`:
+
+```yaml
+providers:
+  orcarouter:
+    base_url: https://api.orcarouter.ai/v1
+    key_env: ORCAROUTER_API_KEY
+```
+
+Then set `ORCAROUTER_API_KEY` in the environment — the worker inherits it from the parent process. OrcaRouter is an OpenAI-compatible AI gateway, so hermes reaches it like any custom endpoint. It also runs gateway-level, zero-trust security for AI agents on the same endpoint — screening every prompt/response and governing every tool call on a default-deny basis, with no application code changes.
+
 For pi specifically, the wiki worker is bundled separately at `~/.pi/agent/hivemind/wiki-worker.js` (deposited by `hivemind pi install`). The other agents ship the wiki worker inside their per-agent plugin bundle.
