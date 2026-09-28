@@ -46,11 +46,11 @@ describe("extractPython (B6)", () => {
     expect(ex.edges.some((e) => e.relation === "extends" && e.source === "a.py:Sub:class")).toBe(true);
   });
 
-  it("ignores keyword args in the base list and uses the final name of a dotted base (codex)", () => {
+  it("ignores keyword args in the base list and keeps a dotted base fully qualified (codex)", () => {
     const ex = extractPython("import abc\n\nclass C(abc.ABC, metaclass=Meta):\n    pass\n", "a.py");
     const extendsEdges = ex.edges.filter((e) => e.relation === "extends" && e.source === "a.py:C:class");
-    // dotted base abc.ABC → "ABC"; the metaclass=Meta keyword arg is NOT a base.
-    expect(extendsEdges.some((e) => e.target.endsWith(":ABC:class"))).toBe(true);
+    // dotted base abc.ABC → "abc.ABC"; the metaclass=Meta keyword arg is NOT a base.
+    expect(extendsEdges.map((e) => e.target)).toEqual(["unresolved:a.py:abc.ABC:class"]);
     expect(extendsEdges.some((e) => e.target.includes("metaclass"))).toBe(false);
     expect(extendsEdges).toHaveLength(1);
   });
@@ -128,5 +128,107 @@ describe("extractPython (B6)", () => {
     // same-file base → heritage resolved to the real node by the shared pass.
     const ext = snap.links.find((e) => e.relation === "extends" && e.source === "a.py:Sub:class");
     expect(ext?.target).toBe("a.py:Base:class");
+  });
+});
+
+describe("extractPython — qualified names survive into the snapshot", () => {
+  function extendsTargets(src: string, file: string, source: string): string[] {
+    const snap = buildSnapshot([extractPython(src, file)], meta(), obs());
+    return snap.links.filter((e) => e.relation === "extends" && e.source === source).map((e) => e.target);
+  }
+
+  it("does NOT self-link `class Session(requests.Session)` to the local Session", () => {
+    const targets = extendsTargets(
+      "import requests\n\nclass Session(requests.Session):\n    pass\n",
+      "client.py",
+      "client.py:Session:class",
+    );
+    expect(targets).toEqual(["unresolved:client.py:requests.Session:class"]);
+  });
+
+  it("does NOT link a dotted base to a DIFFERENT same-named local class", () => {
+    const targets = extendsTargets(
+      "import base\n\nclass Model:\n    pass\n\nclass User(base.Model):\n    pass\n",
+      "models.py",
+      "models.py:User:class",
+    );
+    expect(targets).toEqual(["unresolved:models.py:base.Model:class"]);
+  });
+
+  it("keeps a multi-segment dotted base fully qualified and unresolved", () => {
+    const targets = extendsTargets(
+      "import a.b\n\nclass C:\n    pass\n\nclass D(a.b.C):\n    pass\n",
+      "m.py",
+      "m.py:D:class",
+    );
+    expect(targets).toEqual(["unresolved:m.py:a.b.C:class"]);
+  });
+
+  it("skips a base whose attribute chain is not plain identifiers (no guessed name)", () => {
+    const targets = extendsTargets(
+      "class Base:\n    pass\n\nclass D(make().Base):\n    pass\n",
+      "m.py",
+      "m.py:D:class",
+    );
+    expect(targets).toEqual([]);
+  });
+
+  it("control: a bare local base still resolves alongside a dotted one", () => {
+    const targets = extendsTargets(
+      "import requests\n\nclass Mixin:\n    pass\n\nclass Session(Mixin, requests.Session):\n    pass\n",
+      "client.py",
+      "client.py:Session:class",
+    );
+    expect(targets.sort()).toEqual(["client.py:Mixin:class", "unresolved:client.py:requests.Session:class"]);
+  });
+
+  it("control: a named-imported bare base still resolves cross-file", () => {
+    const base = extractPython("class Base:\n    pass\n", "pkg/base.py");
+    const sub = extractPython("from pkg.base import Base\n\nclass Sub(Base):\n    pass\n", "app/sub.py");
+    const snap = buildSnapshot([base, sub], meta(), obs());
+    const ext = snap.links.find((e) => e.relation === "extends" && e.source === "app/sub.py:Sub:class");
+    expect(ext?.target).toBe("pkg/base.py:Base:class");
+  });
+});
+
+describe("extractPython — `import a.b` binds `a`, not `b`", () => {
+  const util = () => extractPython("def helper():\n    return 1\n", "pkg/util.py");
+  function callEdges(caller: ReturnType<typeof extractPython>): string[] {
+    const snap = buildSnapshot([caller, util()], meta(), obs());
+    return snap.links
+      .filter((e) => e.relation === "calls" && e.source === "app/main.py:run:function")
+      .map((e) => e.target);
+  }
+
+  it("emits no namespace binding for an unaliased dotted import, but keeps the import edge", () => {
+    const ex = extractPython("import pkg.util\n", "app/main.py");
+    expect(ex.import_bindings).toEqual([]);
+    expect(ex.edges.some((e) => e.relation === "imports" && e.target === "external:pkg.util")).toBe(true);
+  });
+
+  it("does NOT emit a false call edge to the dotted-import leaf (`import pkg.util; util.helper()`)", () => {
+    const caller = extractPython("import pkg.util\n\ndef run():\n    return util.helper()\n", "app/main.py");
+    expect(callEdges(caller)).toEqual([]);
+  });
+
+  it("still repoints the dotted import edge to the real module", () => {
+    const caller = extractPython("import pkg.util\n", "app/main.py");
+    const snap = buildSnapshot([caller, util()], meta(), obs());
+    expect(snap.links.some((e) => e.relation === "imports" && e.source === "app/main.py::module" && e.target === "pkg/util.py::module")).toBe(true);
+  });
+
+  it("control: an explicit alias (`import pkg.util as util`) still binds and resolves", () => {
+    const caller = extractPython("import pkg.util as util\n\ndef run():\n    return util.helper()\n", "app/main.py");
+    expect(caller.import_bindings).toEqual([{ local_name: "util", imported_name: "*", kind: "namespace", specifier: "pkg.util" }]);
+    expect(callEdges(caller)).toEqual(["pkg/util.py:helper:function"]);
+  });
+
+  it("control: a simple `import util` still binds `util` as a namespace and resolves", () => {
+    const helpers = extractPython("def helper():\n    return 1\n", "util.py");
+    const caller = extractPython("import util\n\ndef run():\n    return util.helper()\n", "app/main.py");
+    expect(caller.import_bindings).toEqual([{ local_name: "util", imported_name: "*", kind: "namespace", specifier: "util" }]);
+    const snap = buildSnapshot([caller, helpers], meta(), obs());
+    const targets = snap.links.filter((e) => e.relation === "calls" && e.source === "app/main.py:run:function").map((e) => e.target);
+    expect(targets).toEqual(["util.py:helper:function"]);
   });
 });
