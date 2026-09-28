@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+# .husky/pre-commit
+#
+# The local mirror of the CI typecheck stage. Runs lint-staged, which runs
+# `tsc --noEmit --skipLibCheck` on staged *.ts. There is NO ESLint and NO
+# Prettier in this repo - the gate is tsc + jscpd + this hook. Do not add a
+# linter or formatter here. See guides/13-jscpd-and-quality-gate.md.
+npx lint-staged

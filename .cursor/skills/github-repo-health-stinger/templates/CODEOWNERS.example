@@ -1,0 +1,34 @@
+# CODEOWNERS - Example template (Hivemind-flavored, TypeScript/Node monorepo)
+# Location: .github/CODEOWNERS
+# Last matching rule wins (bottom of file takes precedence).
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything not explicitly listed below
+*                           @org/engineering-leads
+
+# Source code - team ownership by domain
+src/dataset/                @org/dataset-team
+src/retrieval/              @org/retrieval-team
+src/embeddings/             @org/retrieval-team
+src/harness/                @org/harness-team
+src/mcp/                    @org/protocol-team
+
+# Packages (monorepo pattern)
+packages/core/              @org/platform-team
+packages/shared/            @org/platform-team
+
+# Infrastructure and CI - platform team + at least one lead
+.github/workflows/          @org/release-team @org/platform-team
+.github/CODEOWNERS          @org/platform-team @org/engineering-leads
+
+# Configuration - restricted
+config/                     @org/platform-team
+.env.example                @org/platform-team
+
+# Documentation - open ownership with docs team as backup
+docs/                       @org/docs-team @org/engineering-leads
+*.md                        @org/docs-team
+
+# Build and release config - platform + release team
+tsconfig*.json              @org/platform-team
+package.json                @org/platform-team @org/release-team

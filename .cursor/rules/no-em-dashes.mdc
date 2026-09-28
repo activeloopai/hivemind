@@ -1,0 +1,42 @@
+---
+description: Never use em dashes (or en dashes) in prose written for the user
+alwaysApply: true
+---
+
+# No em dashes
+
+Do not use em dashes (`—`, U+2014) or en dashes (`–`, U+2013) in any prose written for the user. This applies to chat responses, documentation, commit messages, PR descriptions, code comments, and any other content authored on the user's behalf. Regular hyphens (`-`, U+002D) are fine.
+
+## What to use instead
+
+Pick the punctuation that matches the relationship between the clauses:
+
+- **Comma** — brief pause or parenthetical
+  - BAD: `Legion is fast — and signed.`
+  - GOOD: `Legion is fast, and signed.`
+
+- **Colon** — elaboration or definition
+  - BAD: `Legion has one job — find leaks.`
+  - GOOD: `Legion has one job: find leaks.`
+
+- **Parentheses** — aside
+  - BAD: `Legion — a senior team in a box — signs everything.`
+  - GOOD: `Legion (a senior team in a box) signs everything.`
+
+- **Period** — two independent thoughts
+  - BAD: `Connect your repo — get a signed report in minutes.`
+  - GOOD: `Connect your repo. Get a signed report in minutes.`
+
+- **Semicolon** — two related independent clauses
+  - BAD: `Scanners run in isolation — every container self-destructs.`
+  - GOOD: `Scanners run in isolation; every container self-destructs.`
+
+## Exceptions
+
+- Preserve em or en dashes inside verbatim user quotes.
+- Preserve em or en dashes inside code, regex, JSON, or any literal data being matched or processed.
+- Do not rewrite em or en dashes in pre-existing file content that is outside the scope of the current edit.
+
+## Self-check before sending
+
+Before sending any response or saving any file, scan the output for `—` and `–`. If found in newly authored prose, replace per the substitution table above.
