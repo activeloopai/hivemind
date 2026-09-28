@@ -187,6 +187,22 @@ describe("hermes session-start hook — context payload", () => {
     expect(payload.context).toContain("org: o-99");
   });
 
+  it("identity line falls back to the stored creds when loadConfig returns null", async () => {
+    loadConfigMock.mockReturnValue(null);
+    loadCredentialsMock.mockReturnValue({ token: "t", orgName: "creds-org", workspaceId: "creds-ws" });
+    await runHook();
+    const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
+    expect(payload.context).toContain("Logged in to Deeplake as org: creds-org (workspace: creds-ws)");
+  });
+
+  it("identity line uses orgId and the 'default' workspace when creds omit them", async () => {
+    loadConfigMock.mockReturnValue(null);
+    loadCredentialsMock.mockReturnValue({ token: "t", orgId: "org-id-1" });
+    await runHook();
+    const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
+    expect(payload.context).toContain("Logged in to Deeplake as org: org-id-1 (workspace: default)");
+  });
+
   it("omits the version notice when getInstalledVersion returns null", async () => {
     getInstalledVersionMock.mockReturnValue(null);
     await runHook();

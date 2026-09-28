@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Source-level tests for src/hooks/session-start-setup.ts. This hook
@@ -323,3 +326,24 @@ describe("session-start-setup hook — fatal catch", () => {
 // isNewer comparison — are tested at the layer they belong to:
 // `src/cli/update.ts` and the autoUpdate helper itself, not in the
 // per-agent setup hook.)
+
+describe("session-start-setup hook — .hivemind collect:false", () => {
+  let hmDir = "";
+  afterEach(() => { if (hmDir) rmSync(hmDir, { recursive: true, force: true }); hmDir = ""; });
+
+  it("does nothing in a collect:false tree — no worker spawn, no creds, no table setup", async () => {
+    hmDir = mkdtempSync(join(tmpdir(), "setup-hivemind-"));
+    writeFileSync(join(hmDir, ".hivemind"), JSON.stringify({ collect: false }));
+    stdinMock.mockResolvedValue({ session_id: "sid-1", cwd: hmDir });
+    await runHook();
+    expect(spawnDetachedMock).not.toHaveBeenCalled();
+    expect(loadCredsMock).not.toHaveBeenCalled();
+    expect(ensureTableMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to process.cwd() when stdin has no cwd", async () => {
+    stdinMock.mockResolvedValue({ session_id: "sid-1" });
+    await runHook();
+    expect(spawnDetachedMock).toHaveBeenCalledTimes(1);
+  });
+});

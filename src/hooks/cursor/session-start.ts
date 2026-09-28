@@ -165,7 +165,7 @@ async function main(): Promise<void> {
   // reused for the placeholder write and the disclosure banner below.
   const baseConfig = loadConfig();
   const dirRes = baseConfig ? resolveDirConfig(baseConfig, cwd) : null;
-  const collectHere = captureEnabled && (dirRes?.collect ?? true);
+  const collectHere = captureEnabled;
   let rulesBlock = "";
   if (creds?.token) {
     try {
@@ -180,9 +180,7 @@ async function main(): Promise<void> {
           await createPlaceholder(api, table, sessionId, cwd, config.userName, config.orgName, config.workspaceId, pluginVersion);
           log("placeholder created");
         } else {
-          log(dirRes && !dirRes.collect
-            ? `placeholder + schema ensure skipped (.hivemind collect:false ${dirRes.found?.path})`
-            : "placeholder + schema ensure skipped (HIVEMIND_CAPTURE=false)");
+          log("placeholder + schema ensure skipped (HIVEMIND_CAPTURE=false)");
         }
         // Read-only renderer. Cursor's additional_context is invisible
         // to the user (model-only), so the full block is fine. Renderer
@@ -232,13 +230,11 @@ async function main(): Promise<void> {
 
   // Disclose the EFFECTIVE identity (after any `.hivemind` overlay).
   const effConfig = dirRes?.config ?? baseConfig;
-  const routed = !!(dirRes?.found && dirRes.collect && baseConfig &&
+  const routed = !!(dirRes?.found && baseConfig &&
     (dirRes.config.orgId !== baseConfig.orgId || dirRes.config.workspaceId !== baseConfig.workspaceId));
   const effOrg = effConfig ? (effConfig.orgName ?? effConfig.orgId) : (creds?.orgName ?? creds?.orgId);
   const effWs = effConfig ? effConfig.workspaceId : (creds?.workspaceId ?? "default");
-  const identityLine = dirRes && !dirRes.collect
-    ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search still uses org: ${effOrg}`
-    : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`;
+  const identityLine = `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`;
   const baseContext = creds?.token
     ? `${context}\n${identityLine}${workspaceWarning}${versionNotice}`
     : `${context}\nNot logged in to Deeplake. Run: hivemind login${localMinedNote}${versionNotice}`;
