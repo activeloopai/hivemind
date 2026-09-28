@@ -41,10 +41,61 @@ export function extractRust(
   result.nodes.push(moduleNode);
 
   const declByName = new Map<string, GraphNode>();
-  collectDecls(root, relativePath, result, declByName, moduleNode);
-  collectCalls(root, result, declByName);
+  const impls: ImplState = { fnByDecl: new Map(), ownerTypes: new Map(), pendingOwners: [] };
+  collectDecls(root, relativePath, result, declByName, moduleNode, impls, "");
+  linkImplOwners(result, impls);
+  collectCalls(root, result, declByName, impls);
 
   return result;
+}
+
+/**
+ * Impl bookkeeping shared by the declaration and call passes.
+ * - fnByDecl: function_item start position → the node declared for it, so a
+ *   caller resolves to its own declaration instead of a same-named function.
+ * - ownerTypes: struct/enum declared in this file, keyed by inline-module
+ *   scope + name, so an impl only links to a type in its own module.
+ * - pendingOwners: method_of edges awaiting their owner's local type node,
+ *   resolved after all decls so a type declared below its impl still links.
+ */
+interface ImplState {
+  fnByDecl: Map<string, GraphNode>;
+  ownerTypes: Map<string, string>;
+  pendingOwners: { owner: string; method: string }[];
+}
+
+function declPos(node: TSNode): string {
+  return `${node.startPosition.row}:${node.startPosition.column}`;
+}
+
+function scopedName(scope: string, name: string): string {
+  return `${scope}::${name}`;
+}
+
+function pushFn(
+  result: FileExtraction,
+  declByName: Map<string, GraphNode>,
+  impls: ImplState,
+  decl: TSNode,
+  node: GraphNode,
+  lookupKey?: string,
+): void {
+  // On an id collision pushNode keeps the first node; attribute calls to it.
+  const existing = result.nodes.find((n) => n.id === node.id);
+  pushNode(result, declByName, node, lookupKey);
+  impls.fnByDecl.set(declPos(decl), existing ?? node);
+}
+
+function pushOwnerType(
+  result: FileExtraction,
+  declByName: Map<string, GraphNode>,
+  impls: ImplState,
+  scope: string,
+  node: GraphNode,
+): void {
+  pushNode(result, declByName, node);
+  const key = scopedName(scope, node.label);
+  if (!impls.ownerTypes.has(key)) impls.ownerTypes.set(key, node.id);
 }
 
 // ─── Pass 1 + 2 ────────────────────────────────────────────────────────────
@@ -55,6 +106,8 @@ function collectDecls(
   result: FileExtraction,
   declByName: Map<string, GraphNode>,
   moduleNode: GraphNode,
+  impls: ImplState,
+  scope: string,
 ): void {
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
@@ -66,24 +119,24 @@ function collectDecls(
       /* c8 ignore next */
       if (name === null) continue;
       const exported = isRustPub(child);
-      pushNode(result, declByName, makeNode(relativePath, name, "function", child, exported, LANG));
+      pushFn(result, declByName, impls, child, makeNode(relativePath, name, "function", child, exported, LANG));
     } else if (child.type === "struct_item") {
       const name = textOfField(child, "name");
       /* c8 ignore next */
       if (name === null) continue;
-      pushNode(result, declByName, makeNode(relativePath, name, "class", child, isRustPub(child), LANG));
+      pushOwnerType(result, declByName, impls, scope, makeNode(relativePath, name, "class", child, isRustPub(child), LANG));
     } else if (child.type === "enum_item") {
       const name = textOfField(child, "name");
       /* c8 ignore next */
       if (name === null) continue;
-      pushNode(result, declByName, makeNode(relativePath, name, "enum", child, isRustPub(child), LANG));
+      pushOwnerType(result, declByName, impls, scope, makeNode(relativePath, name, "enum", child, isRustPub(child), LANG));
     } else if (child.type === "trait_item") {
       const name = textOfField(child, "name");
       /* c8 ignore next */
       if (name === null) continue;
       pushNode(result, declByName, makeNode(relativePath, name, "interface", child, isRustPub(child), LANG));
     } else if (child.type === "impl_item") {
-      collectImplMethods(child, relativePath, result, declByName);
+      collectImplMethods(child, relativePath, result, declByName, impls, scope);
     } else if (child.type === "mod_item") {
       const name = textOfField(child, "name");
       /* c8 ignore next */
@@ -93,7 +146,7 @@ function collectDecls(
       const body = child.childForFieldName("body");
       /* c8 ignore next */
       if (body !== null) {
-        collectDecls(body, relativePath, result, declByName, moduleNode);
+        collectDecls(body, relativePath, result, declByName, moduleNode, impls, scopedName(scope, name));
       }
     } else if (child.type === "use_declaration") {
       collectUseDecl(child, result, moduleNode);
@@ -114,30 +167,47 @@ function isRustPub(node: TSNode): boolean {
   return false;
 }
 
+/**
+ * Method identity is the impl's own spelling: `Rect::area` for an inherent
+ * impl, `Box<i32>::get` vs `Box<u32>::get` for specialized impls, and
+ * `<A as Display>::fmt` vs `<A as Debug>::fmt` for trait impls so neither
+ * definition is lost. Only the base type (`Wrapper<T>` → `Wrapper`) is used
+ * to link method_of, and only to a struct/enum declared in the same inline
+ * module of this file. Scoped, reference and other types get no owner.
+ *
+ * Known limitations (AST only, no name resolution): spelling is textual, so
+ * `Self`, type aliases and differently-qualified paths to one type are not
+ * unified; inline-module paths are not part of ids, so same-named items in
+ * sibling `mod` blocks share one node (as free fns already do); an impl of a
+ * type brought in with `use` is not linked to that type.
+ */
 function collectImplMethods(
   impl: TSNode,
   relativePath: string,
   result: FileExtraction,
   declByName: Map<string, GraphNode>,
+  impls: ImplState,
+  scope: string,
 ): void {
-  // impl_item → type field (the type being implemented) + declaration_list body
+  // impl_item → optional trait field, type field (the type being
+  // implemented) + declaration_list body
   const typeNode = impl.childForFieldName("type");
-  /* c8 ignore next */
-  const implTypeName = typeNode !== null ? typeNode.text.trim() : null;
-
   const body = impl.childForFieldName("body");
   /* c8 ignore next */
-  if (body === null) return;
+  if (typeNode === null || body === null) return;
+
+  const typeText = implSpelling(typeNode);
+  const traitNode = impl.childForFieldName("trait");
+  const keyPrefix = traitNode === null ? typeText : `<${typeText} as ${implSpelling(traitNode)}>`;
+  const ownerName = implBaseTypeName(typeNode);
 
   for (let i = 0; i < body.namedChildCount; i++) {
     const member = body.namedChild(i);
-    /* c8 ignore next */
-    if (member === null || member.type !== "function_item") continue;
+    if (member?.type !== "function_item") continue;
     const name = textOfField(member, "name");
     /* c8 ignore next */
     if (name === null) continue;
-    /* c8 ignore next */
-    const key = implTypeName !== null ? `${implTypeName}::${name}` : name;
+    const key = `${keyPrefix}::${name}`;
     const methodNode: GraphNode = {
       id: nodeId(relativePath, key, "method"),
       label: name,
@@ -147,16 +217,31 @@ function collectImplMethods(
       language: LANG,
       exported: isRustPub(member),
     };
-    pushNode(result, declByName, methodNode, key);
-    /* c8 ignore next */
-    if (implTypeName !== null) {
-      result.edges.push({
-        source: nodeId(relativePath, implTypeName, "class"),
-        target: methodNode.id,
-        relation: "method_of",
-        confidence: "EXTRACTED",
-      });
+    pushFn(result, declByName, impls, member, methodNode, key);
+    if (ownerName !== null) {
+      impls.pendingOwners.push({ owner: scopedName(scope, ownerName), method: methodNode.id });
     }
+  }
+}
+
+/** Source spelling of an impl type/trait; preserve literal contents exactly. */
+function implSpelling(node: TSNode): string {
+  return node.text.trim();
+}
+
+function implBaseTypeName(typeNode: TSNode): string | null {
+  const base = typeNode.type === "generic_type" ? typeNode.childForFieldName("type") : typeNode;
+  return base?.type === "type_identifier" ? base.text : null;
+}
+
+/** Emit method_of only for owners declared as a struct or enum in the impl's module. */
+function linkImplOwners(result: FileExtraction, impls: ImplState): void {
+  const seen = new Set<string>();
+  for (const { owner, method } of impls.pendingOwners) {
+    const source = impls.ownerTypes.get(owner);
+    if (source === undefined || seen.has(method)) continue;
+    seen.add(method);
+    result.edges.push({ source, target: method, relation: "method_of", confidence: "EXTRACTED" });
   }
 }
 
@@ -205,13 +290,14 @@ function collectCalls(
   node: TSNode,
   result: FileExtraction,
   declByName: Map<string, GraphNode>,
+  impls: ImplState,
 ): void {
   if (node.type === "call_expression") {
     const fn = node.childForFieldName("function");
     /* c8 ignore next */
     if (fn !== null && fn.type === "identifier") {
       const target = declByName.get(fn.text);
-      const caller = findEnclosingFn(node, declByName);
+      const caller = findEnclosingFn(node, impls);
       /* c8 ignore next */
       if (target !== undefined && caller !== null) {
         result.edges.push({
@@ -226,35 +312,23 @@ function collectCalls(
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     /* c8 ignore next */
-    if (child !== null) collectCalls(child, result, declByName);
+    if (child !== null) collectCalls(child, result, declByName, impls);
   }
 }
 
 function findEnclosingFn(
   node: TSNode,
-  declByName: Map<string, GraphNode>,
+  impls: ImplState,
 ): GraphNode | null {
+  // The nearest enclosing callable owns the call, resolved by declaration
+  // position, not name: `A::new`, `B::new` and a free `new` are distinct
+  // callers. Nested fns, closures and trait default bodies have no node of
+  // their own, so their calls are dropped rather than credited to an outer fn.
   let cur: TSNode | null = node.parent;
   while (cur !== null) {
-    if (cur.type === "function_item") {
-      const name = textOfField(cur, "name");
-      /* c8 ignore next */
-      if (name !== null) {
-        // check bare name first, then impl-qualified name
-        const found = declByName.get(name) ?? (() => {
-          for (const [k, v] of declByName) {
-            /* c8 ignore next */
-            if (k.endsWith(`::${name}`) || k === name) return v;
-          }
-          /* c8 ignore next */
-          return undefined;
-        })();
-        /* c8 ignore next */
-        if (found !== undefined) return found;
-      }
-    }
+    if (cur.type === "function_item") return impls.fnByDecl.get(declPos(cur)) ?? null;
+    if (cur.type === "closure_expression") return null;
     cur = cur.parent;
   }
-  /* c8 ignore next */
   return null;
 }
