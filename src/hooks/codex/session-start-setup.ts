@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../../commands/auth.js";
 import { loadConfig } from "../../config.js";
-import { resolveDirConfig } from "../../dir-config.js";
+import { resolveDirConfig, isHivemindEnabled } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { readStdin } from "../../utils/stdin.js";
 import { createPlaceholderSummary } from "../shared/placeholder-summary.js";
@@ -49,6 +49,7 @@ async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<CodexSessionStartInput>();
+  if (!isHivemindEnabled(input.cwd ?? process.cwd())) return; // .hivemind "collect": false → fully inactive
 
   // Provision the code-graph tree-sitter parsers into the shared embed-deps
   // dir so the graph-on-stop hook can auto-build the graph. Spawned as a
@@ -87,16 +88,14 @@ async function main(): Promise<void> {
       if (base) {
         const dirRes = resolveDirConfig(base, input.cwd ?? process.cwd());
         const config = dirRes.config;
-        if (captureEnabled && dirRes.collect) {
+        if (captureEnabled) {
           const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, config.tableName);
           await api.ensureTable();
           await api.ensureSessionsTable(config.sessionsTableName);
           await createPlaceholder(api, config.tableName, input.session_id, input.cwd ?? "", config.userName, config.orgName, config.workspaceId);
           log("setup complete");
         } else {
-          log(!dirRes.collect
-            ? `setup skipped — .hivemind collect:false (${dirRes.found?.path})`
-            : "setup skipped — HIVEMIND_CAPTURE=false");
+          log("setup skipped — HIVEMIND_CAPTURE=false");
         }
       }
     } catch (e: any) {

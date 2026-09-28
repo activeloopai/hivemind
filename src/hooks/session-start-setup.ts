@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { loadCredentials, saveCredentials } from "../commands/auth.js";
-import { loadRoutedConfig } from "../dir-config.js";
+import { loadRoutedConfig, isHivemindEnabled } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { readStdin } from "../utils/stdin.js";
 import { log as _log } from "../utils/debug.js";
@@ -33,6 +33,7 @@ async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<SessionStartInput>();
+  if (!isHivemindEnabled(input.cwd ?? process.cwd())) return; // .hivemind "collect": false → fully inactive
 
   // Provision the code-graph tree-sitter parsers into the shared embed-deps
   // dir so the graph-on-stop hook can auto-build the graph. Spawned as a

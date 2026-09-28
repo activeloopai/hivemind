@@ -28,7 +28,7 @@
 
 import { readStdin } from "../../utils/stdin.js";
 import { deriveProjectKey } from "../../utils/repo-identity.js";
-import { loadRoutedConfig } from "../../dir-config.js";
+import { loadRoutedConfig, isHivemindEnabled } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { log as _log } from "../../utils/debug.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
@@ -54,6 +54,7 @@ interface CursorPreToolUseInput {
 
 async function main(): Promise<void> {
   const input = await readStdin<CursorPreToolUseInput>();
+  if (!isHivemindEnabled(input.cwd ?? input.workspace_roots?.[0] ?? process.cwd())) return; // .hivemind "collect": false → fully inactive
   if (input.tool_name !== "Shell") return; // only intercept Shell, not Read/Write/MCP
 
   const command = (input.tool_input as CursorShellToolInput | undefined)?.command;

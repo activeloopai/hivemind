@@ -292,10 +292,11 @@ describe("cursor session-start hook — per-directory .hivemind", () => {
     expect(ensureTableMock).toHaveBeenCalled();
   });
 
-  it("collect:false skips table setup and says capture is disabled", async () => {
+  it("collect:false makes the hook fully inactive — no context, no API calls", async () => {
     withHivemind({ collect: false });
     await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
-    expect(banner()).toContain("capture is disabled for this directory");
+    expect(consoleLogMock).not.toHaveBeenCalled();
+    expect(queryMock).not.toHaveBeenCalled();
     expect(ensureTableMock).not.toHaveBeenCalled();
     expect(ensureSessionsTableMock).not.toHaveBeenCalled();
   });

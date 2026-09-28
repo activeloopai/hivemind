@@ -21,7 +21,7 @@
  */
 
 import { readStdin } from "../../utils/stdin.js";
-import { loadRoutedConfig } from "../../dir-config.js";
+import { loadRoutedConfig, isHivemindEnabled } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { log as _log } from "../../utils/debug.js";
 import { parseBashGrep, handleGrepDirect } from "../grep-direct.js";
@@ -41,6 +41,7 @@ interface HermesPreToolUseInput {
 
 async function main(): Promise<void> {
   const input = await readStdin<HermesPreToolUseInput>();
+  if (!isHivemindEnabled(input.cwd ?? process.cwd())) return; // .hivemind "collect": false → fully inactive
   // SkillOpt: hermes USES an org skill by shelling a read of its SKILL.md (the path is in the
   // terminal command). Arm the judgment window on it. Swallowed; never affects the decision below.
   armSkillOptOnSkillUse(input.session_id ?? "", input.tool_name ?? "", input.tool_input);

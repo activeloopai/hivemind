@@ -7,7 +7,7 @@ import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readStdin } from "../utils/stdin.js";
 import { loadConfig } from "../config.js";
-import { resolveDirConfig } from "../dir-config.js";
+import { resolveDirConfig, isHivemindEnabled } from "../dir-config.js";
 import { armSkillOptOnSkillUse } from "./shared/skillopt-hook.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { sqlLike } from "../utils/sql.js";
@@ -645,6 +645,7 @@ export async function processPreToolUse(input: PreToolUseInput, deps: ClaudePreT
 /* c8 ignore start */
 async function main(): Promise<void> {
   const input = await readStdin<PreToolUseInput>();
+  if (!isHivemindEnabled(input.cwd ?? process.cwd())) return; // .hivemind "collect": false → fully inactive
   // Self-heal the owner record from a SYNCHRONOUS hook. SessionStart records it
   // for new sessions, but a session already open when this shipped only gets a
   // record via the async capture hook — which can be detached and unable to

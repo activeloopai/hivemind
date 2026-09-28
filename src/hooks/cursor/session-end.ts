@@ -22,6 +22,7 @@ const log = (msg: string) => _log("cursor-session-end", msg);
 
 interface CursorSessionEndInput {
   conversation_id?: string;
+  workspace_roots?: string[];
   session_id?: string;
   reason?: string;
   duration_ms?: number;
@@ -36,7 +37,9 @@ async function main(): Promise<void> {
   if (!sessionId) return;
   const base = loadConfig();
   if (!base) { wikiLog(`SessionEnd: no config, skipping summary`); return; }
-  const dirRes = resolveDirConfig(base, process.cwd());
+  // Cursor runs user hooks from ~/.cursor, so process.cwd() is not the project.
+  const cwd = input.workspace_roots?.[0] ?? process.cwd();
+  const dirRes = resolveDirConfig(base, cwd);
   if (!dirRes.collect) { wikiLog(`SessionEnd: capture disabled for this directory (${dirRes.found?.path})`); return; }
   const config = dirRes.config;
 
@@ -46,7 +49,7 @@ async function main(): Promise<void> {
   try {
     forceSessionEndTrigger({
       config,
-      cwd: process.cwd(),
+      cwd,
       bundleDir: bundleDirFromImportMeta(import.meta.url),
       agent: "cursor",
       sessionId,
@@ -66,7 +69,7 @@ async function main(): Promise<void> {
     spawnCursorWikiWorker({
       config,
       sessionId,
-      cwd: process.cwd(),
+      cwd,
       bundleDir: bundleDirFromImportMeta(import.meta.url),
       reason: "SessionEnd",
     });
