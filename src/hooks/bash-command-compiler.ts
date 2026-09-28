@@ -177,6 +177,9 @@ function parseHeadTailStage(stage: string): { lineLimit: number; fromEnd: boolea
     return { lineLimit: Math.abs(count), fromEnd: cmd === "tail" };
   }
   if (rest.length === 3 && rest[0] === "-n") {
+    // `tail -n +N` prints from line N onward, not the last N lines. Leave it to
+    // the VFS shell, whose tail implements the +N form.
+    if (cmd === "tail" && rest[1].startsWith("+")) return null;
     const count = Number(rest[1]);
     if (!Number.isFinite(count)) return null;
     return { lineLimit: Math.abs(count), fromEnd: cmd === "tail" };
