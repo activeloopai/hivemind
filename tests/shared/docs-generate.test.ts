@@ -25,21 +25,34 @@ function mockQuery(rowsPerCall: Array<Record<string, unknown>> = []) {
   return { calls, query };
 }
 
-// ── normalizeForHash (the false-positive fix) ─────────────────────────────────
+// ── normalizeForHash (CRLF → LF only; source bytes otherwise preserved) ───────
 
 describe("normalizeForHash", () => {
-  it("ignores comments — a comment-only edit yields the SAME hash", () => {
+  it("only normalizes CRLF to LF — comments and whitespace are preserved verbatim", () => {
+    const src = "a();/* x */\n\n  b(); // note   \n# py\n";
+    expect(normalizeForHash(src)).toBe(src);
+    expect(normalizeForHash(src, "python")).toBe(src);
+    expect(normalizeForHash("a();\r\n  b();\r\n")).toBe("a();\n  b();\n");
+  });
+  it("CRLF and LF versions of the same source hash identically", () => {
+    const lf = "function f() {\n  // note\n  return 1;\n}\n";
+    expect(hashSource(lf.replace(/\n/g, "\r\n"))).toBe(hashSource(lf));
+    expect(hashSource(lf.replace(/\n/g, "\r\n"), "python")).toBe(hashSource(lf, "python"));
+  });
+  it("detects comment-only edits (no regex comment stripping)", () => {
     const a = "function f() {\n  // does a thing\n  return 1;\n}";
     const b = "function f() {\n  // does a completely different thing\n  return 1;\n}";
-    expect(hashSource(a)).toBe(hashSource(b));
+    expect(hashSource(a)).not.toBe(hashSource(b));
+    expect(hashSource("return 1; // old note")).not.toBe(hashSource("return 1; // new note"));
+    expect(hashSource("a();/* x */\nb();")).not.toBe(hashSource("a();/* y */\nb();"));
+    expect(hashSource("def f():\n    # old\n    return 1", "python")).not.toBe(
+      hashSource("def f():\n    # new\n    return 1", "python"),
+    );
   });
-  it("ignores trailing whitespace and blank lines", () => {
-    const a = "function f() {\n  return 1;\n}";
-    const b = "function f() {   \n\n  return 1;\n\n}\n";
-    expect(hashSource(a)).toBe(hashSource(b));
-  });
-  it("strips block comments too", () => {
-    expect(normalizeForHash("a();/* x */\nb();")).toBe("a();\nb();");
+  it("detects trailing-whitespace and blank-line edits (semantic inside multiline literals)", () => {
+    const a = "const s = `line1\nline2`;";
+    expect(hashSource(a)).not.toBe(hashSource("const s = `line1   \nline2`;"));
+    expect(hashSource(a)).not.toBe(hashSource("const s = `line1\n\nline2`;"));
   });
   it("STILL detects a real code change (different identifier / literal)", () => {
     expect(hashSource("return 1;")).not.toBe(hashSource("return 2;"));
@@ -49,12 +62,24 @@ describe("normalizeForHash", () => {
     // A change after "//" inside a string MUST change the hash.
     expect(hashSource('const url = "https://api.example.com";')).not.toBe(hashSource('const url = "https://api.OTHER.com";'));
     expect(hashSource('x = "a#b"', "python")).not.toBe(hashSource('x = "a#c"', "python"));
-    // Real comments (start-of-line or after whitespace) are still ignored.
-    expect(hashSource("return 1; // old note")).toBe(hashSource("return 1; // new note"));
   });
-
-  it("uses # comments for python and preserves indentation", () => {
-    expect(normalizeForHash("def f():\n    # comment\n    return 1", "python")).toBe("def f():\n    return 1");
+  it("does NOT hide code between string literals that look like /* … */ (glob patterns)", () => {
+    // `"**/*.ts"` opens and `"dist/**/x"` closes what a regex sees as a block comment.
+    const base = 'const inc = "**/*.ts";\nif (ok) run(1);\nconst out = "dist/**/x";';
+    const logicEdit = 'const inc = "**/*.ts";\nif (!ok) run(2);\nconst out = "dist/**/x";';
+    const literalEdit = 'const inc = "**/*.tsx";\nif (ok) run(1);\nconst out = "dist/**/y";';
+    expect(normalizeForHash(base)).toBe(base);
+    expect(hashSource(base)).not.toBe(hashSource(logicEdit));
+    expect(hashSource(base)).not.toBe(hashSource(literalEdit));
+  });
+  it("keeps python indentation and multiline string content significant", () => {
+    const a = "def f():\n    if x:\n        return 1\n    return 2";
+    const dedented = "def f():\n    if x:\n        return 1\n        return 2";
+    expect(hashSource(a, "python")).not.toBe(hashSource(dedented, "python"));
+    const doc1 = 'def f():\n    s = """\n    # not a comment\n    """\n    return s';
+    const doc2 = 'def f():\n    s = """\n    # changed text\n    """\n    return s';
+    expect(normalizeForHash(doc1, "python")).toBe(doc1);
+    expect(hashSource(doc1, "python")).not.toBe(hashSource(doc2, "python"));
   });
 });
 
