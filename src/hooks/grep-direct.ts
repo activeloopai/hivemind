@@ -294,8 +294,21 @@ export function parseBashGrep(cmd: string): GrepParams | null {
     ti++;
   }
 
-  const pattern = explicitPatterns.length > 0 ? explicitPatterns[0] : tokens[ti];
+  let pattern = explicitPatterns.length > 0 ? explicitPatterns[0] : tokens[ti];
   if (!pattern) return null;
+
+  // grep treats repeated -e/--regexp options as alternative patterns. Keep
+  // them together for the downstream line matcher, which accepts one regex.
+  // Fixed-string patterns must be escaped before building the alternation.
+  if (explicitPatterns.length > 1) {
+    const alternatives = explicitPatterns.map((p) =>
+      fixedString ? p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : p,
+    );
+    // A bare alternation preserves grep's per-pattern OR semantics and keeps
+    // the alternatives visible to grep-core's SQL prefilter extractor.
+    pattern = alternatives.join("|");
+    fixedString = false;
+  }
 
   let target = explicitPatterns.length > 0 ? (tokens[ti] ?? "/") : (tokens[ti + 1] ?? "/");
   if (target === "." || target === "./") target = "/";

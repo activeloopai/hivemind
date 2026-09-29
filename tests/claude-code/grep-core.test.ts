@@ -1010,6 +1010,10 @@ describe("regex literal prefilter", () => {
     expect(extractRegexAlternationPrefilters(".|.|.")).toBeNull();
   });
 
+  it("returns null when any branch has no safe literal anchor", () => {
+    expect(extractRegexAlternationPrefilters("apple|\\d+")).toBeNull();
+  });
+
   it("returns null when input has no alternation pipe", () => {
     expect(extractRegexAlternationPrefilters("foobar")).toBeNull();
   });
