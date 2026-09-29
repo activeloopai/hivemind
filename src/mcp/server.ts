@@ -27,6 +27,7 @@ import { deriveProjectKey } from "../utils/repo-identity.js";
 import { makeQueryEmbedder } from "../docs/embed.js";
 import { getVersion } from "../cli/version.js";
 import { startCoworkIngestLoop, coworkDataNoticeOnce } from "./cowork-ingest.js";
+import { startKiroIngestLoop } from "../kiro/kiro-ingest.js";
 
 interface ServerContext {
   api: DeeplakeApi;
@@ -35,6 +36,11 @@ interface ServerContext {
   docsTable: string;
 }
 
+/**
+ * Load credentials and config and build a ready-to-use `ServerContext`.
+ * Returns `{ error }` when the user is not authenticated or config is invalid,
+ * so callers can return a clean error result without throwing.
+ */
 function getContext(): ServerContext | { error: string } {
   const creds = loadCredentials();
   if (!creds?.token) {
@@ -48,6 +54,7 @@ function getContext(): ServerContext | { error: string } {
   return { api, memoryTable: config.tableName, sessionsTable: config.sessionsTableName, docsTable: config.docsTableName };
 }
 
+/** Wrap a plain-text error message in the MCP tool-result envelope. */
 function errorResult(text: string): { content: Array<{ type: "text"; text: string }> } {
   return { content: [{ type: "text", text }] };
 }
@@ -234,6 +241,7 @@ server.registerTool(
   },
 );
 
+/** Entry point: connect the MCP server over stdio and start background ingest loops. */
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -241,6 +249,9 @@ async function main(): Promise<void> {
   // to the sessions table so Cowork conversations become shared memory too.
   // Best-effort and self-throttling; never touches the stdio channel.
   startCoworkIngestLoop();
+  // Kiro CLI has no capture hooks either — tail ~/.kiro/sessions/cli/*.jsonl
+  // and write new messages into shared memory, same as Cowork.
+  startKiroIngestLoop();
 }
 
 main().catch((err) => {
