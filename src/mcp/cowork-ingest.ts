@@ -268,19 +268,23 @@ export function entriesForLine(line: TranscriptLine): Record<string, unknown>[] 
             ...base,
             type: "tool_result",
             tool_use_id: b.tool_use_id,
-            tool_response: JSON.stringify(b.content ?? null),
+            // Redact at one level of JSON encoding (the serialized field value)
+            // before placing the string in the entry. buildCoworkQueueRow then
+            // serializes the entry once — avoiding the double-encoding that
+            // caused the redactor to mis-parse secrets near backslashes/quotes.
+            tool_response: redactSecrets(JSON.stringify(b.content ?? null)),
           });
         }
       }
     }
     const text = extractText(content);
-    if (text.trim()) out.push({ id: crypto.randomUUID(), ...base, type: "user_message", content: text });
+    if (text.trim()) out.push({ id: crypto.randomUUID(), ...base, type: "user_message", content: redactSecrets(text) });
     return out;
   }
 
   if (line.type === "assistant") {
     const text = extractText(content);
-    if (text.trim()) out.push({ id: crypto.randomUUID(), ...base, type: "assistant_message", content: text });
+    if (text.trim()) out.push({ id: crypto.randomUUID(), ...base, type: "assistant_message", content: redactSecrets(text) });
     if (Array.isArray(content)) {
       for (const b of content) {
         if (isBlock(b) && b.type === "tool_use") {
@@ -290,7 +294,8 @@ export function entriesForLine(line: TranscriptLine): Record<string, unknown>[] 
             type: "tool_call",
             tool_name: b.name,
             tool_use_id: b.id,
-            tool_input: JSON.stringify(b.input ?? null),
+            // Same: redact the serialized field string before it enters the entry.
+            tool_input: redactSecrets(JSON.stringify(b.input ?? null)),
           });
         }
       }
@@ -400,14 +405,14 @@ export function summarizeIdleSessions(
 }
 
 /**
- * Serialize a Cowork session entry, redact secrets, and build the queued row.
+ * Serialize a Cowork session entry and build the queued row.
  *
- * Extracted as a named function so the redaction + serialization step is
- * testable in isolation — tests that import this function exercise the
- * production code path rather than duplicating the redaction logic themselves.
- *
- * Matches the pattern used by every other agent capturer:
- *   `line = redactSecrets(JSON.stringify(entry))`
+ * Extracted as a named function so the serialization step is testable in
+ * isolation. Secret redaction is performed upstream in entriesForLine() on
+ * each individual field (content / tool_input / tool_response) before the
+ * entry is assembled, so the redactor sees one level of JSON encoding per
+ * field rather than doubly-serialized text. This function serializes the
+ * already-redacted entry once and passes it to the queue.
  */
 export function buildCoworkQueueRow(
   entry: Record<string, unknown>,
@@ -415,10 +420,9 @@ export function buildCoworkQueueRow(
 ): ReturnType<typeof buildQueuedSessionRow> {
   return buildQueuedSessionRow({
     sessionPath: buildSessionPath(config, String(entry.session_id ?? "")),
-    // Mask secrets (tokens, passwords, API keys) before the payload is
-    // queued or embedded. Redacting the serialized line covers every field
-    // (content / tool_input / tool_response) in one pass.
-    line: redactSecrets(JSON.stringify(entry)),
+    // Fields are already redacted individually in entriesForLine — serialize
+    // once here without post-hoc string surgery over doubly-encoded JSON.
+    line: JSON.stringify(entry),
     userName: config.userName,
     projectName: COWORK_PROJECT,
     description: String(entry.type ?? ""),

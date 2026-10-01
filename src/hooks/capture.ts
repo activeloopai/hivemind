@@ -121,7 +121,10 @@ async function main(): Promise<void> {
       id: crypto.randomUUID(),
       ...meta,
       type: "user_message",
-      content: input.prompt,
+      // Redact the plain string before it is placed in the entry so the
+      // redactor sees one level of escaping, not a doubly-serialized JSON
+      // value. The outer JSON.stringify below then encodes the result once.
+      content: redactSecrets(input.prompt),
     };
   } else if (input.tool_name !== undefined) {
     log(`tool=${input.tool_name} session=${input.session_id}`);
@@ -131,8 +134,13 @@ async function main(): Promise<void> {
       type: "tool_call",
       tool_name: input.tool_name,
       tool_use_id: input.tool_use_id,
-      tool_input: JSON.stringify(input.tool_input),
-      tool_response: JSON.stringify(input.tool_response),
+      // Serialize each object field to a string first, then redact at that
+      // single level of JSON encoding before placing the string in the entry.
+      // Post-hoc redaction over JSON.stringify(entry) would see doubly-escaped
+      // values (tool_input is itself a JSON string inside another JSON string),
+      // causing the regex to mis-parse secrets near backslashes or quotes.
+      tool_input: redactSecrets(JSON.stringify(input.tool_input)),
+      tool_response: redactSecrets(JSON.stringify(input.tool_response)),
     };
   } else if (input.last_assistant_message !== undefined) {
     log(`assistant session=${input.session_id}`);
@@ -161,7 +169,7 @@ async function main(): Promise<void> {
       id: crypto.randomUUID(),
       ...meta,
       type: "assistant_message",
-      content: input.last_assistant_message,
+      content: redactSecrets(input.last_assistant_message),
       ...(input.agent_transcript_path ? { agent_transcript_path: input.agent_transcript_path } : {}),
       ...(modelMeta ?? {}),
     };
@@ -171,10 +179,9 @@ async function main(): Promise<void> {
   }
 
   const sessionPath = buildSessionPath(config, input.session_id);
-  // Mask secrets (tokens, passwords, API keys) before the payload is embedded
-  // or written to the store. Redacting the serialized line covers every field
-  // (content / tool_input / tool_response) and both egress paths at once.
-  const line = redactSecrets(JSON.stringify(entry));
+  // Fields are already redacted individually above — serialize once, no
+  // post-hoc string surgery over doubly-encoded JSON values.
+  const line = JSON.stringify(entry);
   log(`writing to ${sessionPath}`);
 
   // Simple INSERT — one row per event, no concat, no race conditions.

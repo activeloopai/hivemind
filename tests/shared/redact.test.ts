@@ -316,3 +316,99 @@ describe("redactSecrets — JSON-serialized capture entries stay valid JSON", ()
     expect(JSON.parse(parsed.content)).toBe("psql --password ********");
   });
 });
+
+describe("redactSecrets — pre-serialization regression shapes (issue #361)", () => {
+  // These are the exact regression shapes listed in the issue. With the old
+  // post-hoc approach (redactSecrets over JSON.stringify(entry)), fields like
+  // tool_input were doubly serialized, causing the regex to see escape sequences
+  // it couldn't handle correctly. The fix redacts each field at one level of
+  // encoding before building the entry. These tests confirm correct behaviour
+  // at that single encoding level — the level the redactor now operates on.
+
+  it("masks password=\\\\\\\\ (value is two literal backslashes)", () => {
+    // At one level of JSON encoding, two literal backslashes serialize as \\\\
+    const input = "password=\\\\";
+    const out = redactSecrets(input);
+    expect(out).not.toContain("\\\\");
+    expect(out).toContain(MASK);
+  });
+
+  it("masks password=abc\\\" (value ends in a literal quote)", () => {
+    // The value abc" — at one JSON encoding level this is abc\\\"
+    // The redactor should mask the whole value, not just abc
+    const input = 'password=abc\\"';
+    const out = redactSecrets(input);
+    expect(out).toContain(`password=${MASK}`);
+    expect(out).not.toContain("abc");
+  });
+
+  it("masks token=xy\\\\z\\\\ (value contains and ends in backslashes)", () => {
+    const input = "token=xy\\\\z\\\\";
+    const out = redactSecrets(input);
+    expect(out).toContain(`token=${MASK}`);
+    expect(out).not.toContain("xy");
+  });
+
+  it("result is parseable JSON when the field was a JSON-serialized string", () => {
+    // Simulate: tool_input field after one JSON.stringify of the inner object,
+    // then the outer entry is JSON.stringify'd — but we redact at inner level.
+    const inner = JSON.stringify({ command: "export GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" });
+    const redacted = redactSecrets(inner);
+    expect(redacted).not.toContain("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+    // The redacted inner string must still be valid JSON when re-parsed
+    const outer = JSON.stringify({ tool_input: redacted });
+    expect(() => JSON.parse(outer)).not.toThrow();
+    const parsed = JSON.parse(outer);
+    expect(parsed.tool_input).toContain(MASK);
+  });
+
+  it("nested JSON structure remains parseable after redaction of a password field", () => {
+    // Simulate a tool_input with a nested secret — one level of JSON.stringify
+    const inner = JSON.stringify({ db: { password: "s3cr3tP4ss", host: "db.internal" } });
+    const redacted = redactSecrets(inner);
+    expect(redacted).not.toContain("s3cr3tP4ss");
+    const outer = JSON.stringify({ tool_input: redacted });
+    expect(() => JSON.parse(outer)).not.toThrow();
+    const parsed = JSON.parse(outer);
+    const toolInput = JSON.parse(parsed.tool_input);
+    expect(toolInput.db.password).toBe(MASK);
+    expect(toolInput.db.host).toBe("db.internal");
+  });
+});
+
+describe("redactSecrets — quoted multi-word values (issue #361)", () => {
+  // CodeRabbit on #360 noted: `password="two words"` should mask the whole
+  // quoted value, not just the first word. The rule stops at whitespace in
+  // the unquoted form, so a separate quoted-form rule is needed.
+
+  it('masks password="two words" — full quoted value', () => {
+    const out = redactSecrets('password="two words"');
+    expect(out).toBe(`password="${MASK}"`);
+    expect(out).not.toContain("two");
+    expect(out).not.toContain("words");
+  });
+
+  it("masks password='single quoted value'", () => {
+    const out = redactSecrets("password='my secret phrase'");
+    expect(out).toBe(`password='${MASK}'`);
+  });
+
+  it("masks token=\"multi word token value\"", () => {
+    const out = redactSecrets('token="bearer abc def ghi"');
+    expect(out).toContain(MASK);
+    expect(out).not.toContain("bearer abc def ghi");
+  });
+
+  it("still masks single-word unquoted values after adding the quoted rule", () => {
+    // Regression guard: the new rule must not interfere with the existing unquoted form
+    const out = redactSecrets("password=hunter2horse");
+    expect(out).toContain(`password=${MASK}`);
+    expect(out).not.toContain("hunter2horse");
+  });
+
+  it("does not mask a quoted non-secret value", () => {
+    // Non-secret values like false/null should still pass through
+    const out = redactSecrets('secret="false"');
+    expect(out).toBe('secret="false"');
+  });
+});
