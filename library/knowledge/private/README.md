@@ -37,4 +37,3 @@ Create any of these as needed: `ai/`, `auth/`, `data/`, `frontend/`, `infrastruc
 
 - Customer-facing content (put in `knowledge/public/`)
 - PRDs or IRDs (put in `requirements/` or `issues/`)
-- Brand assets (put in `legion-shared/brands/`)

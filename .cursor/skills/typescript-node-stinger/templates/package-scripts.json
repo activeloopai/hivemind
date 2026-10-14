@@ -1,0 +1,21 @@
+{
+  "// note": "The canonical Hivemind scripts block. ci = typecheck && dup && test is the whole quality gate. prebuild single-sources the version; build = tsc then esbuild; prepack/prepare build before publish/install. No ESLint/Prettier scripts exist by design. See guides/04, guides/13, guides/14, guides/18.",
+  "scripts": {
+    "prebuild": "node scripts/sync-versions.mjs",
+    "build": "tsc && node esbuild.config.mjs",
+    "bundle": "node esbuild.config.mjs",
+    "dev": "tsc --watch",
+    "shell": "tsx src/shell/deeplake-shell.ts",
+    "cli": "tsx src/cli/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "dup": "jscpd src",
+    "audit:openclaw": "node scripts/audit-openclaw-bundle.mjs",
+    "pack:check": "node scripts/pack-check.mjs",
+    "rebuild:native": "node scripts/ensure-tree-sitter.mjs",
+    "ci": "npm run typecheck && npm run dup && npm test",
+    "postinstall": "node scripts/ensure-tree-sitter.mjs",
+    "prepare": "husky && npm run build",
+    "prepack": "npm run build"
+  }
+}

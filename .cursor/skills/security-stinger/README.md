@@ -1,0 +1,3 @@
+# security-stinger
+
+Cursor skill that equips the `security-worker-bee` Bee with pre-researched 2025-2026 vulnerability intelligence, scan procedures, and canonical remediation playbooks for the Hivemind codebase (TypeScript ESM, Node >=22, CLI + MCP server + Deep Lake persistence + six harness integrations; no web frontend). The Stinger's three knowledge catalogs - AI-generated code failure patterns, OWASP Top 10:2025 manifestations on Hivemind's real attack surface, and captured-trace P
