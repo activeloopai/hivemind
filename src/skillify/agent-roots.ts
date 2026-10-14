@@ -45,25 +45,43 @@ import { join } from "node:path";
  * `fanOutSymlinks` upstream calls `mkdirSync(dirname(link), { recursive })`
  * before each symlink, so the directory is created on first fan-out.
  */
-function resolveDetected(home: string): string[] {
-  const out: string[] = [];
+function resolveDetected(home: string): AgentSkillsRoot[] {
+  const out: AgentSkillsRoot[] = [];
   const codexInstalled = existsSync(join(home, ".codex"));
   const piInstalled = existsSync(join(home, ".pi", "agent"));
   const hermesInstalled = existsSync(join(home, ".hermes"));
 
   // agentskills.io shared root — codex creates it, pi co-consumes it.
   if (codexInstalled || piInstalled) {
-    out.push(join(home, ".agents", "skills"));
+    const agents = [codexInstalled && "Codex", piInstalled && "pi"].filter(Boolean) as string[];
+    out.push({ root: join(home, ".agents", "skills"), agents });
   }
   // Hermes-specific root, agentskills.io-compatible layout.
   if (hermesInstalled) {
-    out.push(join(home, ".hermes", "skills"));
+    out.push({ root: join(home, ".hermes", "skills"), agents: ["Hermes"] });
   }
   // Pi's primary root (pi reads from this AND ~/.agents/skills/).
   if (piInstalled) {
-    out.push(join(home, ".pi", "agent", "skills"));
+    out.push({ root: join(home, ".pi", "agent", "skills"), agents: ["pi"] });
   }
   return out;
+}
+
+export interface AgentSkillsRoot {
+  root: string;
+  /** Display names of the installed agents that read `root`. */
+  agents: string[];
+}
+
+/**
+ * Same detection as `detectAgentSkillsRoots`, with the agents that read
+ * each root. Used by the CLI to show where a global pull links skills.
+ */
+export function describeAgentSkillsRoots(
+  canonicalRoot: string,
+  home: string = homedir(),
+): AgentSkillsRoot[] {
+  return resolveDetected(home).filter(r => r.root !== canonicalRoot);
 }
 
 /**
@@ -80,5 +98,5 @@ export function detectAgentSkillsRoots(
   canonicalRoot: string,
   home: string = homedir(),
 ): string[] {
-  return resolveDetected(home).filter(p => p !== canonicalRoot);
+  return describeAgentSkillsRoots(canonicalRoot, home).map(r => r.root);
 }

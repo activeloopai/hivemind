@@ -27,6 +27,7 @@ import { dirname, join } from "node:path";
 import { loadScopeConfig, saveScopeConfig, type Scope, type InstallLocation } from "../skillify/scope-config.js";
 import { getStateDir } from "../skillify/state-dir.js";
 import { runPull, type PullSummary } from "../skillify/pull.js";
+import { describeAgentSkillsRoots } from "../skillify/agent-roots.js";
 import { runPush } from "../skillify/push.js";
 import { runUnpull } from "../skillify/unpull.js";
 import { loadConfig } from "../config.js";
@@ -268,6 +269,16 @@ async function pullSkills(args: string[]): Promise<void> {
     }
   }
   console.log(`Result: ${summary.wrote} written, ${summary.dryrun} dry-run, ${summary.skipped} skipped.`);
+  if (toRaw === "global") console.log(formatFanOutLine(dest, dryRun));
+}
+
+// Global pulls also symlink each skill into the skills roots of the other
+// installed agents (see fanOutSymlinks). Say so, or users copy by hand.
+function formatFanOutLine(dest: string, dryRun: boolean): string {
+  const label = dryRun ? "Would link:" : "Linked:";
+  const roots = describeAgentSkillsRoots(dest);
+  if (roots.length === 0) return `${label} none (no Codex, Hermes or pi install found)`;
+  return `${label} ${roots.map(r => `${r.root} (${r.agents.join(", ")})`).join(", ")}`;
 }
 
 async function pushSkills(args: string[]): Promise<void> {
