@@ -1341,7 +1341,7 @@ const PI_SKILLIFY_COMMANDS: { cmd: string; desc: string }[] = [
   { cmd: "hivemind skillify pull --user <email>",         desc: "only skills authored by that user" },
   { cmd: "hivemind skillify pull --users <a,b,c>",        desc: "only skills from those authors" },
   { cmd: "hivemind skillify pull --all-users",            desc: 'explicit "no author filter" (default)' },
-  { cmd: "hivemind skillify pull --to <project|global>",  desc: "install location (project=cwd/.claude/skills, global=~/.claude/skills)" },
+  { cmd: "hivemind skillify pull --to <project|global>",  desc: "install location (project=cwd/.claude/skills, global=~/.claude/skills, linked for Codex/Hermes/pi)" },
   { cmd: "hivemind skillify pull --dry-run",              desc: "preview without touching disk" },
   { cmd: "hivemind skillify pull --force",                desc: "overwrite local files even if up-to-date (creates .bak)" },
   { cmd: "hivemind skillify pull <skill-name>",           desc: "pull only that one skill (combines with --user)" },

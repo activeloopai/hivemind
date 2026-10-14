@@ -54,7 +54,7 @@ Hivemind can mine reusable skills from agent session logs and share them across 
 - `hivemind skillify pull --user <email>` — only skills authored by that user
 - `hivemind skillify pull --users <a,b,c>` — multiple authors (CSV)
 - `hivemind skillify pull --all-users` — explicit "no author filter" (default)
-- `hivemind skillify pull --to <project|global>` — install location (project=cwd/.claude/skills, global=~/.claude/skills)
+- `hivemind skillify pull --to <project|global>` — install location (project=cwd/.claude/skills, global=~/.claude/skills, linked for Codex/Hermes/pi)
 - `hivemind skillify pull --dry-run` — preview without touching disk
 - `hivemind skillify pull --force` — overwrite local files even if up-to-date (creates .bak)
 - `hivemind skillify pull <skill-name>` — pull only that one skill (combines with --user)

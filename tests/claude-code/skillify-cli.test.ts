@@ -285,6 +285,52 @@ describe("pull", () => {
     expect(logged.join("\n")).toMatch(/skill='fake-skill'/);
   });
 
+  describe("agent fan-out line", () => {
+    let fanHome: string;
+    beforeEach(() => {
+      fanHome = mkdtempSync(join(tmpdir(), "skillify-cli-fanout-home-"));
+      setFakeHome(fanHome);
+    });
+    afterEach(() => {
+      clearFakeHome();
+      try { rmSync(fanHome, { recursive: true, force: true }); } catch { /* nothing */ }
+    });
+
+    it("global --dry-run names the Codex skills root when codex is installed", async () => {
+      mkdirSync(join(fanHome, ".codex"), { recursive: true });
+      runSkillifyCommand(["pull", "--all-users", "--to", "global", "--dry-run"]);
+      await new Promise(r => setImmediate(r));
+      expect(logged.join("\n")).toContain(`Would link: ${join(fanHome, ".agents", "skills")} (Codex)`);
+    });
+
+    it("global pull names every detected agent root", async () => {
+      mkdirSync(join(fanHome, ".codex"), { recursive: true });
+      mkdirSync(join(fanHome, ".hermes"), { recursive: true });
+      runSkillifyCommand(["pull", "--dry-run"]);
+      await new Promise(r => setImmediate(r));
+      const out = logged.join("\n");
+      expect(out).toContain(`${join(fanHome, ".agents", "skills")} (Codex)`);
+      expect(out).toContain(`${join(fanHome, ".hermes", "skills")} (Hermes)`);
+    });
+
+    it("global pull says no other agent was found", async () => {
+      runSkillifyCommand(["pull", "--dry-run"]);
+      await new Promise(r => setImmediate(r));
+      expect(logged.join("\n")).toMatch(/Would link: none \(no Codex, Hermes or pi install found\)/);
+    });
+
+    it("project pull prints no fan-out line", async () => {
+      mkdirSync(join(fanHome, ".codex"), { recursive: true });
+      const dir = mkdtempSync(join(tmpdir(), "skillify-cli-fanout-proj-"));
+      process.chdir(dir);
+      runSkillifyCommand(["pull", "--to", "project", "--dry-run"]);
+      await new Promise(r => setImmediate(r));
+      expect(logged.join("\n")).not.toMatch(/^(Linked|Would link):/m);
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    });
+  });
+
   // Note: validation errors inside pullSkills (e.g. --to weird, --user
   // without value) call process.exit() asynchronously inside a fire-
   // and-forget promise, so they can't be caught from a sync test.
