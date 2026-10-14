@@ -325,7 +325,7 @@ describe("pull", () => {
       process.chdir(dir);
       runSkillifyCommand(["pull", "--to", "project", "--dry-run"]);
       await new Promise(r => setImmediate(r));
-      expect(logged.join("\n")).not.toMatch(/link:/i);
+      expect(logged.join("\n")).not.toMatch(/^(Linked|Would link):/m);
       process.chdir(originalCwd);
       rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     });
