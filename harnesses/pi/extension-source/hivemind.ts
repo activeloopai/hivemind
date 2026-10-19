@@ -1352,6 +1352,8 @@ const PI_SKILLIFY_COMMANDS: { cmd: string; desc: string }[] = [
   { cmd: "hivemind skillify unpull --user <email>",       desc: "remove only that author's pulls" },
   { cmd: "hivemind skillify unpull --not-mine",           desc: "remove all pulls except your own" },
   { cmd: "hivemind skillify unpull --dry-run",            desc: "preview without touching disk" },
+  { cmd: "hivemind skillify dedupe",                      desc: "remove pulled <name>--<you> copies of your own skills" },
+  { cmd: "hivemind skillify dedupe --dry-run",            desc: "preview without touching disk" },
   { cmd: "hivemind skillify scope <me|team|org>",         desc: "sharing scope for newly mined skills" },
   { cmd: "hivemind skillify install <project|global>",    desc: "default install location for new skills" },
   { cmd: "hivemind skillify promote <skill-name>",        desc: "move a project skill to the global location" },

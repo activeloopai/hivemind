@@ -20,8 +20,9 @@ import {
   resolveSkillsRoot,
   writeNewSkill,
   mergeSkill,
+  capSkillName,
 } from "./skill-writer.js";
-import { renderExistingSkillsBlock } from "./existing-skills.js";
+import { renderExistingSkillsBlock, type ExistingSkillsBlock } from "./existing-skills.js";
 import { insertSkillRow } from "./skills-table.js";
 import { parseVerdict, type Verdict } from "./gate-parser.js";
 import { runGate, type Agent } from "./gate-runner.js";
@@ -262,8 +263,7 @@ function renderPairsBlock(pairs: Pair[]): string {
 // unit-test the project+global merging and the [global, read-only] tagging
 // without instantiating the whole worker (which reads its config from argv).
 
-function buildPrompt(pairs: Pair[]): string {
-  const existing = renderExistingSkillsBlock(cfg.cwd, EXISTING_SKILLS_CHAR_CAP);
+function buildPrompt(pairs: Pair[], existing: ExistingSkillsBlock): string {
   const mergeTargetsClause = existing.mergeTargetNames.length > 0
     ? `MERGE is allowed only if your "name" is EXACTLY one of: [${existing.mergeTargetNames.join(", ")}]. Any other name MUST use KEEP, not MERGE.`
     : `MERGE is FORBIDDEN — there are no existing skills to merge into. Use KEEP or SKIP only.`;
@@ -390,7 +390,8 @@ async function main(): Promise<void> {
 
     wlog(`extracted ${allPairs.length} pairs across ${usable.length} sessions`);
 
-    const prompt = buildPrompt(allPairs);
+    const existing = renderExistingSkillsBlock(cfg.cwd, EXISTING_SKILLS_CHAR_CAP, cfg.userName);
+    const prompt = buildPrompt(allPairs, existing);
     writeFileSync(promptPath, prompt);
 
     const gateAgent = (cfg.gateAgent ?? cfg.agent) as Agent;
@@ -479,6 +480,7 @@ async function main(): Promise<void> {
         contributors: string[];
       },
       verdict: Verdict,
+      install: "project" | "global" = cfg.install,
     ): Promise<void> {
       // Author stamped on the DB row is the *original* author when one is
       // known (preserves lineage across merges); falls back to the current
@@ -510,7 +512,7 @@ async function main(): Promise<void> {
           project: cfg.project,
           projectKey: cfg.projectKey,
           localPath: result.path,
-          install: cfg.install,
+          install,
           sourceSessions,
           sourceAgent: cfg.agent,
           scope,
@@ -532,6 +534,21 @@ async function main(): Promise<void> {
         wlog(`skills table insert failed (non-fatal): ${e.message}`);
       }
     }
+
+    // A KEEP under the name of an existing merge target would start a second
+    // v1 chain under that name (the fork users see as duplicates). Continue
+    // the existing chain instead.
+    const keepTarget = verdict.verdict === "KEEP" && verdict.name
+      ? existing.mergeTargets[capSkillName(verdict.name)]
+      : undefined;
+    if (keepTarget) {
+      wlog(`KEEP name matches existing skill ${verdict.name} — merging instead`);
+      verdict.verdict = "MERGE";
+      verdict.name = capSkillName(verdict.name!);
+    }
+    const mergeTarget = verdict.verdict === "MERGE" && verdict.name
+      ? existing.mergeTargets[verdict.name]
+      : undefined;
 
     if (verdict.verdict === "KEEP" && verdict.name && verdict.body) {
       try {
@@ -558,7 +575,8 @@ async function main(): Promise<void> {
     } else if (verdict.verdict === "MERGE" && verdict.name && verdict.body) {
       try {
         const result = mergeSkill({
-          skillsRoot: resolveSkillsRoot(cfg.install, cfg.cwd),
+          skillsRoot: mergeTarget?.skillsRoot ?? resolveSkillsRoot(cfg.install, cfg.cwd),
+          dirName: mergeTarget?.dirName,
           name: verdict.name,
           description: verdict.description,
           body: verdict.body,
@@ -568,7 +586,7 @@ async function main(): Promise<void> {
         });
         wlog(`merged into skill: ${result.path} (v${result.version})`);
         recordSkill(cfg.projectKey, verdict.name, watermarkUuid, watermarkDate);
-        await recordToDeeplake(result, verdict);
+        await recordToDeeplake(result, verdict, mergeTarget?.install);
       } catch (e: any) {
         // The gate sometimes hallucinates a MERGE target that exists in the
         // user's global skills (~/.claude/skills/) but not in this project.

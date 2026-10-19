@@ -144,6 +144,8 @@ export async function autoPullSkills(deps: AutoPullDeps = {}): Promise<AutoPullR
           tableName: config.skillsTableName,
           install,
           cwd: install === "project" ? (deps.cwd ?? process.cwd()) : undefined,
+          projectCwd: deps.cwd ?? process.cwd(),
+          selfAuthor: config.userName,
           users: [],
           dryRun: false,
           force: false,

@@ -30,6 +30,7 @@ import { runPull, type PullSummary } from "../skillify/pull.js";
 import { describeAgentSkillsRoots } from "../skillify/agent-roots.js";
 import { runPush } from "../skillify/push.js";
 import { runUnpull } from "../skillify/unpull.js";
+import { runDedupe } from "../skillify/dedupe.js";
 import { loadConfig } from "../config.js";
 import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
@@ -241,6 +242,8 @@ async function pullSkills(args: string[]): Promise<void> {
       tableName: config.skillsTableName,
       install: toRaw,
       cwd: toRaw === "project" ? process.cwd() : undefined,
+      projectCwd: process.cwd(),
+      selfAuthor: config.userName,
       users,
       skillName,
       dryRun,
@@ -409,6 +412,29 @@ async function unpullSkills(args: string[]): Promise<void> {
   console.log(`Result: ${summary.removed} removed, ${summary.wouldRemove} dry-run, ${summary.kept} kept${prunedNote}.`);
 }
 
+function dedupeSkills(args: string[]): void {
+  const dryRun = takeBooleanFlag([...args], "--dry-run");
+  const config = loadConfig();
+  if (!config) {
+    console.error("dedupe needs a logged-in user to know which skills are yours. Run: hivemind login");
+    process.exit(1);
+  }
+  const entries = runDedupe({ myUsername: config.userName, cwd: process.cwd(), dryRun });
+  console.log(`Own skills:  ${config.userName}${dryRun ? " · dry-run" : ""}`);
+  const verb = { removed: "remove", moved: "move", replaced: "replace" } as const;
+  for (const e of entries) {
+    const tag = e.action === "kept" ? "· kept"
+      : e.action === "failed" ? "✗ failed"
+      : dryRun ? `→ would ${verb[e.action]}` : `✓ ${e.action}`;
+    console.log(`  ${tag.padEnd(18)} ${e.dirName.padEnd(50)} (${e.reason})`);
+  }
+  const kept = entries.filter(e => e.action === "kept").length;
+  const failed = entries.filter(e => e.action === "failed").length;
+  const changed = entries.length - kept - failed;
+  console.log(`Result: ${changed} ${dryRun ? "to fix" : "fixed"}, ${kept} kept${failed ? `, ${failed} failed` : ""}.`);
+  if (failed) process.exit(1);
+}
+
 export function runSkillifyCommand(args: string[]): void {
   const sub = args[0];
   if (!sub || sub === "status") { showStatus(); return; }
@@ -433,6 +459,7 @@ export function runSkillifyCommand(args: string[]): void {
       .catch(() => { /* test-only safety net */ });
     return;
   }
+  if (sub === "dedupe") { dedupeSkills(args.slice(1)); return; }
   if (sub === "unpull") {
     unpullSkills(args.slice(1))
       .catch(e => {

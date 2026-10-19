@@ -53,6 +53,8 @@ export const SKILLIFY_COMMANDS: SkillifyCommand[] = [
   { cmd: "hivemind skillify unpull --user <email>",      desc: "remove only that author's pulls" },
   { cmd: "hivemind skillify unpull --not-mine",          desc: "remove all pulls except your own" },
   { cmd: "hivemind skillify unpull --dry-run",           desc: "preview without touching disk" },
+  { cmd: "hivemind skillify dedupe",                     desc: "remove pulled <name>--<you> copies of your own skills" },
+  { cmd: "hivemind skillify dedupe --dry-run",           desc: "preview without touching disk" },
   { cmd: "hivemind skillify scope <me|team|org>",        desc: "sharing scope for newly mined skills" },
   { cmd: "hivemind skillify install <project|global>",   desc: "default install location for new skills" },
   { cmd: "hivemind skillify promote <skill-name>",       desc: "move a project skill to the global location" },
@@ -123,6 +125,13 @@ export const SKILLIFY_SPEC: SkillifySubcommand[] = [
     options: [
       { flag: "--user <email>",          desc: "remove only that author's pulls" },
       { flag: "--not-mine",              desc: "remove all pulls except your own" },
+      { flag: "--dry-run",               desc: "preview without touching disk" },
+    ],
+  },
+  {
+    cmd: "hivemind skillify dedupe",
+    desc: "remove pulled <name>--<you> copies of your own skills",
+    options: [
       { flag: "--dry-run",               desc: "preview without touching disk" },
     ],
   },

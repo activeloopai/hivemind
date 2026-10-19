@@ -23,7 +23,10 @@
 import { listSkills, resolveSkillsRoot, parseFrontmatter } from "./skill-writer.js";
 
 export interface TaggedSkill {
+  /** Name the gate sees and answers with. */
   name: string;
+  /** Directory under the source root. Differs from `name` for a pulled `<name>--<me>` copy. */
+  dirName: string;
   body: string;
   source: "project" | "global";
   /**
@@ -33,22 +36,37 @@ export interface TaggedSkill {
    * legacy local file isn't accidentally treated as cross-author.
    */
   author?: string;
+  version: number;
+}
+
+export interface MergeTarget {
+  install: "project" | "global";
+  skillsRoot: string;
+  dirName: string;
 }
 
 export interface ExistingSkillsBlock {
   /** Names eligible as MERGE targets. Empty when no skills exist. */
   mergeTargetNames: string[];
+  /** Where each MERGE-eligible name lives on disk. */
+  mergeTargets: Record<string, MergeTarget>;
   /** Rendered block of all skills (project + global) for the gate prompt. */
   block: string;
 }
 
 /**
  * Collect every existing skill the gate should know about, with its
- * source root + author tagged. If a name collides across roots, the
- * project copy wins (the user is presumed to be actively editing it
- * locally).
+ * source root + author tagged.
+ *
+ * `userName` lets the user's own pulled global copy (`<name>--<me>`)
+ * answer to its real `<name>`, so the gate continues that version chain
+ * instead of starting a new v1 under the same name.
+ *
+ * Name collisions keep the higher version (a version only grows by a
+ * merge, so higher = newer); a tie keeps the project copy, which the
+ * user is presumed to be editing locally.
  */
-export function listAllExistingSkills(cwd: string): TaggedSkill[] {
+export function listAllExistingSkills(cwd: string, userName?: string): TaggedSkill[] {
   const projectRoot = resolveSkillsRoot("project", cwd);
   const globalRoot = resolveSkillsRoot("global", cwd);
   const tag = (source: "project" | "global") => (s: { name: string; body: string }): TaggedSkill => {
@@ -56,60 +74,53 @@ export function listAllExistingSkills(cwd: string): TaggedSkill[] {
     const author = typeof parsed?.fm.author === "string" && parsed.fm.author.length > 0
       ? parsed.fm.author
       : undefined;
-    return { name: s.name, body: s.body, source, author };
+    const version = typeof parsed?.fm.version === "number" ? parsed.fm.version : 1;
+    const fmName = typeof parsed?.fm.name === "string" ? parsed.fm.name : "";
+    const ownPulledCopy = source === "global" && !!userName && author === userName
+      && s.name === `${fmName}--${userName}`;
+    return { name: ownPulledCopy ? fmName : s.name, dirName: s.name, body: s.body, source, author, version };
   };
   const tagged: TaggedSkill[] = [
     ...listSkills(projectRoot).map(tag("project")),
     ...listSkills(globalRoot).map(tag("global")),
   ];
-  const seen = new Set<string>();
-  const out: TaggedSkill[] = [];
+  const byName = new Map<string, TaggedSkill>();
   for (const s of tagged) {
-    if (seen.has(s.name)) continue;
-    seen.add(s.name);
-    out.push(s);
+    const kept = byName.get(s.name);
+    if (!kept || s.version > kept.version) byName.set(s.name, s);
   }
-  return out;
+  return [...byName.values()];
 }
 
 /**
  * Render the gate-prompt block. `charCap` is the soft budget — once we
  * cross it, we emit a "[…N more omitted]" line and stop.
  *
- * MERGE eligibility (post-#125 review): only `[project]` skills are
- * returned in `mergeTargetNames`. A previous iteration of this PR opened
- * MERGE to every rendered skill (including `[global]`), but the worker's
- * mergeSkill path is rooted at `cfg.install` — for a `[global]` target
- * the local file doesn't exist under that root, so mergeSkill throws and
- * the fallback writes a brand-new skill (creating exactly the duplicate
- * we set out to prevent). Until the worker carries the source root
- * through the verdict and resolves a `<root>/<name>--<author>` dirname
- * for global targets, `[global]` skills stay reference-only here.
- * Tracked as a follow-up (see PR #125 description).
+ * MERGE eligibility: `[project]` skills, and `[global]` skills authored by
+ * `userName`. A global skill from a teammate stays `[global, read-only]`:
+ * the worker writes MERGEs into the user's own skills only, and a
+ * teammate's chain continues on the teammate's machine.
  *
- * Two narrower issues caught in the same review and fixed here:
- *   - `mergeTargetNames` must only include skills whose bodies were
- *     actually rendered into the prompt — otherwise the truncation tail
- *     leaks names the LLM never saw the context for.
- *   - The `[global, read-only]` tag is restored so the gate prompt's
- *     "MERGE only on [project]" rule has a stable surface to point at.
+ * `mergeTargetNames` only includes skills whose bodies were actually
+ * rendered into the prompt — otherwise the truncation tail leaks names
+ * the LLM never saw the context for.
  */
-export function renderExistingSkillsBlock(cwd: string, charCap: number): ExistingSkillsBlock {
-  const skills = listAllExistingSkills(cwd);
+export function renderExistingSkillsBlock(cwd: string, charCap: number, userName?: string): ExistingSkillsBlock {
+  const skills = listAllExistingSkills(cwd, userName);
   if (skills.length === 0) {
     return {
       mergeTargetNames: [],
+      mergeTargets: {},
       block: "(no existing skills — MERGE is NOT a valid choice; pick KEEP or SKIP only)",
     };
   }
   let total = 0;
   const out: string[] = [];
   const mergeTargetNames: string[] = [];
+  const mergeTargets: Record<string, MergeTarget> = {};
   for (const s of skills) {
-    // Tag carries both the install root and the author so the gate
-    // prompt can communicate "this one's yours, MERGE-eligible; this
-    // one's a teammate's pulled into your global root, reference only".
-    const sourceTag = s.source === "project" ? "project" : "global, read-only";
+    const mergeable = s.source === "project" || (!!userName && s.author === userName);
+    const sourceTag = mergeable ? s.source : "global, read-only";
     const authorTag = s.author ? `, author=${s.author}` : "";
     const block = `--- existing skill [${sourceTag}${authorTag}]: ${s.name} ---\n${s.body}\n`;
     if (total + block.length > charCap) {
@@ -118,10 +129,9 @@ export function renderExistingSkillsBlock(cwd: string, charCap: number): Existin
     }
     out.push(block);
     total += block.length;
-    // Only register the name once we know the block fit and the source
-    // is [project] — global skills are reference-only per the policy
-    // documented above.
-    if (s.source === "project") mergeTargetNames.push(s.name);
+    if (!mergeable) continue;
+    mergeTargetNames.push(s.name);
+    mergeTargets[s.name] = { install: s.source, skillsRoot: resolveSkillsRoot(s.source, cwd), dirName: s.dirName };
   }
-  return { mergeTargetNames, block: out.join("\n") };
+  return { mergeTargetNames, mergeTargets, block: out.join("\n") };
 }
