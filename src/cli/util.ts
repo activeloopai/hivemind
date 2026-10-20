@@ -172,7 +172,7 @@ export function readVersionStamp(dir: string): string | null {
   try { return readFileSync(p, "utf-8").trim(); } catch { return null; }
 }
 
-export type PlatformId = "claude" | "codex" | "claw" | "cursor" | "hermes" | "pi" | "claude_cowork";
+export type PlatformId = "claude" | "codex" | "claw" | "cursor" | "hermes" | "pi" | "claude_cowork" | "kiro";
 
 export interface DetectedPlatform {
   id: PlatformId;
@@ -211,12 +211,17 @@ const PLATFORM_MARKERS: DetectedPlatform[] = [
   // claude_desktop_config.json (recall-only; capture is the desktop app's
   // own concern). Marker is the OS-specific Claude Desktop config dir.
   { id: "claude_cowork", markerDir: claudeDesktopConfigDir() },
+  // kiro — AWS's AI coding agent (kiro-cli). Sessions written to
+  // ~/.kiro/sessions/cli/<uuid>.jsonl. MCP config at ~/.kiro/settings/mcp.json.
+  { id: "kiro", markerDir: join(HOME, ".kiro") },
 ];
 
+/** Return the subset of known platforms whose marker directory exists on this machine. */
 export function detectPlatforms(): DetectedPlatform[] {
   return PLATFORM_MARKERS.filter(p => existsSync(p.markerDir));
 }
 
+/** Return the full list of all known platform IDs regardless of whether they are installed. */
 export function allPlatformIds(): PlatformId[] {
   return PLATFORM_MARKERS.map(p => p.id);
 }
