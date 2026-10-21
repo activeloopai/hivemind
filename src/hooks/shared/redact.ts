@@ -231,6 +231,10 @@ const RULES: Rule[] = [
 // In a JSON-serialized entry a quote is escaped by an odd run of backslashes:
 // the last one is the escape and stays outside the mask, the rest are literal
 // content of the secret. An even run is all content, and the quote is real.
+/** Replacer callback for the quoted-secret regex rule. Masks the secret value
+ * while preserving the surrounding key, opening delimiter, and any trailing
+ * backslash escape that belongs to the JSON encoding rather than the secret.
+ */
 function maskBeforeQuote(match: string, keep: string, open: string, value: string, quote: string): string {
   const run = quote ? (value.match(/\\+$/)?.[0].length ?? 0) : 0;
   const escape = run % 2 === 1 && run < value.length ? "\\" : "";

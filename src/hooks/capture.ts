@@ -80,6 +80,10 @@ interface HookInput {
 
 const CAPTURE = process.env.HIVEMIND_CAPTURE !== "false";
 
+/** Entry point for the capture hook. Reads the Claude Code hook payload from stdin,
+ * records the event to the session JSONL file, and optionally triggers a periodic
+ * summarization worker. No-ops when capture is disabled or the plugin is not active.
+ */
 async function main(): Promise<void> {
   if (!CAPTURE) return;
   if (!isHivemindPluginEnabled()) { log("plugin disabled, skipping capture"); return; }
