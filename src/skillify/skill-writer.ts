@@ -218,7 +218,7 @@ export function composeDescription(description: string, trigger?: string): strin
 }
 
 /** Render YAML-ish frontmatter. Conservative quoting — no embedded newlines. */
-function renderFrontmatter(fm: SkillFrontmatter): string {
+export function renderFrontmatter(fm: SkillFrontmatter): string {
   const lines: string[] = ["---"];
   lines.push(`name: ${fm.name}`);
   lines.push(`description: ${JSON.stringify(composeDescription(fm.description, fm.trigger))}`);

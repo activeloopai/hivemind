@@ -30,7 +30,8 @@ import { runPull, type PullSummary } from "../skillify/pull.js";
 import { describeAgentSkillsRoots } from "../skillify/agent-roots.js";
 import { runPush } from "../skillify/push.js";
 import { runUnpull } from "../skillify/unpull.js";
-import { runDedupe } from "../skillify/dedupe.js";
+import { runDedupe, type DedupeEntry } from "../skillify/dedupe.js";
+import { mergeAuthorDuplicates } from "../skillify/dedupe-authors.js";
 import { loadConfig } from "../config.js";
 import { loadRoutedConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
@@ -412,22 +413,51 @@ async function unpullSkills(args: string[]): Promise<void> {
   console.log(`Result: ${summary.removed} removed, ${summary.wouldRemove} dry-run, ${summary.kept} kept${prunedNote}.`);
 }
 
-function dedupeSkills(args: string[]): void {
-  const dryRun = takeBooleanFlag([...args], "--dry-run");
-  const config = loadConfig();
-  if (!config) {
-    console.error("dedupe needs a logged-in user to know which skills are yours. Run: hivemind login");
-    process.exit(1);
-  }
-  const entries = runDedupe({ myUsername: config.userName, cwd: process.cwd(), dryRun });
-  console.log(`Own skills:  ${config.userName}${dryRun ? " · dry-run" : ""}`);
-  const verb = { removed: "remove", moved: "move", replaced: "replace" } as const;
+function printDedupeEntries(entries: DedupeEntry[], dryRun: boolean): void {
+  const verb = { removed: "remove", moved: "move", replaced: "replace", merged: "merge" } as const;
   for (const e of entries) {
     const tag = e.action === "kept" ? "· kept"
       : e.action === "failed" ? "✗ failed"
       : dryRun ? `→ would ${verb[e.action]}` : `✓ ${e.action}`;
     console.log(`  ${tag.padEnd(18)} ${e.dirName.padEnd(50)} (${e.reason})`);
   }
+}
+
+async function dedupeSkills(args: string[]): Promise<void> {
+  const work = [...args];
+  const dryRun = takeBooleanFlag(work, "--dry-run");
+  const noMerge = takeBooleanFlag(work, "--no-merge");
+  const config = loadConfig();
+  if (!config) {
+    console.error("dedupe needs a logged-in user to know which skills are yours. Run: hivemind login");
+    process.exit(1);
+    return;
+  }
+  const cwd = process.cwd();
+  console.log(`Own skills:  ${config.userName}${dryRun ? " · dry-run" : ""}`);
+  const entries = runDedupe({ myUsername: config.userName, cwd, dryRun });
+  printDedupeEntries(entries, dryRun);
+
+  if (!noMerge) {
+    const routed = loadRoutedConfig(cwd);
+    const api = routed
+      ? new DeeplakeApi(routed.token, routed.apiUrl, routed.orgId, routed.workspaceId, routed.skillsTableName)
+      : null;
+    const merged = await mergeAuthorDuplicates({
+      myUsername: config.userName,
+      cwd,
+      dryRun,
+      query: api ? (sql: string) => api.query(sql) as Promise<Record<string, unknown>[]> : undefined,
+      tableName: routed?.skillsTableName,
+      workspaceId: routed?.workspaceId,
+    });
+    if (merged.length > 0) {
+      console.log(`Same name, several authors:`);
+      printDedupeEntries(merged, dryRun);
+    }
+    entries.push(...merged);
+  }
+
   const kept = entries.filter(e => e.action === "kept").length;
   const failed = entries.filter(e => e.action === "failed").length;
   const changed = entries.length - kept - failed;
@@ -459,7 +489,15 @@ export function runSkillifyCommand(args: string[]): void {
       .catch(() => { /* test-only safety net */ });
     return;
   }
-  if (sub === "dedupe") { dedupeSkills(args.slice(1)); return; }
+  if (sub === "dedupe") {
+    dedupeSkills(args.slice(1))
+      .catch(e => {
+        console.error(`dedupe error: ${e?.message ?? e}`);
+        process.exit(1);
+      })
+      .catch(() => { /* test-only safety net */ });
+    return;
+  }
   if (sub === "unpull") {
     unpullSkills(args.slice(1))
       .catch(e => {
