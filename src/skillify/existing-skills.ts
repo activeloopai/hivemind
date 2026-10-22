@@ -10,17 +10,14 @@
  * cause of cross-author duplicates (e.g. two near-identical "standup"
  * skills mined a few days apart because the gate never saw the first).
  *
- * Cross-author MERGE policy (issue #118): MERGE is now allowed on any
- * skill in the block, including ones authored by other teammates. When
- * the editor is not the original author, the worker's recordToDeeplake
- * path auto-promotes `scope` from "me" to "team" and appends the editor
- * to the `contributors` array on the v+1 row. The gate prompt declares
- * this so the LLM understands the "promotion" cost is real and only
- * picks cross-author MERGE when the new evidence genuinely extends the
- * existing skill (rather than as a default).
+ * Cross-author policy: the gate merges only into skills the user owns
+ * (author or contributor). Two authors' same-name skills become one chain
+ * through `hivemind skillify dedupe`, which lists every merged author as a
+ * contributor on the surviving row (issue #118 provenance model).
  */
 
 import { listSkills, resolveSkillsRoot, parseFrontmatter } from "./skill-writer.js";
+import { isOwnSkill } from "./ownership.js";
 
 export interface TaggedSkill {
   /** Name the gate sees and answers with. */
@@ -36,6 +33,8 @@ export interface TaggedSkill {
    * legacy local file isn't accidentally treated as cross-author.
    */
   author?: string;
+  /** Editors listed in the frontmatter; empty for legacy files. */
+  contributors: string[];
   version: number;
 }
 
@@ -58,9 +57,10 @@ export interface ExistingSkillsBlock {
  * Collect every existing skill the gate should know about, with its
  * source root + author tagged.
  *
- * `userName` lets the user's own pulled global copy (`<name>--<me>`)
- * answer to its real `<name>`, so the gate continues that version chain
- * instead of starting a new v1 under the same name.
+ * `userName` lets the user's own pulled global copy (`<name>--<me>`, or a
+ * `<name>--<author>` copy that lists the user as a contributor) answer to
+ * its real `<name>`, so the gate continues that version chain instead of
+ * starting a new v1 under the same name.
  *
  * Name collisions keep the higher version (a version only grows by a
  * merge, so higher = newer); a tie keeps the project copy, which the
@@ -74,11 +74,12 @@ export function listAllExistingSkills(cwd: string, userName?: string): TaggedSki
     const author = typeof parsed?.fm.author === "string" && parsed.fm.author.length > 0
       ? parsed.fm.author
       : undefined;
+    const contributors = Array.isArray(parsed?.fm.contributors) ? parsed.fm.contributors.map(String) : [];
     const version = typeof parsed?.fm.version === "number" ? parsed.fm.version : 1;
     const fmName = typeof parsed?.fm.name === "string" ? parsed.fm.name : "";
-    const ownPulledCopy = source === "global" && !!userName && author === userName
-      && s.name === `${fmName}--${userName}`;
-    return { name: ownPulledCopy ? fmName : s.name, dirName: s.name, body: s.body, source, author, version };
+    const ownPulledCopy = source === "global" && isOwnSkill(userName, author, contributors)
+      && !!fmName && s.name === `${fmName}--${author}`;
+    return { name: ownPulledCopy ? fmName : s.name, dirName: s.name, body: s.body, source, author, contributors, version };
   };
   const tagged: TaggedSkill[] = [
     ...listSkills(projectRoot).map(tag("project")),
@@ -96,10 +97,11 @@ export function listAllExistingSkills(cwd: string, userName?: string): TaggedSki
  * Render the gate-prompt block. `charCap` is the soft budget — once we
  * cross it, we emit a "[…N more omitted]" line and stop.
  *
- * MERGE eligibility: `[project]` skills, and `[global]` skills authored by
- * `userName`. A global skill from a teammate stays `[global, read-only]`:
- * the worker writes MERGEs into the user's own skills only, and a
- * teammate's chain continues on the teammate's machine.
+ * MERGE eligibility: `[project]` skills, and `[global]` skills the user
+ * owns (author, or listed contributor — see ownership.ts). A global skill
+ * from a teammate stays `[global, read-only]`: the worker writes MERGEs
+ * into the user's own skills only, and a teammate's chain continues on
+ * the teammate's machine.
  *
  * `mergeTargetNames` only includes skills whose bodies were actually
  * rendered into the prompt — otherwise the truncation tail leaks names
@@ -119,7 +121,7 @@ export function renderExistingSkillsBlock(cwd: string, charCap: number, userName
   const mergeTargetNames: string[] = [];
   const mergeTargets: Record<string, MergeTarget> = {};
   for (const s of skills) {
-    const mergeable = s.source === "project" || (!!userName && s.author === userName);
+    const mergeable = s.source === "project" || isOwnSkill(userName, s.author, s.contributors);
     const sourceTag = mergeable ? s.source : "global, read-only";
     const authorTag = s.author ? `, author=${s.author}` : "";
     const block = `--- existing skill [${sourceTag}${authorTag}]: ${s.name} ---\n${s.body}\n`;

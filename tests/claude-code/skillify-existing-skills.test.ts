@@ -57,8 +57,8 @@ describe("listAllExistingSkills", () => {
     const skills = listAllExistingSkills(projectCwd);
     // Project is enumerated first, then global.
     expect(skills).toEqual([
-      { name: "deploy", dirName: "deploy", body: expect.stringContaining("project body"), source: "project", version: 1 },
-      { name: "hivemind-plugin-testing--alice", dirName: "hivemind-plugin-testing--alice", body: expect.stringContaining("global body"), source: "global", version: 1 },
+      { name: "deploy", dirName: "deploy", body: expect.stringContaining("project body"), source: "project", contributors: [], version: 1 },
+      { name: "hivemind-plugin-testing--alice", dirName: "hivemind-plugin-testing--alice", body: expect.stringContaining("global body"), source: "global", contributors: [], version: 1 },
     ]);
   });
 
