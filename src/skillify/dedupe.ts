@@ -1,6 +1,8 @@
 /**
- * Remove the duplicate copies of the user's OWN skills that older pulls
- * installed as `<name>--<me>` beside the locally-mined `<name>`.
+ * First pass of `hivemind skillify dedupe`: remove the duplicate copies of
+ * the user's OWN skills that older pulls installed as `<name>--<me>` beside
+ * the locally-mined `<name>`. The second pass, which merges same-name skills
+ * of several authors, lives in dedupe-authors.ts.
  *
  * Before pull wrote own rows into the `<name>` slot, every own skill pulled
  * back from the org table landed as `<name>--<me>`. With a locally-mined
@@ -30,7 +32,7 @@ export interface DedupeOptions {
   dryRun?: boolean;
 }
 
-export type DedupeAction = "removed" | "moved" | "replaced" | "kept" | "failed";
+export type DedupeAction = "removed" | "moved" | "replaced" | "merged" | "kept" | "failed";
 
 export interface DedupeEntry {
   dirName: string;
@@ -90,7 +92,7 @@ function decide(e: PulledEntry, cwd: string): { action: DedupeAction; reason: st
   return { action: "kept", reason: `project ${e.name} v${projectVersion} < copy v${copyVersion}; update the project copy by hand` };
 }
 
-const APPLY: Record<Exclude<DedupeAction, "kept" | "failed">, (e: PulledEntry) => void> = {
+const APPLY: Record<Exclude<DedupeAction, "merged" | "kept" | "failed">, (e: PulledEntry) => void> = {
   removed: removeCopy,
   moved: moveCopy,
   replaced: replaceSlot,
@@ -101,7 +103,7 @@ function apply(
   decision: { action: DedupeAction; reason: string },
   dryRun: boolean,
 ): { action: DedupeAction; reason: string } {
-  if (dryRun || decision.action === "kept" || decision.action === "failed") return decision;
+  if (dryRun || decision.action === "merged" || decision.action === "kept" || decision.action === "failed") return decision;
   try {
     APPLY[decision.action](e);
     return decision;

@@ -435,7 +435,7 @@ describe("dedupe", () => {
     try { rmSync(dedupeHome, { recursive: true, force: true }); } catch { /* nothing */ }
   });
 
-  it("--dry-run lists the caller's own <name>--<me> copy and keeps it on disk", () => {
+  function writeDedupeFixture(): string {
     const root = join(dedupeHome, ".claude", "skills");
     for (const dir of ["deploy", "deploy--tester"]) {
       mkdirSync(join(root, dir), { recursive: true });
@@ -445,11 +445,38 @@ describe("dedupe", () => {
       dirName: "deploy--tester", name: "deploy", author: "tester", projectKey: "pk", remoteVersion: 2,
       install: "global", installRoot: root, pulledAt: "2026", symlinks: [],
     });
+    return root;
+  }
+
+  it("--dry-run lists the caller's own <name>--<me> copy and keeps it on disk", async () => {
+    const root = writeDedupeFixture();
     runSkillifyCommand(["dedupe", "--dry-run"]);
+    await new Promise(r => setImmediate(r));
     const out = logged.join("\n");
     expect(out).toMatch(/→ would remove\s+deploy--tester/);
     expect(out).toMatch(/Result: 1 to fix, 0 kept\./);
     expect(existsSync(join(root, "deploy--tester"))).toBe(true);
+  });
+
+  it("--dry-run lists a same-name skill of another author as a merge; --no-merge does not", async () => {
+    const root = writeDedupeFixture();
+    mkdirSync(join(root, "deploy--bob"), { recursive: true });
+    writeFileSync(join(root, "deploy--bob", "SKILL.md"), "---\nname: deploy\nauthor: bob\nversion: 1\n---\n\nbob body\n");
+    recordPull({
+      dirName: "deploy--bob", name: "deploy", author: "bob", projectKey: "pk", remoteVersion: 1,
+      install: "global", installRoot: root, pulledAt: "2026", symlinks: [],
+    });
+    runSkillifyCommand(["dedupe", "--dry-run"]);
+    await new Promise(r => setImmediate(r));
+    expect(logged.join("\n")).toMatch(/→ would merge\s+deploy\s+\(authors bob, tester -> tester v3\)/);
+    expect(logged.join("\n")).toMatch(/Result: 2 to fix, 0 kept\./);
+
+    logged.length = 0;
+    runSkillifyCommand(["dedupe", "--dry-run", "--no-merge"]);
+    await new Promise(r => setImmediate(r));
+    expect(logged.join("\n")).not.toMatch(/would merge/);
+    expect(logged.join("\n")).toMatch(/Result: 1 to fix, 0 kept\./);
+    expect(existsSync(join(root, "deploy--bob"))).toBe(true);
   });
 });
 

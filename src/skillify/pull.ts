@@ -27,6 +27,7 @@ import { assertValidSkillName, capSkillName, composeDescription, parseFrontmatte
 import type { InstallLocation } from "./scope-config.js";
 import { entriesForRoot, loadManifest, pruneOrphanedEntries, recordPull, removePullEntry, unlinkSymlinks } from "./manifest.js";
 import { detectAgentSkillsRoots } from "./agent-roots.js";
+import { isOwnSkill, parseContributorList } from "./ownership.js";
 
 /**
  * Tighter-than-skill-name validator for the author segment that becomes a
@@ -69,9 +70,10 @@ export interface PullOptions {
    */
   tableExists?: (name: string) => boolean;
   /**
-   * The current user. Their own rows install into the plain `<name>` slot
-   * (where their locally-mined copy lives), not `<name>--<author>`, so one
-   * skill has one dir and the gate continues its version chain.
+   * The current user. Their own rows (author, or listed contributor) install
+   * into the plain `<name>` slot (where their locally-mined copy lives), not
+   * `<name>--<author>`, so one skill has one dir and the gate continues its
+   * version chain.
    */
   selfAuthor?: string;
   /**
@@ -319,13 +321,14 @@ function sameSorted(a: readonly string[], b: readonly string[]): boolean {
 
 /**
  * From the rows returned by the SELECT, keep only the highest-version
- * row per (project_key, name). The SQL already orders by
+ * row per (project_key, name, author). The SQL already orders by
  * (project_key ASC, name ASC, version DESC), so the first row seen for a
  * given composite key is the latest version.
  *
  * Important: keying by name alone would silently drop one of two distinct
  * skills that happen to share a name across projects (e.g. two repos both
- * have a `deploy` skill).
+ * have a `deploy` skill), and keying without the author would drop a
+ * second author's chain under the same name.
  */
 export function selectLatestPerName(rows: Record<string, unknown>[]): Record<string, unknown>[] {
   const seen = new Set<string>();
@@ -333,11 +336,56 @@ export function selectLatestPerName(rows: Record<string, unknown>[]): Record<str
   for (const r of rows) {
     const name = String(r.name ?? "");
     const projectKey = String(r.project_key ?? "");
+    const author = String(r.author ?? "");
     if (!name) continue;
-    const key = `${projectKey}\x00${name}`;
+    const key = `${projectKey}\x00${name}\x00${author}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(r);
+  }
+  return out;
+}
+
+function rowTime(row: Record<string, unknown>): number | null {
+  const t = Date.parse(String(row.created_at ?? ""));
+  return Number.isFinite(t) ? t : null;
+}
+
+/** True when `a` was created after `b`. Falls back to string order for odd timestamps. */
+function createdAfter(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const ta = rowTime(a);
+  const tb = rowTime(b);
+  if (ta !== null && tb !== null) return ta > tb;
+  return String(a.created_at ?? "") > String(b.created_at ?? "");
+}
+
+/**
+ * A chain (name, author A) is retired when a newer row of the same name by
+ * another author lists A as a contributor: `skillify dedupe` merged A's
+ * skill into that chain. Returns the surviving author per retired row.
+ */
+export function retiredChains(latest: Record<string, unknown>[]): Map<Record<string, unknown>, string> {
+  const byName = new Map<string, Record<string, unknown>[]>();
+  for (const r of latest) {
+    const name = String(r.name ?? "");
+    const list = byName.get(name) ?? [];
+    list.push(r);
+    byName.set(name, list);
+  }
+  const out = new Map<Record<string, unknown>, string>();
+  for (const rows of byName.values()) {
+    if (rows.length < 2) continue;
+    for (const r of rows) {
+      const author = String(r.author ?? "");
+      if (!author) continue;
+      const survivor = rows.find(o =>
+        o !== r &&
+        String(o.author ?? "") !== author &&
+        parseContributorList(o.contributors).includes(author) &&
+        createdAfter(o, r),
+      );
+      if (survivor) out.set(r, String(survivor.author));
+    }
   }
   return out;
 }
@@ -392,14 +440,7 @@ function parseSourceSessions(v: unknown): string[] {
 
 /** Same shape as parseSourceSessions but for the `contributors` column. */
 function parseContributors(v: unknown): string[] {
-  if (Array.isArray(v)) return v.map(String);
-  if (typeof v === "string") {
-    try {
-      const parsed = JSON.parse(v);
-      if (Array.isArray(parsed)) return parsed.map(String);
-    } catch { /* not JSON, fall through */ }
-  }
-  return [];
+  return parseContributorList(v);
 }
 
 function renderFrontmatter(fm: SkillFrontmatter): string {
@@ -423,6 +464,18 @@ function renderFrontmatter(fm: SkillFrontmatter): string {
   lines.push(`updated_at: ${fm.updated_at}`);
   lines.push("---");
   return lines.join("\n");
+}
+
+/** Read the frontmatter `author` of an existing local SKILL.md, or null. */
+export function readLocalAuthor(path: string): string | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = parseFrontmatter(readFileSync(path, "utf-8"));
+    const a = parsed?.fm.author;
+    return typeof a === "string" && a.length > 0 ? a : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Read the version field of an existing local SKILL.md, or null if missing/unparseable. */
@@ -535,6 +588,7 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     }
   }
   const latest = selectLatestPerName(rows);
+  const retired = retiredChains(latest);
 
   const root = resolvePullDestination(opts.install, opts.cwd);
   const summary: PullSummary = { scanned: latest.length, wrote: 0, skipped: 0, dryrun: 0, entries: [] };
@@ -550,6 +604,18 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     const rawName = String(row.name ?? "");
     if (!rawName) continue;
     const author = String(row.author ?? "");
+    // The chain was merged into another author's skill by `skillify dedupe`;
+    // that survivor row installs instead.
+    const mergedInto = retired.get(row);
+    if (mergedInto) {
+      summary.entries.push({
+        name: rawName, remoteVersion: Number(row.version ?? 1), localVersion: null,
+        action: "skipped", destination: `(merged into ${mergedInto})`,
+        author, sourceAgent: String(row.source_agent ?? ""),
+      });
+      summary.skipped++;
+      continue;
+    }
     // Pulled skills land at `<root>/<name>--<author>/SKILL.md` so:
     //   1. Claude Code's skill loader (single-depth scan) sees them directly
     //   2. Cross-author name collisions stay disjoint on disk
@@ -610,7 +676,7 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     // install cleanly. The capped name drives BOTH the frontmatter `name` and the
     // `<name>--<author>` directory base so the two stay consistent.
     const name = capSkillName(rawName);
-    const own = !!opts.selfAuthor && author === opts.selfAuthor;
+    const own = isOwnSkill(opts.selfAuthor, author, parseContributors(row.contributors));
     const dirName = own ? name : `${name}--${author}`;
 
     if (own) {
@@ -618,7 +684,10 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
         ? join(resolvePullDestination("project", opts.projectCwd), name, "SKILL.md")
         : null;
       const projectVersion = projectFile ? readLocalVersion(projectFile) : null;
-      if (projectFile && projectVersion !== null && projectVersion >= Number(row.version ?? 1)) {
+      // Versions compare only within one chain: a project copy by another
+      // author is not a reason to skip this row.
+      const sameChain = !projectFile || (readLocalAuthor(projectFile) ?? author) === author;
+      if (projectFile && sameChain && projectVersion !== null && projectVersion >= Number(row.version ?? 1)) {
         summary.entries.push({
           name, remoteVersion: Number(row.version ?? 1), localVersion: projectVersion,
           action: "skipped", destination: projectFile,
@@ -677,16 +746,21 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
 
     const remoteVersion = Number(row.version ?? 1);
     const localVersion = readLocalVersion(skillFile);
+    // The slot holds the user's own chain, and this row is a survivor by
+    // another author that merged it: the versions are from different chains,
+    // so the slot is replaced (the old file stays as SKILL.md.bak).
+    const slotIsMyMergedChain = own && author !== opts.selfAuthor
+      && readLocalAuthor(skillFile) === opts.selfAuthor;
     const action = decideAction({
       remoteVersion, localVersion,
-      force: opts.force ?? false,
+      force: (opts.force ?? false) || slotIsMyMergedChain,
       dryRun: opts.dryRun ?? false,
     });
 
     // The user's own locally-mined skill in this slot is theirs, not pull's:
     // update it to the newer version, but never record it, so `unpull`
-    // cannot delete it.
-    const unmanagedLocal = own && localVersion !== null
+    // cannot delete it. A survivor by another author is pull-managed.
+    const unmanagedLocal = own && author === opts.selfAuthor && localVersion !== null
       && !entriesForRoot(loadManifest(), opts.install, root).some(e => e.dirName === dirName);
 
     let manifestError: string | undefined;
