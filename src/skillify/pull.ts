@@ -68,6 +68,17 @@ export interface PullOptions {
    * couldn't be fetched) falls back to the SELECT-then-catch path below.
    */
   tableExists?: (name: string) => boolean;
+  /**
+   * The current user. Their own rows install into the plain `<name>` slot
+   * (where their locally-mined copy lives), not `<name>--<author>`, so one
+   * skill has one dir and the gate continues its version chain.
+   */
+  selfAuthor?: string;
+  /**
+   * For global pulls: the project whose `.claude/skills/<name>` also counts
+   * as the user's own copy. An own row at or below that version is skipped.
+   */
+  projectCwd?: string;
 }
 
 export interface PullResultEntry {
@@ -447,6 +458,29 @@ export function decideAction(args: {
 }
 
 /**
+ * Move the user's own skill from a pull-managed legacy `<name>--<me>` dir
+ * into the `<name>` slot, when that slot is free. Content and version are
+ * kept, so the normal version check runs on the moved copy. When the slot
+ * is already taken, the legacy dir stays for `skillify dedupe`.
+ */
+function adoptOwnLegacyDir(install: InstallLocation, root: string, name: string, legacyDirs: string[]): void {
+  const slot = join(root, name);
+  if (existsSync(slot)) return;
+  const entries = entriesForRoot(loadManifest(), install, root);
+  const legacy = entries.find(e => legacyDirs.includes(e.dirName) && existsSync(join(root, e.dirName)));
+  if (!legacy) return;
+  try {
+    renameSync(join(root, legacy.dirName), slot);
+    unlinkSymlinks(legacy.symlinks);
+    removePullEntry(install, root, legacy.dirName);
+    const symlinks = install === "global" ? fanOutSymlinks(slot, name, detectAgentSkillsRoots(root)) : [];
+    recordPull({ ...legacy, dirName: name, name, symlinks });
+  } catch {
+    // Best effort: the legacy copy stays usable where it is.
+  }
+}
+
+/**
  * Main entry point. Queries the skills table, applies filters, decides
  * actions, and (unless dry-run) writes SKILL.md files to the destination.
  *
@@ -576,7 +610,25 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     // install cleanly. The capped name drives BOTH the frontmatter `name` and the
     // `<name>--<author>` directory base so the two stay consistent.
     const name = capSkillName(rawName);
-    const dirName = `${name}--${author}`;
+    const own = !!opts.selfAuthor && author === opts.selfAuthor;
+    const dirName = own ? name : `${name}--${author}`;
+
+    if (own) {
+      const projectFile = opts.install === "global" && opts.projectCwd
+        ? join(resolvePullDestination("project", opts.projectCwd), name, "SKILL.md")
+        : null;
+      const projectVersion = projectFile ? readLocalVersion(projectFile) : null;
+      if (projectFile && projectVersion !== null && projectVersion >= Number(row.version ?? 1)) {
+        summary.entries.push({
+          name, remoteVersion: Number(row.version ?? 1), localVersion: projectVersion,
+          action: "skipped", destination: projectFile,
+          author, sourceAgent: String(row.source_agent ?? ""),
+        });
+        summary.skipped++;
+        continue;
+      }
+      if (!opts.dryRun) adoptOwnLegacyDir(opts.install, root, name, [`${name}--${author}`, `${rawName}--${author}`]);
+    }
 
     // Two distinct over-long names can cap to the same destination (capping is
     // a lossy hash). Detect collisions both within this run (claimedDirs) AND
@@ -613,7 +665,7 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     // is to fix that existing broken install, which is normally at an equal
     // version. Below we either migrate the stale copy's content or install the
     // remote row, then retire the stale dir.
-    const staleDir = name !== rawName ? `${rawName}--${author}` : null;
+    const staleDir = !own && name !== rawName ? `${rawName}--${author}` : null;
     // Only treat a stale dir as ours to migrate/retire when the manifest says
     // WE pulled it. An unmanaged `<rawName>--<author>` dir the user happens to
     // own is left untouched, and its content is never copied into the capped
@@ -630,6 +682,12 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
       force: opts.force ?? false,
       dryRun: opts.dryRun ?? false,
     });
+
+    // The user's own locally-mined skill in this slot is theirs, not pull's:
+    // update it to the newer version, but never record it, so `unpull`
+    // cannot delete it.
+    const unmanagedLocal = own && localVersion !== null
+      && !entriesForRoot(loadManifest(), opts.install, root).some(e => e.dirName === dirName);
 
     let manifestError: string | undefined;
     if (action === "wrote") {
@@ -660,32 +718,34 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
       // root, but only for global pulls. Project-local pulls live under
       // <cwd>/.claude/skills and shouldn't leak into user-global agent
       // dirs — that would defeat the project-scoping intent.
-      const symlinks = opts.install === "global"
+      const symlinks = opts.install === "global" && !unmanagedLocal
         ? fanOutSymlinks(skillDir, dirName, detectAgentSkillsRoots(root))
         : [];
       // Record in manifest so `unpull` can identify this entry as
       // pull-managed without relying on the `--<author>` dirname heuristic
       // and so the symlinks created above can be reversed by a single
       // manifest-driven unlink pass.
-      try {
-        recordPull({
-          dirName,
-          name,
-          rawName,
-          author,
-          projectKey: String(row.project_key ?? ""),
-          remoteVersion,
-          install: opts.install,
-          installRoot: root,
-          pulledAt: new Date().toISOString(),
-          symlinks,
-        });
-      } catch (e: any) {
-        // Skill is on disk but the manifest didn't record it — surface
-        // this in the entry so the dispatcher can warn. `unpull` will
-        // not be able to clean this entry via the manifest path until
-        // a successful re-pull populates it.
-        manifestError = e?.message ?? String(e);
+      if (!unmanagedLocal) {
+        try {
+          recordPull({
+            dirName,
+            name,
+            rawName,
+            author,
+            projectKey: String(row.project_key ?? ""),
+            remoteVersion,
+            install: opts.install,
+            installRoot: root,
+            pulledAt: new Date().toISOString(),
+            symlinks,
+          });
+        } catch (e: any) {
+          // Skill is on disk but the manifest didn't record it — surface
+          // this in the entry so the dispatcher can warn. `unpull` will
+          // not be able to clean this entry via the manifest path until
+          // a successful re-pull populates it.
+          manifestError = e?.message ?? String(e);
+        }
       }
     }
 

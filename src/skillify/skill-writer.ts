@@ -63,6 +63,8 @@ export interface WriteSkillArgs {
 export interface MergeSkillArgs {
   skillsRoot: string;
   name: string;            // existing skill to merge into
+  /** Directory of the target when it differs from `name` (a pulled `<name>--<author>` copy). */
+  dirName?: string;
   description?: string;    // optional override
   body: string;            // merged body returned by gate
   newSourceSessions: string[];
@@ -331,7 +333,7 @@ export function writeNewSkill(args: WriteSkillArgs): SkillWriteResult {
  */
 export function mergeSkill(args: MergeSkillArgs): SkillWriteResult {
   assertValidSkillName(args.name);
-  const path = skillPath(args.skillsRoot, args.name);
+  const path = skillPath(args.skillsRoot, args.dirName ?? args.name);
   if (!existsSync(path)) {
     throw new Error(`skill ${args.name} does not exist at ${path}; use writeNewSkill`);
   }

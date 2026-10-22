@@ -31,6 +31,7 @@ vi.mock("../../src/deeplake-api.js", () => ({
 import { runSkillifyCommand } from "../../src/commands/skillify.js";
 import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 import { loadConfig } from "../../src/config.js";
+import { recordPull } from "../../src/skillify/manifest.js";
 const loadConfigMock = loadConfig as unknown as ReturnType<typeof vi.fn>;
 
 const VALID_CONFIG = {
@@ -422,6 +423,35 @@ describe("push", () => {
 });
 
 // ── unpull ────────────────────────────────────────────────────────────────
+
+describe("dedupe", () => {
+  let dedupeHome: string;
+  beforeEach(() => {
+    dedupeHome = mkdtempSync(join(tmpdir(), "skillify-cli-dedupe-home-"));
+    setFakeHome(dedupeHome);
+  });
+  afterEach(() => {
+    clearFakeHome();
+    try { rmSync(dedupeHome, { recursive: true, force: true }); } catch { /* nothing */ }
+  });
+
+  it("--dry-run lists the caller's own <name>--<me> copy and keeps it on disk", () => {
+    const root = join(dedupeHome, ".claude", "skills");
+    for (const dir of ["deploy", "deploy--tester"]) {
+      mkdirSync(join(root, dir), { recursive: true });
+      writeFileSync(join(root, dir, "SKILL.md"), "---\nname: deploy\nauthor: tester\nversion: 2\n---\n\nbody\n");
+    }
+    recordPull({
+      dirName: "deploy--tester", name: "deploy", author: "tester", projectKey: "pk", remoteVersion: 2,
+      install: "global", installRoot: root, pulledAt: "2026", symlinks: [],
+    });
+    runSkillifyCommand(["dedupe", "--dry-run"]);
+    const out = logged.join("\n");
+    expect(out).toMatch(/→ would remove\s+deploy--tester/);
+    expect(out).toMatch(/Result: 1 to fix, 0 kept\./);
+    expect(existsSync(join(root, "deploy--tester"))).toBe(true);
+  });
+});
 
 describe("unpull", () => {
   // Each test runs under a fresh HOME so the manifest writes by

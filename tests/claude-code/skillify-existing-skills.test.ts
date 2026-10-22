@@ -57,8 +57,8 @@ describe("listAllExistingSkills", () => {
     const skills = listAllExistingSkills(projectCwd);
     // Project is enumerated first, then global.
     expect(skills).toEqual([
-      { name: "deploy", body: expect.stringContaining("project body"), source: "project" },
-      { name: "hivemind-plugin-testing--alice", body: expect.stringContaining("global body"), source: "global" },
+      { name: "deploy", dirName: "deploy", body: expect.stringContaining("project body"), source: "project", version: 1 },
+      { name: "hivemind-plugin-testing--alice", dirName: "hivemind-plugin-testing--alice", body: expect.stringContaining("global body"), source: "global", version: 1 },
     ]);
   });
 
@@ -97,17 +97,13 @@ describe("renderExistingSkillsBlock", () => {
     expect(result.block).toMatch(/MERGE is NOT a valid choice/);
   });
 
-  it("only [project] skills are MERGE-eligible (post-#125 review: worker's mergeSkill is rooted at cfg.install)", () => {
+  it("without a userName only [project] skills are MERGE-eligible", () => {
     writeSkill(projectRoot(), "deploy", "p body");
     writeSkill(globalRoot(), "team-standup--d", "g body");
     writeSkill(globalRoot(), "pg-deeplake-cred-callback--levon", "g body 2");
     const result = renderExistingSkillsBlock(projectCwd, 10_000);
-    // [global] entries are reference-only until the worker can resolve a
-    // global mergeSkill root (`<root>/<name>--<author>`) and translate
-    // the verdict name back to a DB name. Without that plumbing the
-    // worker would always fall through to writeNewSkill — i.e. silently
-    // create a new skill instead of merging — which is exactly the
-    // duplicate-producing bug #118 was meant to prevent.
+    // Global entries are MERGE targets only when authored by the given
+    // userName (see skillify-own-skill-chain.test.ts).
     expect(result.mergeTargetNames).toEqual(["deploy"]);
   });
 
