@@ -267,7 +267,11 @@ function writeSlot(root: string, m: MergedSkill): string {
   const dir = join(root, m.name);
   const file = join(dir, "SKILL.md");
   mkdirSync(dir, { recursive: true });
-  if (existsSync(file)) renameSync(file, `${file}.bak`);
+  try {
+    renameSync(file, `${file}.bak`);
+  } catch (err: any) {
+    if (err?.code !== "ENOENT") throw err;
+  }
   writeFileSync(file, renderMerged(m));
   return file;
 }
