@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { assertValidSkillName, capSkillName, composeDescription, parseFrontmatter, type SkillFrontmatter } from "./skill-writer.js";
 import type { InstallLocation } from "./scope-config.js";
-import { entriesForRoot, loadManifest, pruneOrphanedEntries, recordPull, removePullEntry, unlinkSymlinks } from "./manifest.js";
+import { entriesForRoot, loadManifest, pruneOrphanedEntries, recordPull, removePullEntry, unlinkSymlinks, type PulledEntry } from "./manifest.js";
 import { detectAgentSkillsRoots } from "./agent-roots.js";
 import { isOwnSkill, parseContributorList } from "./ownership.js";
 
@@ -516,12 +516,51 @@ export function decideAction(args: {
  * kept, so the normal version check runs on the moved copy. When the slot
  * is already taken, the legacy dir stays for `skillify dedupe`.
  */
+/**
+ * A chain that `skillify dedupe` merged into another author's skill is no
+ * longer installed; a pull-managed copy of it left on disk would still load
+ * beside the merged skill. Retire the copy to SKILL.md.bak.
+ */
+function removeRetiredCopy(install: InstallLocation, root: string, rawName: string, author: string): void {
+  const dirNames = [`${capSkillName(rawName)}--${author}`, `${rawName}--${author}`];
+  const entries = entriesForRoot(loadManifest(), install, root);
+  const stale = entries.find(e => e.author === author && dirNames.includes(e.dirName));
+  if (!stale) return;
+  retireManagedCopy(install, root, stale);
+}
+
+/**
+ * Take a pull-managed copy out of the agents' view without deleting the
+ * user's files: its SKILL.md becomes SKILL.md.bak (a folder without SKILL.md
+ * is not a skill), its symlinks and manifest entry go. The .bak is safe to
+ * delete later.
+ */
+function retireManagedCopy(install: InstallLocation, root: string, copy: PulledEntry): void {
+  try {
+    const file = join(root, copy.dirName, "SKILL.md");
+    if (existsSync(file)) renameSync(file, `${file}.bak`);
+    unlinkSymlinks(copy.symlinks);
+    removePullEntry(install, root, copy.dirName);
+  } catch {
+    // Best effort: the copy stays until the next pull or dedupe.
+  }
+}
+
+/**
+ * An own row installs into the `<name>` slot. A pull-managed `<name>--<author>`
+ * copy of the same chain from an older pull must not stay beside it: with a
+ * free slot it becomes the slot; with an occupied slot (the row is written
+ * there below) the copy is retired to SKILL.md.bak, so the agent loads one skill.
+ */
 function adoptOwnLegacyDir(install: InstallLocation, root: string, name: string, legacyDirs: string[]): void {
   const slot = join(root, name);
-  if (existsSync(slot)) return;
   const entries = entriesForRoot(loadManifest(), install, root);
   const legacy = entries.find(e => legacyDirs.includes(e.dirName) && existsSync(join(root, e.dirName)));
   if (!legacy) return;
+  if (existsSync(slot)) {
+    retireManagedCopy(install, root, legacy);
+    return;
+  }
   try {
     renameSync(join(root, legacy.dirName), slot);
     unlinkSymlinks(legacy.symlinks);
@@ -608,6 +647,7 @@ export async function runPull(opts: PullOptions): Promise<PullSummary> {
     // that survivor row installs instead.
     const mergedInto = retired.get(row);
     if (mergedInto) {
+      if (!opts.dryRun) removeRetiredCopy(opts.install, root, rawName, author);
       summary.entries.push({
         name: rawName, remoteVersion: Number(row.version ?? 1), localVersion: null,
         action: "skipped", destination: `(merged into ${mergedInto})`,

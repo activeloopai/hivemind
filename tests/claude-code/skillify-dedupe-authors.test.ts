@@ -280,6 +280,51 @@ describe("pull: chains after a cross-author merge", () => {
     expect(loadManifest().entries.map(e => [e.dirName, e.author])).toEqual([["deploy", "bob"]]);
   });
 
+  it("retires the pulled copy of a retired chain to SKILL.md.bak", async () => {
+    writeSkill(globalRoot(), "deploy", "deploy", "alice", 5, "my body");
+    writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 2, "bob old body");
+    recordGlobal("deploy--bob", "deploy", "bob", 2);
+    await pull([
+      row({ author: "bob", version: 2 }),
+      row({ author: "alice", version: 6, body: "merged body", contributors: '["alice","bob"]', created_at: "2026-02-02T00:00:00.000Z" }),
+    ]);
+    expect(readFileSync(join(globalRoot(), "deploy", "SKILL.md"), "utf-8")).toContain("merged body");
+    // The copy is no longer a skill: SKILL.md became SKILL.md.bak, the folder stays.
+    expect(readdirSync(join(globalRoot(), "deploy--bob"))).toEqual(["SKILL.md.bak"]);
+    expect(readFileSync(join(globalRoot(), "deploy--bob", "SKILL.md.bak"), "utf-8")).toContain("bob old body");
+    // The retired copy's manifest entry is gone; the locally-mined slot is never recorded.
+    expect(loadManifest().entries).toEqual([]);
+  });
+
+  it("retires the pulled copy of the survivor chain when the merged skill takes the occupied <name> slot", async () => {
+    writeSkill(globalRoot(), "deploy", "deploy", "alice", 3, "my old body");
+    writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 5, "bob old body");
+    recordGlobal("deploy--bob", "deploy", "bob", 5);
+    await pull([
+      row({ author: "alice", version: 3 }),
+      row({ author: "bob", version: 6, body: "survivor body", contributors: '["bob","alice"]', created_at: "2026-02-02T00:00:00.000Z" }),
+    ]);
+    expect(readFileSync(join(globalRoot(), "deploy", "SKILL.md"), "utf-8")).toContain("survivor body");
+    expect(readFileSync(join(globalRoot(), "deploy", "SKILL.md.bak"), "utf-8")).toContain("my old body");
+    expect(readdirSync(join(globalRoot(), "deploy--bob"))).toEqual(["SKILL.md.bak"]);
+    expect(loadManifest().entries.map(e => [e.dirName, e.author])).toEqual([["deploy", "bob"]]);
+  });
+
+  it("a second pull leaves the retired .bak copies alone", async () => {
+    writeSkill(globalRoot(), "deploy", "deploy", "alice", 3, "my old body");
+    writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 5, "bob old body");
+    recordGlobal("deploy--bob", "deploy", "bob", 5);
+    const rows = [
+      row({ author: "alice", version: 3 }),
+      row({ author: "bob", version: 6, body: "survivor body", contributors: '["bob","alice"]', created_at: "2026-02-02T00:00:00.000Z" }),
+    ];
+    await pull(rows);
+    const again = await pull(rows);
+    expect(again.wrote).toBe(0);
+    expect(readdirSync(join(globalRoot(), "deploy--bob"))).toEqual(["SKILL.md.bak"]);
+    expect(readdirSync(join(globalRoot(), "deploy")).sort()).toEqual(["SKILL.md", "SKILL.md.bak"]);
+  });
+
   it("installs a teammate's row that lists me as a contributor into the <name> slot", async () => {
     const summary = await pull([row({ author: "bob", version: 2, contributors: '["bob","alice"]' })]);
     expect(summary.wrote).toBe(1);
