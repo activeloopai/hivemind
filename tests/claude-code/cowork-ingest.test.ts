@@ -15,6 +15,7 @@ import {
 // Build fixture secrets from split literals at runtime so the source file never
 // contains a scannable vendor token (GitHub secret scanning would block this file).
 const j = (...parts: string[]): string => parts.join("");
+const MASK = "********";
 
 const fakeSessionConfig = { userName: "test-user", orgName: "test-org", workspaceId: "test-ws" };
 
@@ -187,49 +188,83 @@ describe("secret redaction on the Cowork ingest path (#308)", () => {
   };
 
   // Parse the queued row message back to an object so we can assert field values.
-  function queuedMessage(entry: Record<string, unknown>): Record<string, unknown> {
-    return JSON.parse(buildCoworkQueueRow(entry, fakeSessionConfig).message) as Record<string, unknown>;
+  // Redaction now happens in entriesForLine, so we test through the full pipeline:
+  // entriesForLine → buildCoworkQueueRow → JSON.parse(message).
+  function queuedMessageFromLine(line: Parameters<typeof entriesForLine>[0]): Record<string, unknown> {
+    const entries = entriesForLine(line);
+    expect(entries.length).toBeGreaterThan(0);
+    return JSON.parse(buildCoworkQueueRow(entries[0]!, fakeSessionConfig).message) as Record<string, unknown>;
   }
 
   it("masks an OpenAI API key in a user_message content field", () => {
     const secret = j("sk-", "ABCDEFGHIJKLMNOPQRSTUVWX");
-    const entry = { ...base, type: "user_message", content: `my key is ${secret}` };
-    const msg = queuedMessage(entry);
+    const msg = queuedMessageFromLine({
+      sessionId: base.session_id,
+      timestamp: base.timestamp,
+      cwd: base.cwd,
+      type: "user",
+      message: { content: `my key is ${secret}` },
+    });
     expect(msg.content).toBe("my key is sk-********");
   });
 
   it("masks a GitHub PAT in a tool_input field (e.g. curl auth header)", () => {
     const secret = j("ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
     const cmd = `curl -H "Authorization: token ${secret}" https://api.github.com`;
-    const entry = {
-      ...base,
-      type: "tool_call",
-      tool_name: "bash",
-      tool_use_id: "toolu_1",
-      tool_input: JSON.stringify({ cmd }),
-    };
-    const msg = queuedMessage(entry);
+    const entries = entriesForLine({
+      sessionId: base.session_id,
+      timestamp: base.timestamp,
+      cwd: base.cwd,
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "running curl" },
+          { type: "tool_use", id: "toolu_1", name: "bash", input: { cmd } },
+        ],
+      },
+    });
+    // tool_call entry is the second (after the assistant_message text)
+    const toolCallEntry = entries.find(e => e.type === "tool_call");
+    expect(toolCallEntry).toBeDefined();
+    const msg = JSON.parse(buildCoworkQueueRow(toolCallEntry!, fakeSessionConfig).message) as Record<string, unknown>;
     const toolInput = JSON.parse(String(msg.tool_input)) as { cmd: string };
     expect(toolInput.cmd).toBe(`curl -H "Authorization: token ghp_********" https://api.github.com`);
   });
 
   it("masks a secret in a tool_response field", () => {
     const secret = j("sk-", "ant-api03-ABCDEFGHIJKLMNOPQRSTUV_wx");
-    const entry = {
-      ...base,
-      type: "tool_result",
-      tool_use_id: "toolu_2",
-      tool_response: JSON.stringify({ api_key: secret }),
-    };
-    const msg = queuedMessage(entry);
+    // Claude transcripts carry tool_result content as the raw value (object or string),
+    // not pre-serialized. entriesForLine does JSON.stringify then redactSecrets on it.
+    const entries = entriesForLine({
+      sessionId: base.session_id,
+      timestamp: base.timestamp,
+      cwd: base.cwd,
+      type: "user",
+      message: {
+        content: [
+          { type: "tool_result", tool_use_id: "toolu_2", content: { api_key: secret } },
+        ],
+      },
+    });
+    const toolResultEntry = entries.find(e => e.type === "tool_result");
+    expect(toolResultEntry).toBeDefined();
+    const msg = JSON.parse(buildCoworkQueueRow(toolResultEntry!, fakeSessionConfig).message) as Record<string, unknown>;
     const toolResponse = JSON.parse(String(msg.tool_response)) as { api_key: string };
-    // redactSecrets keeps the scheme prefix as a hint (sk-ant-) and masks the rest
-    expect(toolResponse.api_key).toBe("sk-ant-********");
+    // When the field is redacted at one JSON level, the generic api_key= rule
+    // sees the label directly and masks the whole value (no prefix hint kept).
+    // The secret is gone — that is the correct outcome.
+    expect(toolResponse.api_key).toBe(MASK);
+    expect(String(msg.tool_response)).not.toContain(secret);
   });
 
   it("leaves non-secret content untouched", () => {
-    const entry = { ...base, type: "user_message", content: "what is the weather in Tokyo?" };
-    const msg = queuedMessage(entry);
+    const msg = queuedMessageFromLine({
+      sessionId: base.session_id,
+      timestamp: base.timestamp,
+      cwd: base.cwd,
+      type: "user",
+      message: { content: "what is the weather in Tokyo?" },
+    });
     expect(msg.content).toBe("what is the weather in Tokyo?");
   });
 });

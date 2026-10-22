@@ -182,6 +182,19 @@ const RULES: Rule[] = [
   { re: /([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)([^\s:/@]+)(@)/gi, replace: `$1${MASK}$3` },
 
   // ── 4. Generic labeled assignments ───────────────────────────────────────
+  // Quoted multi-word form: `password="two words"` or `token='a b c'`.
+  // The opening quote is consumed as part of the match so the full quoted value
+  // — including any whitespace — is captured and masked whole. Runs before the
+  // unquoted rule so the opening quote is not swallowed by the unquoted branch.
+  {
+    re: new RegExp(
+      `((?:${SECRET_KEY_WORDS})(?![A-Za-z0-9])\\s*[:=]\\s*)(["'])([^"'\\\\](?:[^"'\\\\]|\\\\.)*?)\\2`,
+      "gi",
+    ),
+    replace: (match, keep: string, quote: string, value: string) =>
+      NON_SECRET_VALUE.test(value) ? match : `${keep}${quote}${MASK}${quote}`,
+  },
+  // Unquoted form: value runs to first whitespace/delimiter.
   // A trailing run of backslashes stays outside the mask when a quote follows:
   // every capturer redacts the JSON-serialized entry, where a value followed
   // by an escaped quote reads `...VALUE\\"`. Masking that backslash left
@@ -218,6 +231,10 @@ const RULES: Rule[] = [
 // In a JSON-serialized entry a quote is escaped by an odd run of backslashes:
 // the last one is the escape and stays outside the mask, the rest are literal
 // content of the secret. An even run is all content, and the quote is real.
+/** Replacer callback for the quoted-secret regex rule. Masks the secret value
+ * while preserving the surrounding key, opening delimiter, and any trailing
+ * backslash escape that belongs to the JSON encoding rather than the secret.
+ */
 function maskBeforeQuote(match: string, keep: string, open: string, value: string, quote: string): string {
   const run = quote ? (value.match(/\\+$/)?.[0].length ?? 0) : 0;
   const escape = run % 2 === 1 && run < value.length ? "\\" : "";
