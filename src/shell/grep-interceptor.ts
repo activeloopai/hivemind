@@ -36,6 +36,8 @@ function getGrepEmbedClient(): EmbedClient {
   return sharedGrepEmbedClient;
 }
 
+const MAX_SEMANTIC_ALTERNATIVES = 8;
+
 /**
  * Plain-text-ish pattern → candidate for semantic search.
  * Skip regex-heavy queries (many metachars) where cosine similarity is not
@@ -45,9 +47,12 @@ function patternIsSemanticFriendly(pattern: string, fixedString: boolean): boole
   if (!pattern || pattern.length < 2) return false;
   if (fixedString) return true;
   // Literal-ish patterns with only occasional `.*` are still fine for semantic.
-  const metaMatches = pattern.match(/[|()\[\]{}+?^$\\]/g);
-  if (!metaMatches) return true;
-  return metaMatches.length <= 1;
+  // `|` is not counted: synonym alternations (`foo|bar|baz`) are what
+  // embeddings are good at. Cap the number of alternatives so a
+  // pathological many-clause pattern still falls back to lexical.
+  const metaMatches = pattern.match(/[()\[\]{}+?^$\\]/g);
+  if (metaMatches && metaMatches.length > 1) return false;
+  return pattern.split("|").length <= MAX_SEMANTIC_ALTERNATIVES;
 }
 
 const MAX_FALLBACK_CANDIDATES = 500;
