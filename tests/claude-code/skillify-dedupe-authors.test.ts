@@ -8,7 +8,8 @@ import { loadManifest, recordPull } from "../../src/skillify/manifest.js";
 import { renderExistingSkillsBlock } from "../../src/skillify/existing-skills.js";
 import { isOwnSkill } from "../../src/skillify/ownership.js";
 import {
-  buildMergePrompt, mergeAuthorDuplicates, parseMergeVerdict, type MergeFn, type MergeInput,
+  buildMergePrompt, fetchRemoteSkills, groupByName, mergeAuthorDuplicates, parseMergeVerdict,
+  type MergeFn, type MergeInput,
 } from "../../src/skillify/dedupe-authors.js";
 import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
@@ -55,16 +56,36 @@ const mergeOk: MergeFn = async () => ({
   verdict: "MERGE", description: "merged d", trigger: "Use this skill when deploying", body: "merged body",
 });
 
-interface FakeTable { query: QueryFn; inserts: string[]; remoteVersion?: number }
+interface RemoteRow { name?: string; author: string; version: number; body?: string; contributors?: string[]; projectKey?: string; createdAt?: string }
 
-function fakeTable(): FakeTable {
-  const t: FakeTable = { inserts: [], query: async () => [] };
+interface FakeTable { query: QueryFn; inserts: string[]; selects: number; rows: RemoteRow[] }
+
+function remoteRow(r: RemoteRow): Record<string, unknown> {
+  return {
+    name: r.name ?? "deploy", project: "p", project_key: r.projectKey ?? "pk", body: r.body ?? `${r.author} body`,
+    version: r.version, source_agent: "x", scope: "me", author: r.author,
+    contributors: JSON.stringify(r.contributors ?? [r.author]), description: `d ${r.author}`, trigger_text: "",
+    source_sessions: JSON.stringify([`s-${r.author}`]), install: "global",
+    created_at: r.createdAt ?? "2026-01-01T00:00:00.000Z", updated_at: "2026",
+  };
+}
+
+function fakeTable(rows: RemoteRow[] = []): FakeTable {
+  const t: FakeTable = { inserts: [], selects: 0, rows, query: async () => [] };
   t.query = async (sql) => {
     if (/^INSERT/i.test(sql)) { t.inserts.push(sql); return []; }
-    if (t.remoteVersion === undefined) return [];
-    return [{ name: "deploy", author: "alice", project: "p", project_key: "pk", version: t.remoteVersion, contributors: "[]", source_sessions: "[]", install: "global", scope: "me" }];
+    t.selects++;
+    // The real SELECT orders by (project_key ASC, name ASC, version DESC).
+    return t.rows.map(remoteRow).sort((a, b) =>
+      String(a.project_key).localeCompare(String(b.project_key)) ||
+      String(a.name).localeCompare(String(b.name)) ||
+      Number(b.version) - Number(a.version));
   };
   return t;
+}
+
+function tableOpts(t: FakeTable, me = "alice") {
+  return { myUsername: me, cwd: projectCwd, query: t.query, tableName: "skills", workspaceId: "ws" };
 }
 
 describe("ownership", () => {
@@ -76,19 +97,84 @@ describe("ownership", () => {
   });
 });
 
+describe("dedupe: candidates come from the org table", () => {
+  it("groups the latest row per author under the same (project_key, name)", async () => {
+    const t = fakeTable([
+      { author: "alice", version: 3 }, { author: "alice", version: 2 }, { author: "bob", version: 2 },
+      { name: "lint", author: "alice", version: 1 },
+    ]);
+    const groups = groupByName(await fetchRemoteSkills(t.query, "skills"));
+    expect([...groups.keys()]).toEqual(["pk\x00deploy"]);
+    expect(groups.get("pk\x00deploy")!.map(s => [s.author, s.version, s.contributors])).toEqual([["alice", 3, ["alice"]], ["bob", 2, ["bob"]]]);
+    expect(t.selects).toBe(1);
+  });
+
+  it("the same name in two projects is two skills, not a candidate", async () => {
+    const t = fakeTable([{ author: "alice", version: 1, projectKey: "pk1" }, { author: "bob", version: 1, projectKey: "pk2" }]);
+    expect(groupByName(await fetchRemoteSkills(t.query, "skills")).size).toBe(0);
+  });
+
+  it("a chain that an earlier merge retired is not a candidate again", async () => {
+    const t = fakeTable([
+      { author: "alice", version: 4, contributors: ["alice", "bob"], createdAt: "2026-02-02T00:00:00.000Z" },
+      { author: "bob", version: 2 },
+    ]);
+    expect(groupByName(await fetchRemoteSkills(t.query, "skills")).size).toBe(0);
+  });
+
+  it("a missing table is an empty candidate list", async () => {
+    const query: QueryFn = async () => { throw new Error('relation "skills" does not exist'); };
+    expect(await fetchRemoteSkills(query, "skills")).toEqual([]);
+  });
+
+  it("retries the SELECT without contributors on a legacy table", async () => {
+    const sqls: string[] = [];
+    const query: QueryFn = async (sql) => {
+      sqls.push(sql);
+      if (/contributors/.test(sql)) throw new Error('column "contributors" does not exist');
+      return [remoteRow({ author: "alice", version: 1 })];
+    };
+    expect((await fetchRemoteSkills(query, "skills")).map(s => s.contributors)).toEqual([["alice"]]);
+    expect(sqls).toHaveLength(2);
+  });
+});
+
 describe("dedupe: same name, several authors", () => {
-  it("merges two authors into the user's own slot, records one row on the survivor chain, removes the copy", async () => {
+  it("merges on a machine without local skills: one row on the survivor chain, nothing on disk", async () => {
+    const t = fakeTable([{ author: "alice", version: 3 }, { author: "bob", version: 2 }]);
+    let input: MergeInput | undefined;
+    const out = await mergeAuthorDuplicates({
+      ...tableOpts(t), merge: async (i) => { input = i; return mergeOk(i); }, now: () => "2026-02-02T00:00:00.000Z",
+    });
+    expect(out.map(e => [e.name, e.action, e.reason])).toEqual([["deploy", "merged", "authors alice, bob -> alice v4 · no local copy"]]);
+    expect(input!.candidates.map(c => [c.author, c.version, c.body])).toEqual([["alice", 3, "alice body"], ["bob", 2, "bob body"]]);
+    expect(t.inserts).toHaveLength(1);
+    expect(t.inserts[0]).toContain("'alice'");
+    expect(t.inserts[0]).toContain(`'["alice","bob"]'`);
+    expect(t.inserts[0]).toMatch(/'team'/);
+    expect(t.inserts[0]).toMatch(/, 4, /);
+    expect(t.inserts[0]).toContain("merged body");
+    expect(existsSync(globalRoot())).toBe(false);
+    expect(loadManifest().entries).toEqual([]);
+  });
+
+  it("the merged row retires the other chain on the next pull", async () => {
+    const t = fakeTable([{ author: "alice", version: 3 }, { author: "bob", version: 2 }]);
+    await mergeAuthorDuplicates({ ...tableOpts(t), merge: mergeOk, now: () => "2026-02-02T00:00:00.000Z" });
+    t.rows.push({ author: "alice", version: 4, contributors: ["alice", "bob"], createdAt: "2026-02-02T00:00:00.000Z" });
+    const latest = selectLatestPerName(await t.query("SELECT"));
+    expect([...retiredChains(latest).entries()].map(([r, s]) => [r.author, s])).toEqual([["bob", "alice"]]);
+    expect(groupByName(await fetchRemoteSkills(t.query, "skills")).size).toBe(0);
+  });
+
+  it("updates the user's local slot, removes the pulled copy, records the pull", async () => {
     writeSkill(globalRoot(), "deploy", "deploy", "alice", 3, "alice body");
     writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 2, "bob body");
     recordGlobal("deploy--bob", "deploy", "bob", 2);
-    const q = fakeTable();
-    let input: MergeInput | undefined;
-    const out = await mergeAuthorDuplicates({
-      myUsername: "alice", cwd: projectCwd, query: q.query, tableName: "skills", workspaceId: "ws",
-      merge: async (i) => { input = i; return mergeOk(i); }, now: () => "2026-02-02T00:00:00.000Z",
-    });
-    expect(out.map(e => [e.name, e.action, e.reason])).toEqual([["deploy", "merged", "authors alice, bob -> alice v4"]]);
-    expect(input!.candidates.map(c => [c.author, c.version])).toEqual([["alice", 3], ["bob", 2]]);
+    const t = fakeTable([{ author: "alice", version: 3 }, { author: "bob", version: 2 }]);
+    const out = await mergeAuthorDuplicates({ ...tableOpts(t), merge: mergeOk, now: () => "2026-02-02T00:00:00.000Z" });
+    expect(out.map(e => [e.action, e.reason])).toEqual([["merged", "authors alice, bob -> alice v4 · local copy updated"]]);
+    expect(out[0].path).toBe(join(globalRoot(), "deploy", "SKILL.md"));
     expect(readdirSync(globalRoot())).toEqual(["deploy"]);
     const text = readFileSync(join(globalRoot(), "deploy", "SKILL.md"), "utf-8");
     expect(text).toContain("merged body");
@@ -97,49 +183,35 @@ describe("dedupe: same name, several authors", () => {
     expect(text).toMatch(/contributors:\n  - alice\n  - bob\n/);
     expect(readFileSync(join(globalRoot(), "deploy", "SKILL.md.bak"), "utf-8")).toContain("alice body");
     expect(loadManifest().entries).toEqual([]);
-    expect(q.inserts).toHaveLength(1);
-    expect(q.inserts[0]).toContain("'alice'");
-    expect(q.inserts[0]).toContain(`'["alice","bob"]'`);
-    expect(q.inserts[0]).toMatch(/'team'/);
-    expect(q.inserts[0]).toMatch(/, 4, /);
+    expect(t.inserts).toHaveLength(1);
   });
 
   it("the survivor is the highest version, also when it is a teammate's chain", async () => {
-    writeSkill(globalRoot(), "deploy", "deploy", "alice", 1, "alice body");
-    writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 5, "bob body");
+    writeSkill(globalRoot(), "deploy", "deploy", "alice", 1);
+    writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 5);
     recordGlobal("deploy--bob", "deploy", "bob", 5);
-    const q = fakeTable();
-    const out = await mergeAuthorDuplicates({
-      myUsername: "alice", cwd: projectCwd, query: q.query, tableName: "skills", workspaceId: "ws", merge: mergeOk,
-    });
-    expect(out[0].reason).toBe("authors alice, bob -> bob v6");
+    const t = fakeTable([{ author: "alice", version: 1 }, { author: "bob", version: 5 }]);
+    const out = await mergeAuthorDuplicates({ ...tableOpts(t), merge: mergeOk, now: () => "2026-02-02T00:00:00.000Z" });
+    expect(out[0].reason).toBe("authors alice, bob -> bob v6 · local copy updated");
     expect(readdirSync(globalRoot())).toEqual(["deploy"]);
     const text = readFileSync(join(globalRoot(), "deploy", "SKILL.md"), "utf-8");
     expect(text).toContain("author: bob");
     expect(text).toMatch(/contributors:\n  - bob\n  - alice\n/);
-    // The slot now holds a teammate's chain: pull-managed, so unpull can remove it.
     expect(loadManifest().entries.map(e => [e.dirName, e.author, e.remoteVersion])).toEqual([["deploy", "bob", 6]]);
-    expect(q.inserts[0]).toContain("'bob'");
+    expect(t.inserts[0]).toContain("'bob'");
   });
 
   it("a version tie goes to the user's own chain", async () => {
-    writeSkill(globalRoot(), "deploy", "deploy", "alice", 2);
-    writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 2);
-    recordGlobal("deploy--bob", "deploy", "bob", 2);
-    const out = await mergeAuthorDuplicates({ myUsername: "alice", cwd: projectCwd, merge: mergeOk });
-    expect(out[0].reason).toBe("authors alice, bob -> alice v3 (local only)");
+    const t = fakeTable([{ author: "bob", version: 2 }, { author: "alice", version: 2 }]);
+    const out = await mergeAuthorDuplicates({ ...tableOpts(t), merge: mergeOk });
+    expect(out[0].reason).toBe("authors alice, bob -> alice v3 · no local copy");
   });
 
-  it("uses the remote version when the table is ahead of the local file", async () => {
+  it("the table version wins over an older local file", async () => {
     writeSkill(globalRoot(), "deploy", "deploy", "alice", 3);
-    writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 1);
-    recordGlobal("deploy--bob", "deploy", "bob", 1);
-    const q = fakeTable();
-    q.remoteVersion = 7;
-    const out = await mergeAuthorDuplicates({
-      myUsername: "alice", cwd: projectCwd, query: q.query, tableName: "skills", workspaceId: "ws", merge: mergeOk,
-    });
-    expect(out[0].reason).toBe("authors alice, bob -> alice v8");
+    const t = fakeTable([{ author: "alice", version: 7 }, { author: "bob", version: 1 }]);
+    const out = await mergeAuthorDuplicates({ ...tableOpts(t), merge: mergeOk });
+    expect(out[0].reason).toBe("authors alice, bob -> alice v8 · local copy updated");
     expect(readFileSync(join(globalRoot(), "deploy", "SKILL.md"), "utf-8")).toContain("version: 8");
   });
 
@@ -147,66 +219,74 @@ describe("dedupe: same name, several authors", () => {
     writeSkill(globalRoot(), "deploy", "deploy", "alice", 3);
     writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 2);
     recordGlobal("deploy--bob", "deploy", "bob", 2);
-    const q = fakeTable();
-    const out = await mergeAuthorDuplicates({
-      myUsername: "alice", cwd: projectCwd, query: q.query, tableName: "skills", workspaceId: "ws",
-      merge: async () => ({ verdict: "DISTINCT" }),
-    });
+    const t = fakeTable([{ author: "alice", version: 3 }, { author: "bob", version: 2 }]);
+    const out = await mergeAuthorDuplicates({ ...tableOpts(t), merge: async () => ({ verdict: "DISTINCT" }) });
     expect(out.map(e => [e.action, e.reason])).toEqual([["kept", "distinct skills"]]);
     expect(readdirSync(globalRoot()).sort()).toEqual(["deploy", "deploy--bob"]);
-    expect(q.inserts).toEqual([]);
+    expect(t.inserts).toEqual([]);
   });
 
-  it("dry-run plans the merge without a merge call or a write", async () => {
+  it("dry-run plans the merge without a merge call, a row, or a write", async () => {
     writeSkill(globalRoot(), "deploy", "deploy", "alice", 3);
-    writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 2);
-    recordGlobal("deploy--bob", "deploy", "bob", 2);
+    const t = fakeTable([{ author: "alice", version: 3 }, { author: "bob", version: 2 }, { name: "lint", author: "carol", version: 1 }, { name: "lint", author: "alice", version: 1 }]);
     let calls = 0;
-    const out = await mergeAuthorDuplicates({
-      myUsername: "alice", cwd: projectCwd, dryRun: true, merge: async () => { calls++; return mergeOk({} as MergeInput); },
-    });
+    const out = await mergeAuthorDuplicates({ ...tableOpts(t), dryRun: true, merge: async () => { calls++; return mergeOk({} as MergeInput); } });
     expect(calls).toBe(0);
-    expect(out.map(e => [e.action, e.dryRun, e.reason])).toEqual([["merged", true, "authors alice, bob -> alice v4"]]);
-    expect(readdirSync(globalRoot()).sort()).toEqual(["deploy", "deploy--bob"]);
+    expect(out.map(e => [e.name, e.action, e.dryRun, e.reason])).toEqual([
+      ["deploy", "merged", true, "authors alice, bob -> alice v4 · local copy updated"],
+      ["lint", "merged", true, "authors alice, carol -> alice v2 · no local copy"],
+    ]);
+    expect(t.inserts).toEqual([]);
+    expect(readFileSync(join(globalRoot(), "deploy", "SKILL.md"), "utf-8")).toContain("version: 3");
   });
 
   it("writes the merged skill into the project slot when the user's copy lives there", async () => {
-    writeSkill(projectRoot(), "deploy", "deploy", "alice", 3, "alice body");
+    writeSkill(projectRoot(), "deploy", "deploy", "alice", 3);
     writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 2);
     recordGlobal("deploy--bob", "deploy", "bob", 2);
-    await mergeAuthorDuplicates({ myUsername: "alice", cwd: projectCwd, merge: mergeOk });
+    const t = fakeTable([{ author: "alice", version: 3 }, { author: "bob", version: 2 }]);
+    await mergeAuthorDuplicates({ ...tableOpts(t), merge: mergeOk });
     expect(readFileSync(join(projectRoot(), "deploy", "SKILL.md"), "utf-8")).toContain("merged body");
     expect(readdirSync(globalRoot())).toEqual([]);
   });
 
-  it("creates the global slot when the user owns none of the copies", async () => {
+  it("creates the global slot when the user owns none of the local copies", async () => {
     writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 2);
-    writeSkill(globalRoot(), "deploy--carol", "deploy", "carol", 4);
     recordGlobal("deploy--bob", "deploy", "bob", 2);
-    recordGlobal("deploy--carol", "deploy", "carol", 4);
-    const out = await mergeAuthorDuplicates({ myUsername: "alice", cwd: projectCwd, merge: mergeOk });
-    expect(out[0].reason).toBe("authors bob, carol -> carol v5 (local only)");
+    writeSkill(globalRoot(), "deploy--carol", "deploy", "carol", 1);
+    recordGlobal("deploy--carol", "deploy", "carol", 1);
+    const t = fakeTable([{ author: "bob", version: 2 }, { author: "carol", version: 1 }]);
+    const out = await mergeAuthorDuplicates({ ...tableOpts(t), merge: mergeOk });
+    expect(out[0].reason).toBe("authors bob, carol -> bob v3 · local copy updated");
     expect(readdirSync(globalRoot())).toEqual(["deploy"]);
-    const text = readFileSync(join(globalRoot(), "deploy", "SKILL.md"), "utf-8");
-    expect(text).toMatch(/contributors:\n  - carol\n  - bob\n  - alice\n/);
-    expect(loadManifest().entries.map(e => e.dirName)).toEqual(["deploy"]);
+    expect(readFileSync(join(globalRoot(), "deploy", "SKILL.md"), "utf-8")).toMatch(/contributors:\n  - bob\n  - carol\n  - alice\n/);
+    expect(loadManifest().entries.map(e => [e.dirName, e.author])).toEqual([["deploy", "bob"]]);
   });
 
   it("a merge failure is reported and nothing changes", async () => {
     writeSkill(globalRoot(), "deploy", "deploy", "alice", 3);
-    writeSkill(globalRoot(), "deploy--bob", "deploy", "bob", 2);
-    recordGlobal("deploy--bob", "deploy", "bob", 2);
-    const out = await mergeAuthorDuplicates({
-      myUsername: "alice", cwd: projectCwd, merge: async () => { throw new Error("no CLI"); },
-    });
-    expect(out.map(e => [e.action, e.reason])).toEqual([["failed", "merge: no CLI"]]);
-    expect(readdirSync(globalRoot()).sort()).toEqual(["deploy", "deploy--bob"]);
+    const t = fakeTable([{ author: "alice", version: 3 }, { author: "bob", version: 2 }]);
+    const out = await mergeAuthorDuplicates({ ...tableOpts(t), merge: async () => { throw new Error("cli down"); } });
+    expect(out.map(e => [e.action, e.reason])).toEqual([["failed", "merge: cli down"]]);
+    expect(t.inserts).toEqual([]);
+    expect(readFileSync(join(globalRoot(), "deploy", "SKILL.md"), "utf-8")).toContain("version: 3");
   });
 
-  it("one author with several copies is not a candidate", async () => {
+  it("a rejected row is reported and nothing is written locally", async () => {
+    writeSkill(globalRoot(), "deploy", "deploy", "alice", 3);
+    const t = fakeTable([{ author: "alice", version: 3 }, { author: "bob", version: 2 }]);
+    const base = t.query;
+    t.query = async (sql) => { if (/^INSERT/i.test(sql)) throw new Error("boom"); return base(sql); };
+    const out = await mergeAuthorDuplicates({ ...tableOpts(t), merge: mergeOk });
+    expect(out.map(e => [e.action, e.reason])).toEqual([["failed", "table: boom"]]);
+    expect(readFileSync(join(globalRoot(), "deploy", "SKILL.md"), "utf-8")).toContain("version: 3");
+  });
+
+  it("one author with several versions is not a candidate", async () => {
     writeSkill(globalRoot(), "deploy", "deploy", "alice", 3);
     writeSkill(projectRoot(), "deploy", "deploy", "alice", 2);
-    expect(await mergeAuthorDuplicates({ myUsername: "alice", cwd: projectCwd, merge: mergeOk })).toEqual([]);
+    const t = fakeTable([{ author: "alice", version: 3 }, { author: "alice", version: 2 }]);
+    expect(await mergeAuthorDuplicates({ ...tableOpts(t), merge: mergeOk })).toEqual([]);
   });
 });
 
