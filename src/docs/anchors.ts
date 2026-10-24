@@ -52,37 +52,31 @@ export function readSymbolSource(node: GraphNode, repoRoot: string): string | nu
 }
 
 /**
- * Normalize a source slice before hashing so cosmetic edits don't churn docs.
+ * Normalize a source slice before hashing: CRLF → LF, nothing else.
  *
- * Strips comments, trailing whitespace, and blank lines — these change the
- * bytes but not what the doc describes, so a reformat / comment edit / blank-line
- * shuffle should NOT mark a doc stale. Indentation is PRESERVED (significant in
- * Python). This is the main lever against false-positive rewrites.
+ * Comments, indentation, blank lines and trailing whitespace are all
+ * PRESERVED. Regex comment stripping cannot tell a comment from string
+ * contents — `"**\/*.ts"` … `"dist/**\/x"` looks like a block comment and
+ * swallowed the real code between the two literals, and whitespace inside
+ * multiline strings / Python indentation is semantic too. Without a real
+ * per-language lexer, the only safe policy is to hash the bytes.
  *
- * It does not normalize identifiers — renaming a symbol still changes the hash
- * (a genuine code edit); whether that should flag the doc is left to the gate /
- * human, not hidden here.
+ * Tradeoff: a cosmetic edit (comment, reformat, blank line) now changes the
+ * hash and may trigger a doc refresh. Anchors taken under the previous
+ * comment/whitespace-stripping normalization will differ once for any
+ * symbol whose slice contained comments, blank lines or trailing
+ * whitespace — a one-time refresh of those docs.
+ *
+ * `language` is accepted for API compatibility and currently unused.
  */
-export function normalizeForHash(src: string, language?: string): string {
-  let s = src;
-  // Line comments are stripped only at line start or after whitespace — a
-  // bare /.*$/ would also truncate string literals ("https://x", "a#b"),
-  // blinding drift detection to real changes on those lines. NOTE: changing
-  // this normalization changes every anchor hash once (one-time full drift).
-  if (language === "python" || language === "ruby") {
-    s = s.replace(/(^|\s)#.*$/gm, "$1"); // line comments
-  } else {
-    s = s.replace(/\/\*[\s\S]*?\*\//g, ""); // block comments
-    s = s.replace(/(^|\s)\/\/.*$/gm, "$1"); // line comments
-  }
-  return s
-    .split(/\r?\n/)
-    .map((l) => l.replace(/\s+$/, "")) // trailing whitespace
-    .filter((l) => l.trim() !== "") // blank lines
-    .join("\n");
+export function normalizeForHash(src: string, _language?: string): string {
+  return src.replace(/\r\n/g, "\n");
 }
 
-/** sha256 of a source slice, after comment/whitespace normalization. */
+/**
+ * sha256 of a source slice after CRLF → LF normalization only (see
+ * `normalizeForHash`): comment and whitespace edits DO change the hash.
+ */
 export function hashSource(src: string, language?: string): string {
   return createHash("sha256").update(normalizeForHash(src, language)).digest("hex");
 }
