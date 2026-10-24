@@ -11,6 +11,7 @@ import {
   readCache,
   writeCache,
 } from "../../../src/graph/cache.js";
+import { extractFile } from "../../../src/graph/extract/index.js";
 import type { FileExtraction } from "../../../src/graph/types.js";
 
 function makeExtraction(sourceFile: string): FileExtraction {
@@ -243,5 +244,104 @@ describe("cache — read/write roundtrip", () => {
     expect(got).not.toBeNull();
     // Original arrays preserved (no mutation overhead path)
     expect(got!.nodes).toEqual(ex.nodes);
+  });
+});
+
+describe("cache — source extension compatibility", () => {
+  let baseDir: string;
+
+  beforeEach(() => {
+    baseDir = mkdtempSync(join(tmpdir(), "graph-cache-ext-"));
+  });
+  afterEach(() => {
+    rmSync(baseDir, { recursive: true, force: true });
+  });
+
+  // Plain JS that is equally valid TypeScript, so both extensions parse cleanly
+  // and only the dispatched extractor (and hence `language`) differs.
+  const JS_TS_SOURCE = [
+    "export function greet(name) {",
+    "  return helper(name);",
+    "}",
+    "function helper(n) {",
+    "  return n;",
+    "}",
+    "",
+  ].join("\n");
+
+  // Valid TSX; the plain .ts grammar rejects JSX, so the dialect matters.
+  const TSX_SOURCE = [
+    "export function View() {",
+    "  return <div className=\"x\" />;",
+    "}",
+    "",
+  ].join("\n");
+
+  function populate(content: string, relativePath: string): { sha: string; written: FileExtraction } {
+    const sha = fileContentHash(content);
+    const written = extractFile(content, relativePath);
+    writeCache(baseDir, sha, written);
+    return { sha, written };
+  }
+
+  it("does not serve a .js extraction to a .ts file with identical bytes", () => {
+    const { sha, written } = populate(JS_TS_SOURCE, "src/greet.js");
+    expect(written.language).toBe("javascript");
+    const fresh = extractFile(JS_TS_SOURCE, "src/greet.ts");
+    expect(fresh.language).toBe("typescript");
+    expect(readCache(baseDir, sha, "src/greet.ts")).toBeNull();
+  });
+
+  it("does not serve a .ts extraction to a .js file with identical bytes", () => {
+    const { sha, written } = populate(JS_TS_SOURCE, "src/greet.ts");
+    expect(written.language).toBe("typescript");
+    const fresh = extractFile(JS_TS_SOURCE, "src/greet.js");
+    expect(fresh.language).toBe("javascript");
+    expect(readCache(baseDir, sha, "src/greet.js")).toBeNull();
+  });
+
+  it("does not serve a .tsx extraction to a .ts file with identical bytes", () => {
+    const { sha, written } = populate(TSX_SOURCE, "src/View.tsx");
+    expect(written.parse_errors).toEqual([]);
+    // Same bytes under .ts use the non-JSX grammar and extract differently.
+    const fresh = extractFile(TSX_SOURCE, "src/View.ts");
+    expect(fresh.parse_errors.length).toBeGreaterThan(0);
+    expect(readCache(baseDir, sha, "src/View.ts")).toBeNull();
+  });
+
+  it("does not serve a .ts extraction to a .tsx file with identical bytes", () => {
+    const { sha, written } = populate(TSX_SOURCE, "src/View.ts");
+    expect(written.parse_errors.length).toBeGreaterThan(0);
+    const fresh = extractFile(TSX_SOURCE, "src/View.tsx");
+    expect(fresh.parse_errors).toEqual([]);
+    expect(readCache(baseDir, sha, "src/View.tsx")).toBeNull();
+  });
+
+  it("still hits on a same-extension rename/copy (.ts)", () => {
+    const { sha } = populate(JS_TS_SOURCE, "src/greet.ts");
+    const got = readCache(baseDir, sha, "lib/copy.ts");
+    expect(got).not.toBeNull();
+    const fresh = extractFile(JS_TS_SOURCE, "lib/copy.ts");
+    expect(got!.language).toBe("typescript");
+    expect(got!.nodes).toEqual(fresh.nodes);
+    expect(got!.edges).toEqual(fresh.edges);
+    expect(got!.parse_errors).toEqual(fresh.parse_errors);
+  });
+
+  it("still hits on a same-extension rename/copy (.js)", () => {
+    const { sha } = populate(JS_TS_SOURCE, "src/greet.js");
+    const got = readCache(baseDir, sha, "lib/copy.js");
+    expect(got).not.toBeNull();
+    expect(got!.language).toBe("javascript");
+    expect(got!.source_file).toBe("lib/copy.js");
+  });
+
+  it("still hits on a same-extension rename/copy (.tsx)", () => {
+    const { sha } = populate(TSX_SOURCE, "src/View.tsx");
+    const got = readCache(baseDir, sha, "src/components/Renamed.tsx");
+    expect(got).not.toBeNull();
+    expect(got!.parse_errors).toEqual([]);
+    expect(got!.source_file).toBe("src/components/Renamed.tsx");
+    expect(got!.nodes.every((n) => n.source_file === "src/components/Renamed.tsx")).toBe(true);
   });
 });
