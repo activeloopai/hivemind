@@ -35,7 +35,7 @@
  * SAVINGS_MULTIPLIER.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -46,6 +46,8 @@ import {
   readUsageRecords,
   sumMetric,
 } from "../notifications/usage-tracker.js";
+import { loadCurrentSnapshotDetails, workTreeIdFor } from "../graph/load-current.js";
+import { lastBuildPath } from "../graph/last-build.js";
 import { deriveProjectKey } from "../skillify/state.js";
 import { log as _log } from "../utils/debug.js";
 
@@ -135,54 +137,28 @@ function bytesToSavedTokens(bytes: number): number {
 interface SnapshotMin {
   nodes: unknown[];
   links: unknown[];
-  graph?: { commit_sha?: string | null };
+  graph?: { commit_sha?: string | null; repo_key?: string };
 }
 
-function resolveSnapshot(repoDir: string): DashboardGraphSummary | null {
-  const snapshotsDir = join(repoDir, "snapshots");
-  if (!existsSync(snapshotsDir)) return null;
+function snapshotSummary(snapshotPath: string, parsed: SnapshotMin): DashboardGraphSummary {
+  return {
+    commitSha: parsed.graph?.commit_sha ?? null,
+    snapshotPath,
+    nodeCount: parsed.nodes.length,
+    edgeCount: parsed.links.length,
+    snapshot: parsed,
+  };
+}
 
-  let snapshotPath: string | null = null;
+function validSnapshotName(name: string): boolean {
+  return /^[A-Za-z0-9._-]+\.json$/.test(name);
+}
 
-  // Preferred path: follow latest-commit.txt. This is the canonical
-  // pointer the producer maintains atomically alongside each build.
-  const pointer = join(repoDir, "latest-commit.txt");
-  if (existsSync(pointer)) {
-    try {
-      const sha = readFileSync(pointer, "utf-8").trim();
-      if (sha) {
-        const candidate = join(snapshotsDir, `${sha}.json`);
-        if (existsSync(candidate)) snapshotPath = candidate;
-        else log(`latest-commit.txt points at missing ${sha}.json — scanning snapshots/`);
-      }
-    } catch (e: any) {
-      log(`latest-commit.txt read failed: ${e?.message ?? String(e)}`);
-    }
-  }
-
-  // Fallback: pick the most-recently-modified *.json. Covers the
-  // pre-pointer state and snapshots named by content hash (the
-  // producer's fallback when commit_sha is null).
-  if (!snapshotPath) {
-    try {
-      const candidates = readdirSync(snapshotsDir)
-        .filter(name => name.endsWith(".json"))
-        .map(name => {
-          const full = join(snapshotsDir, name);
-          return { full, mtime: statSync(full).mtimeMs };
-        })
-        .sort((a, b) => b.mtime - a.mtime);
-      if (candidates.length > 0) snapshotPath = candidates[0].full;
-    } catch (e: any) {
-      log(`snapshots/ scan failed: ${e?.message ?? String(e)}`);
-    }
-  }
-
-  if (!snapshotPath) return null;
-
+function parseSnapshot(path: string, repoKey: string, expectedCommitSha?: string): DashboardGraphSummary | null {
+  if (!validSnapshotName(path.split("/").pop() ?? "")) return null;
   let raw: string;
   try {
-    raw = readFileSync(snapshotPath, "utf-8");
+    raw = readFileSync(path, "utf-8");
   } catch (e: any) {
     log(`snapshot read failed: ${e?.message ?? String(e)}`);
     return null;
@@ -199,13 +175,81 @@ function resolveSnapshot(repoDir: string): DashboardGraphSummary | null {
     log("snapshot shape invalid (missing nodes/links arrays)");
     return null;
   }
-  return {
-    commitSha: parsed.graph?.commit_sha ?? null,
-    snapshotPath,
-    nodeCount: parsed.nodes.length,
-    edgeCount: parsed.links.length,
-    snapshot: parsed,
-  };
+  const graph = parsed.graph;
+  if (graph !== undefined && (typeof graph !== "object" || graph === null)) {
+    log("snapshot identity invalid (graph metadata is not an object)");
+    return null;
+  }
+  if (graph?.repo_key !== undefined && graph.repo_key !== repoKey) {
+    log(`snapshot repo mismatch: expected ${repoKey}, got ${String(graph.repo_key)}`);
+    return null;
+  }
+  if (expectedCommitSha !== undefined && graph?.commit_sha !== undefined && graph.commit_sha !== expectedCommitSha) {
+    log(`snapshot head mismatch: pointer expects ${expectedCommitSha}, got ${String(graph?.commit_sha)}`);
+    return null;
+  }
+  return snapshotSummary(path, parsed);
+}
+
+function resolveLegacySnapshot(repoDir: string, repoKey: string): DashboardGraphSummary | null {
+  const snapshotsDir = join(repoDir, "snapshots");
+  if (!existsSync(snapshotsDir)) return null;
+
+  let snapshotPath: string | null = null;
+  let pointedCommit: string | undefined;
+
+  // Preferred path: follow latest-commit.txt. This is the canonical
+  // pointer the producer maintains atomically alongside each build.
+  const pointer = join(repoDir, "latest-commit.txt");
+  if (existsSync(pointer)) {
+    try {
+      const sha = readFileSync(pointer, "utf-8").trim();
+      if (sha && /^[A-Za-z0-9._-]+$/.test(sha)) {
+        const candidate = join(snapshotsDir, `${sha}.json`);
+        if (existsSync(candidate) && lstatSync(candidate).isFile()) {
+          pointedCommit = sha;
+          snapshotPath = candidate;
+        }
+        else log(`latest-commit.txt points at missing ${sha}.json — scanning snapshots/`);
+      } else if (sha) {
+        log("latest-commit.txt contains an unsafe snapshot name — scanning snapshots/");
+      }
+    } catch (e: any) {
+      log(`latest-commit.txt read failed: ${e?.message ?? String(e)}`);
+    }
+  }
+
+  // Fallback: pick the most-recently-modified *.json. Covers the
+  // pre-pointer state and snapshots named by content hash (the
+  // producer's fallback when commit_sha is null).
+  if (!snapshotPath) {
+    try {
+      const candidates = readdirSync(snapshotsDir)
+        .filter(validSnapshotName)
+        .map(name => {
+          const full = join(snapshotsDir, name);
+          try {
+            return lstatSync(full).isFile() ? { full, mtime: statSync(full).mtimeMs } : null;
+          } catch {
+            return null;
+          }
+        })
+        .filter((candidate): candidate is { full: string; mtime: number } => candidate !== null)
+        .sort((a, b) => b.mtime - a.mtime);
+      for (const candidate of candidates) {
+        if (parseSnapshot(candidate.full, repoKey)) {
+          snapshotPath = candidate.full;
+          break;
+        }
+      }
+    } catch (e: any) {
+      log(`snapshots/ scan failed: ${e?.message ?? String(e)}`);
+    }
+  }
+
+  if (!snapshotPath) return null;
+
+  return parseSnapshot(snapshotPath, repoKey, pointedCommit);
 }
 
 async function loadKpis(creds: Credentials | null): Promise<DashboardKpis> {
@@ -272,9 +316,23 @@ export async function loadDashboardData(
 ): Promise<DashboardData> {
   const cwd = opts.cwd ?? process.cwd();
   const { key: repoKey, project: repoProject } = deriveProjectKey(cwd);
-  const repoDir = join(opts.graphsHome ?? graphsRoot(), repoKey);
+  const graphsHome = opts.graphsHome ?? graphsRoot();
+  const repoDir = join(graphsHome, repoKey);
 
-  const graph = resolveSnapshot(repoDir);
+  // The graph producer owns a pointer per absolute worktree. Reuse that
+  // resolver first; only old installations with no per-worktree state use the
+  // legacy root pointer/mtime fallback below. A corrupt current pointer never
+  // falls through to a sibling worktree's snapshot.
+  const current = loadCurrentSnapshotDetails(cwd, { graphsHome });
+  const hasCurrentState = [
+    lastBuildPath(repoDir, workTreeIdFor(cwd)),
+    lastBuildPath(repoDir),
+  ].some(existsSync);
+  const graph = current
+    ? snapshotSummary(current.snapshotPath, current.snapshot as SnapshotMin)
+    : hasCurrentState
+      ? null
+    : resolveLegacySnapshot(repoDir, repoKey);
   const creds = opts.creds === undefined ? loadCredentials() : opts.creds;
   const kpis = await loadKpis(creds);
 
