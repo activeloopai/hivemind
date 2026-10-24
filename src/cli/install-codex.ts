@@ -170,19 +170,33 @@ export function mergeHooks(
 }
 
 // Filesystem-bound wrapper: reads HOOKS_PATH (if present) and feeds the
-// parsed result to the pure mergeHooks. Catches malformed JSON and warns.
+// parsed result to the pure mergeHooks. Malformed JSON is an install blocker:
+// replacing it with an empty object would destroy user hooks.
 // Also surfaces a warning listing any foreign-path hivemind entries
 // stripped (e.g. a dev clone wired in under a different directory).
-function mergeHooksJson(ours: Record<string, unknown>): Record<string, unknown> {
-  let existing: Record<string, unknown> = {};
+function readHooksJson(): Record<string, unknown> {
+  let raw: string;
   try {
-    if (existsSync(HOOKS_PATH)) {
-      const parsed = JSON.parse(readFileSync(HOOKS_PATH, "utf-8"));
-      if (parsed && typeof parsed === "object") existing = parsed as Record<string, unknown>;
-    }
-  } catch {
-    warn(`  Codex          ${HOOKS_PATH} unparseable — ignoring prior content`);
+    raw = readFileSync(HOOKS_PATH, "utf-8");
+  } catch (err) {
+    if (typeof err === "object" && err !== null && "code" in err && err.code === "ENOENT") return {};
+    const detail = err instanceof Error && err.message ? `: ${err.message}` : "";
+    throw new Error(`Codex hooks config at ${HOOKS_PATH} could not be read${detail}`);
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`Codex hooks config at ${HOOKS_PATH} is not valid JSON; fix or remove it, then rerun.`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Codex hooks config at ${HOOKS_PATH} must contain a JSON object; fix or remove it, then rerun.`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function mergeHooksJson(ours: Record<string, unknown>): Record<string, unknown> {
+  const existing = readHooksJson();
   reportForeignHivemindHooks(existing);
   return mergeHooks(existing, ours);
 }
@@ -299,6 +313,9 @@ export function installCodex(): void {
     throw new Error(`Codex bundle missing at ${srcBundle}. Run 'npm run build' first.`);
   }
 
+  // Validate before copying payloads or changing Codex feature flags.
+  const mergedHooks = mergeHooksJson(buildHooksJson());
+
   ensureDir(PLUGIN_DIR);
   reportPruned("Codex", syncDir(srcBundle, join(PLUGIN_DIR, "bundle")));
   if (existsSync(srcSkills)) reportPruned("Codex", syncDir(srcSkills, join(PLUGIN_DIR, "skills")));
@@ -309,7 +326,7 @@ export function installCodex(): void {
   // Codex fingerprints and re-triggers its "Hooks need review" trust prompt on
   // every install/update. Skipping the no-op write keeps the user from being
   // re-prompted each time.
-  if (!writeJsonIfChanged(HOOKS_PATH, mergeHooksJson(buildHooksJson()))) {
+  if (!writeJsonIfChanged(HOOKS_PATH, mergedHooks)) {
     log(`  Codex          hooks.json unchanged — skipped rewrite (no re-trust prompt)`);
   }
 
@@ -342,34 +359,22 @@ export function installCodex(): void {
 }
 
 export function uninstallCodex(): void {
-  if (existsSync(HOOKS_PATH)) {
-    // Symmetric with install: strip ONLY our hivemind entries via mergeHooks.
-    // The pre-fix unconditional unlinkSync(HOOKS_PATH) destroyed any user-
-    // defined hooks (e.g. a custom Notification handler) that lived alongside
-    // ours. mergeHooks(existing, { hooks: {} }) preserves the user's events
-    // and removes only the ones whose command points into PLUGIN_DIR/bundle/.
-    let existing: Record<string, unknown> = {};
-    try {
-      const raw = JSON.parse(readFileSync(HOOKS_PATH, "utf-8"));
-      if (raw && typeof raw === "object") existing = raw as Record<string, unknown>;
-    } catch {
-      // Malformed JSON: fall back to deleting the file rather than guess at
-      // intent. Same behavior as pre-fix; user can recreate cleanly.
+  // Symmetric with install: strip ONLY our hivemind entries via mergeHooks.
+  // The pre-fix unconditional unlinkSync(HOOKS_PATH) destroyed any user-
+  // defined hooks (e.g. a custom Notification handler) that lived alongside
+  // ours. Validate first so malformed/unreadable config leaves every other
+  // uninstall target untouched and propagates a failure to the dispatcher.
+  const existing = readHooksJson();
+  if (Object.keys(existing).length > 0) {
+    const stripped = mergeHooks(existing, { hooks: {} });
+    const survivingHooks = (stripped.hooks ?? {}) as Record<string, unknown[]>;
+    const otherTopLevelKeys = Object.keys(stripped).filter(k => k !== "hooks");
+    if (Object.keys(survivingHooks).length === 0 && otherTopLevelKeys.length === 0) {
       unlinkSync(HOOKS_PATH);
-      log(`  Codex          removed unparseable ${HOOKS_PATH}`);
-      existing = {};
-    }
-    if (Object.keys(existing).length > 0) {
-      const stripped = mergeHooks(existing, { hooks: {} });
-      const survivingHooks = (stripped.hooks ?? {}) as Record<string, unknown[]>;
-      const otherTopLevelKeys = Object.keys(stripped).filter(k => k !== "hooks");
-      if (Object.keys(survivingHooks).length === 0 && otherTopLevelKeys.length === 0) {
-        unlinkSync(HOOKS_PATH);
-        log(`  Codex          removed ${HOOKS_PATH}`);
-      } else {
-        writeJson(HOOKS_PATH, stripped);
-        log(`  Codex          stripped hivemind hooks from ${HOOKS_PATH}`);
-      }
+      log(`  Codex          removed ${HOOKS_PATH}`);
+    } else {
+      writeJson(HOOKS_PATH, stripped);
+      log(`  Codex          stripped hivemind hooks from ${HOOKS_PATH}`);
     }
   }
   if (existsSync(SKILL_LINK)) {

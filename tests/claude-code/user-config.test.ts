@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -58,6 +58,25 @@ describe("readUserConfig", () => {
     _resetUserConfigForTesting();
     _setConfigPathForTesting(() => configPath);
     expect(readUserConfig()).toEqual({});
+  });
+
+  it("does not overwrite malformed JSON when embeddings migration runs", () => {
+    const original = "{ not json";
+    writeFileSync(configPath, original, "utf-8");
+    _resetUserConfigForTesting();
+    _setConfigPathForTesting(() => configPath);
+    expect(getEmbeddingsEnabled()).toBe(false);
+    expect(readFileSync(configPath, "utf-8")).toBe(original);
+  });
+
+  it("keeps passive reads non-throwing when the config cannot be read, without attempting migration", () => {
+    mkdirSync(configPath);
+    process.env.HIVEMIND_EMBEDDINGS = "true";
+
+    expect(readUserConfig()).toEqual({});
+    expect(getEmbeddingsEnabled()).toBe(true);
+    expect(() => setEmbeddingsEnabled(false)).toThrow(/could not be read/);
+    expect(existsSync(configPath)).toBe(true);
   });
 
   it("caches the parsed config across calls (single file read per process)", () => {
@@ -168,5 +187,14 @@ describe("getEmbeddingsEnabled — migration from HIVEMIND_EMBEDDINGS", () => {
     expect(getEmbeddingsEnabled()).toBe(true);
     const written = JSON.parse(readFileSync(configPath, "utf-8"));
     expect(written).toEqual({ embeddings: { enabled: true } });
+  });
+
+  it("refuses explicit writes over malformed config", () => {
+    const original = "{ not json";
+    writeFileSync(configPath, original, "utf-8");
+    _resetUserConfigForTesting();
+    _setConfigPathForTesting(() => configPath);
+    expect(() => setEmbeddingsEnabled(true)).toThrow(/not valid JSON/);
+    expect(readFileSync(configPath, "utf-8")).toBe(original);
   });
 });
