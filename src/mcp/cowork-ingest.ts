@@ -461,8 +461,11 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
 
     for (const path of transcripts) {
       let lines: string[];
+      let hasUnterminatedTail: boolean;
       try {
-        lines = readFileSync(path, "utf-8").split("\n").filter(Boolean);
+        const transcript = readFileSync(path, "utf-8");
+        lines = transcript.split("\n").filter(Boolean);
+        hasUnterminatedTail = !transcript.endsWith("\n");
       } catch {
         continue;
       }
@@ -479,6 +482,11 @@ export async function ingestCoworkSessions(): Promise<{ ingested: number } | { s
         try {
           parsed = JSON.parse(raw);
         } catch {
+          // The producer may still be appending this final record. Retrying
+          // it next tick preserves the watermark until it becomes parseable.
+          // Complete records without a final newline remain supported; only
+          // an unparseable, unterminated tail waits for more bytes.
+          if (hasUnterminatedTail && processed === lines.length - 1) break;
           processed += 1;
           continue;
         }
