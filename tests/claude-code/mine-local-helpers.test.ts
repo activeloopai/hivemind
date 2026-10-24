@@ -13,7 +13,21 @@ import {
   jaccard,
   findOverlap,
   parseMultiVerdict,
+  hasParseableTranscripts,
 } from "../../src/commands/mine-local.js";
+
+describe("hasParseableTranscripts", () => {
+  it("accepts claude_code, whose native records nativeJsonlToRows converts", () => {
+    expect(hasParseableTranscripts("claude_code")).toBe(true);
+  });
+
+  it("rejects agents whose native transcripts are discovered but not parsed", () => {
+    expect(hasParseableTranscripts("codex")).toBe(false);
+    expect(hasParseableTranscripts("cursor")).toBe(false);
+    expect(hasParseableTranscripts("hermes")).toBe(false);
+    expect(hasParseableTranscripts("not-an-agent")).toBe(false);
+  });
+});
 
 describe("summaryTokens", () => {
   it("lowercases, drops short tokens, drops stopwords", () => {
