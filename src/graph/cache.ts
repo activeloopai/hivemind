@@ -235,5 +235,16 @@ function rewriteSourceFile(cached: FileExtraction, newPath: string): FileExtract
     })),
     edges: cached.edges.map((e) => ({ ...e, source: swap(e.source), target: swap(e.target) })),
     parse_errors: cached.parse_errors.map((p) => ({ ...p, source_file: newPath })),
+    // Optional Phase 1.5 cross-file inputs. Dropping them on a relocated hit
+    // silently lost every cross-file `calls` edge from the moved file.
+    // caller_id is a node id, so it gets the same swap as nodes/edges.
+    // Binding specifiers are raw (e.g. "./b") and are resolved relative to
+    // the extraction's source_file at snapshot time, so they stay verbatim.
+    ...(cached.raw_calls !== undefined
+      ? { raw_calls: cached.raw_calls.map((rc) => ({ ...rc, caller_id: swap(rc.caller_id) })) }
+      : {}),
+    ...(cached.import_bindings !== undefined
+      ? { import_bindings: cached.import_bindings.map((b) => ({ ...b })) }
+      : {}),
   };
 }
