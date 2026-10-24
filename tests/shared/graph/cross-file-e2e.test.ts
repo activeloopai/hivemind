@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import { extractTypeScript } from "../../../src/graph/extract/typescript.js";
+import { extractJavaScript } from "../../../src/graph/extract/javascript.js";
 import { buildSnapshot } from "../../../src/graph/snapshot.js";
 import type { GraphMetadata, GraphObservation } from "../../../src/graph/types.js";
 
@@ -39,6 +40,162 @@ describe("cross-file calls — extractor → snapshot", () => {
       (e) => e.source === "src/a.ts:run:function" && e.target === "src/b.ts:greet:function",
     );
     expect(cross).toBeDefined();
+  });
+
+  it("named import: JavaScript caller → exported function in another JavaScript file", () => {
+    const a = extractJavaScript(
+      `import { greet } from "./b.js";\nexport function run() { return greet(); }\n`,
+      "src/a.js",
+    );
+    const b = extractJavaScript(
+      `export function greet() { return 1; }\n`,
+      "src/b.js",
+    );
+    const snap = buildSnapshot([a, b], meta(), obs());
+    const cross = callsEdges(snap).find(
+      (e) => e.source === "src/a.js:run:function" && e.target === "src/b.js:greet:function",
+    );
+    expect(cross).toBeDefined();
+  });
+
+  it.each([
+    ["parameter", `export function run(greet) { return greet(); }`],
+    ["destructured parameter", `export function run({ greet }) { return greet(); }`],
+    ["function-scoped var", `export function run() { if (ready) { var greet = local; } return greet(); }`],
+    ["function-scoped for-of var", `export function run() { for (var greet of values) {} return greet(); }`],
+    ["hoisted for-of var", `export function run() { greet(); for (var greet of values) {} }`],
+    ["function-scoped for-in var", `export function run() { for (var greet in values) {} return greet(); }`],
+    ["destructured for-of var", `export function run() { for (var { greet } of values) {} return greet(); }`],
+    ["block-scoped local", `export function run() { { const greet = local; return greet(); } }`],
+    ["destructured local", `export function run() { const { greet } = local; return greet(); }`],
+    ["block function", `export function run() { { function greet() {} return greet(); } }`],
+    ["for-of destructuring", `export function run() { for (const { greet } of values) { return greet(); } }`],
+    ["commented for-of binding", `export function run() { for /* comment */ (const greet of values) { return greet(); } }`],
+    ["destructured catch parameter", `export function run() { try {} catch ({ greet }) { return greet(); } }`],
+    ["arrow parameter", `export const run = (greet) => greet();`],
+    ["class method parameter", `export class Runner { run(greet) { return greet(); } }`],
+  ])("JavaScript named import shadowed by %s does not produce a cross-file edge", (_label, body) => {
+    const a = extractJavaScript(`import { greet } from "./b.js";\n${body}\n`, "src/a.js");
+    const b = extractJavaScript(`export function greet() { return 1; }\n`, "src/b.js");
+    const snap = buildSnapshot([a, b], meta(), obs());
+    expect(callsEdges(snap).some((e) => e.target === "src/b.js:greet:function")).toBe(false);
+  });
+
+  it("keeps real named-import calls in sibling scopes while dropping a shadowed nested scope", () => {
+    const a = extractJavaScript(
+      `import { greet } from "./b.js";\n` +
+      `export function shadowed(greet) { return greet(); }\n` +
+      `export function real() { return greet(); }\n`,
+      "src/a.js",
+    );
+    const b = extractJavaScript(`export function greet() { return 1; }\n`, "src/b.js");
+    const snap = buildSnapshot([a, b], meta(), obs());
+    expect(callsEdges(snap).some(
+      (e) => e.source === "src/a.js:shadowed:function" && e.target === "src/b.js:greet:function",
+    )).toBe(false);
+    expect(callsEdges(snap).some(
+      (e) => e.source === "src/a.js:real:function" && e.target === "src/b.js:greet:function",
+    )).toBe(true);
+  });
+
+  it("keeps a real namespace-import call outside a block that shadows the receiver", () => {
+    const a = extractJavaScript(
+      `import * as util from "./b.js";\n` +
+      `export function shadowed() { { const util = local; return util.greet(); } }\n` +
+      `export function real() { return util.greet(); }\n`,
+      "src/a.js",
+    );
+    const b = extractJavaScript(`export function greet() { return 1; }\n`, "src/b.js");
+    const snap = buildSnapshot([a, b], meta(), obs());
+    expect(callsEdges(snap).some(
+      (e) => e.source === "src/a.js:shadowed:function" && e.target === "src/b.js:greet:function",
+    )).toBe(false);
+    expect(callsEdges(snap).some(
+      (e) => e.source === "src/a.js:real:function" && e.target === "src/b.js:greet:function",
+    )).toBe(true);
+  });
+
+  it("preserves the supported JavaScript import-call contract", () => {
+    const named = extractJavaScript(
+      `import { greet as hello } from "./b.js";\nexport function named() { return hello(); }\n`,
+      "src/named.js",
+    );
+    const namespace = extractJavaScript(
+      `import * as util from "./b.js";\nexport function namespaced() { return util.greet(); }\n`,
+      "src/namespace.js",
+    );
+    const unsupported = extractJavaScript(
+      `import greet from "./b.js";\nconst util = require("./b.js");\n` +
+      `export function unresolved() { greet(); return util.greet(); }\n`,
+      "src/unsupported.js",
+    );
+    const b = extractJavaScript(`export function greet() { return 1; }\n`, "src/b.js");
+    const snap = buildSnapshot([named, namespace, unsupported, b], meta(), obs());
+    expect(callsEdges(snap).some(
+      (e) => e.source === "src/named.js:named:function" && e.target === "src/b.js:greet:function",
+    )).toBe(true);
+    expect(callsEdges(snap).some(
+      (e) => e.source === "src/namespace.js:namespaced:function" && e.target === "src/b.js:greet:function",
+    )).toBe(true);
+    expect(callsEdges(snap).some((e) => e.source === "src/unsupported.js:unresolved:function")).toBe(false);
+  });
+
+  it("keeps imported calls visible from method bodies and default parameter initializers", () => {
+    const methods = extractJavaScript(
+      `import { greet } from "./b.js";\n` +
+      `export class Runner { greet() { return greet(); } }\n` +
+      `export function defaults(value = greet()) { var greet = local; return value; }\n`,
+      "src/a.js",
+    );
+    const b = extractJavaScript(`export function greet() { return 1; }\n`, "src/b.js");
+    const snap = buildSnapshot([methods, b], meta(), obs());
+    expect(callsEdges(snap).some(
+      (e) => e.source === "src/a.js:Runner.greet:method" && e.target === "src/b.js:greet:function",
+    )).toBe(true);
+    expect(callsEdges(snap).some(
+      (e) => e.source === "src/a.js:defaults:function" && e.target === "src/b.js:greet:function",
+    )).toBe(true);
+  });
+
+  it.each([
+    ["nested function", `export function outer() { function nested() { return greet(); } return nested; }`],
+    ["nested arrow", `export function outer() { const nested = () => greet(); return nested; }`],
+    ["returned arrow", `export function outer() { return () => greet(); }`],
+    ["object method", `export function outer() { return { nested() { return greet(); } }; }`],
+    ["same-name nested function", `export function outer() { function outer() { return greet(); } return outer; }`],
+    ["same-name nested arrow", `export const outer = () => { const outer = () => greet(); return outer; };`],
+  ])("does not attribute an unrepresented %s call to its enclosing function", (_label, body) => {
+    const a = extractJavaScript(`import { greet } from "./b.js";\n${body}\n`, "src/a.js");
+    const b = extractJavaScript(`export function greet() { return 1; }\n`, "src/b.js");
+    const snap = buildSnapshot([a, b], meta(), obs());
+    expect(callsEdges(snap).some(
+      (e) => e.source === "src/a.js:outer:function" && e.target === "src/b.js:greet:function",
+    )).toBe(false);
+  });
+
+  it("keeps real imported calls from represented top-level arrows", () => {
+    const a = extractJavaScript(
+      `import { greet } from "./b.js";\nexport const run = () => greet();\n`,
+      "src/a.js",
+    );
+    const b = extractJavaScript(`export function greet() { return 1; }\n`, "src/b.js");
+    const snap = buildSnapshot([a, b], meta(), obs());
+    expect(callsEdges(snap).some(
+      (e) => e.source === "src/a.js:run:function" && e.target === "src/b.js:greet:function",
+    )).toBe(true);
+  });
+
+  it("keeps an import visible in a computed method name outside the method parameter scope", () => {
+    const a = extractJavaScript(
+      `import { greet } from "./b.js";\n` +
+      `export function outer() { return class Runner { [greet()](greet) {} }; }\n`,
+      "src/a.js",
+    );
+    const b = extractJavaScript(`export function greet() { return 1; }\n`, "src/b.js");
+    const snap = buildSnapshot([a, b], meta(), obs());
+    expect(callsEdges(snap).some(
+      (e) => e.source === "src/a.js:outer:function" && e.target === "src/b.js:greet:function",
+    )).toBe(true);
   });
 
   it("namespace import: caller in a.ts → ns.greet() in b.ts", () => {
