@@ -14,6 +14,9 @@ import { join } from "node:path";
 vi.mock("../../src/config.js", () => ({
   loadConfig: vi.fn(),
 }));
+// Rows a test adds to every SELECT answer (the dedupe tests feed the org table this way).
+const tableRows = vi.hoisted(() => ({ extra: [] as Record<string, unknown>[] }));
+
 vi.mock("../../src/deeplake-api.js", () => ({
   DeeplakeApi: class {
     async query(_sql: string) {
@@ -23,7 +26,7 @@ vi.mock("../../src/deeplake-api.js", () => ({
         scope: "me", author: "alice", description: "d",
         trigger_text: "", source_sessions: "[]", install: "global",
         created_at: "2026-01-01", updated_at: "2026-01-01",
-      }];
+      }, ...tableRows.extra];
     }
   },
 }));
@@ -432,6 +435,7 @@ describe("dedupe", () => {
   });
   afterEach(() => {
     clearFakeHome();
+    tableRows.extra.length = 0;
     try { rmSync(dedupeHome, { recursive: true, force: true }); } catch { /* nothing */ }
   });
 
@@ -458,6 +462,25 @@ describe("dedupe", () => {
     expect(existsSync(join(root, "deploy--tester"))).toBe(true);
   });
 
+  function tableRow(author: string, version: number): Record<string, unknown> {
+    return {
+      name: "deploy", project: "p", project_key: "pk", body: `${author} body`, version, source_agent: "x",
+      scope: "me", author, contributors: JSON.stringify([author]), description: "d", trigger_text: "",
+      source_sessions: "[]", install: "global", created_at: "2026-01-01", updated_at: "2026-01-01",
+    };
+  }
+
+  it("--dry-run lists a same-name skill of two authors in the org table as a merge, with no local skill at all", async () => {
+    tableRows.extra.push(tableRow("tester", 2), tableRow("bob", 1));
+    runSkillifyCommand(["dedupe", "--dry-run"]);
+    await new Promise(r => setImmediate(r));
+    const out = logged.join("\n");
+    expect(out).toMatch(/Org table:\s+skills \(workspace ws\)/);
+    expect(out).toMatch(/→ would merge\s+deploy\s+\(authors bob, tester -> tester v3 · no local copy\)/);
+    expect(out).toMatch(/Result: 1 to fix, 0 kept\./);
+    expect(existsSync(join(dedupeHome, ".claude", "skills"))).toBe(false);
+  });
+
   it("--dry-run lists a same-name skill of another author as a merge; --no-merge does not", async () => {
     const root = writeDedupeFixture();
     mkdirSync(join(root, "deploy--bob"), { recursive: true });
@@ -466,9 +489,10 @@ describe("dedupe", () => {
       dirName: "deploy--bob", name: "deploy", author: "bob", projectKey: "pk", remoteVersion: 1,
       install: "global", installRoot: root, pulledAt: "2026", symlinks: [],
     });
+    tableRows.extra.push(tableRow("tester", 2), tableRow("bob", 1));
     runSkillifyCommand(["dedupe", "--dry-run"]);
     await new Promise(r => setImmediate(r));
-    expect(logged.join("\n")).toMatch(/→ would merge\s+deploy\s+\(authors bob, tester -> tester v3\)/);
+    expect(logged.join("\n")).toMatch(/→ would merge\s+deploy\s+\(authors bob, tester -> tester v3 · local copy updated\)/);
     expect(logged.join("\n")).toMatch(/Result: 2 to fix, 0 kept\./);
 
     logged.length = 0;

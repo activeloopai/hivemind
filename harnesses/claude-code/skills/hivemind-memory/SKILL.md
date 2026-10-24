@@ -68,9 +68,9 @@ Hivemind can mine reusable skills from agent session logs and share them across 
 - `hivemind skillify unpull --user <email>` — remove only that author's pulls
 - `hivemind skillify unpull --not-mine` — remove all pulls except your own
 - `hivemind skillify unpull --dry-run` — preview without touching disk
-- `hivemind skillify dedupe` — one skill per name: remove pulled <name>--<you> copies of your own skills, merge same-name skills from several authors into one
+- `hivemind skillify dedupe` — one skill per name: remove pulled <name>--<you> copies of your own skills, merge same-name skills from several authors in the org table into one
 - `hivemind skillify dedupe --no-merge` — only remove own copies; no cross-author merge
-- `hivemind skillify dedupe --dry-run` — preview without touching disk
+- `hivemind skillify dedupe --dry-run` — preview without touching the table or disk
 - `hivemind skillify scope <me|team>` — sharing scope for newly mined skills
 - `hivemind skillify install <project|global>` — default install location for new skills
 - `hivemind skillify promote <skill-name>` — move a project skill to the global location

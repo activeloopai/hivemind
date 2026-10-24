@@ -439,20 +439,19 @@ async function dedupeSkills(args: string[]): Promise<void> {
   printDedupeEntries(entries, dryRun);
 
   if (!noMerge) {
-    const routed = loadRoutedConfig(cwd);
-    const api = routed
-      ? new DeeplakeApi(routed.token, routed.apiUrl, routed.orgId, routed.workspaceId, routed.skillsTableName)
-      : null;
+    const routed = loadRoutedConfig(cwd) ?? config;
+    const api = new DeeplakeApi(routed.token, routed.apiUrl, routed.orgId, routed.workspaceId, routed.skillsTableName);
+    console.log(`Org table:   ${routed.skillsTableName} (workspace ${routed.workspaceId})`);
     const merged = await mergeAuthorDuplicates({
       myUsername: config.userName,
       cwd,
       dryRun,
-      query: api ? (sql: string) => api.query(sql) as Promise<Record<string, unknown>[]> : undefined,
-      tableName: routed?.skillsTableName,
-      workspaceId: routed?.workspaceId,
+      query: (sql: string) => api.query(sql) as Promise<Record<string, unknown>[]>,
+      tableName: routed.skillsTableName,
+      workspaceId: routed.workspaceId,
     });
     if (merged.length > 0) {
-      console.log(`Same name, several authors:`);
+      console.log(`Same name, several authors (org table):`);
       printDedupeEntries(merged, dryRun);
     }
     entries.push(...merged);
