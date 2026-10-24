@@ -17,6 +17,7 @@
 
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { createServer, type Server, type Socket } from "node:net";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -639,8 +640,8 @@ describe.skipIf(process.platform === "win32")("tryEmbedStandalone", () => {
  * stdout/stderr/stdin/pid are not exercised.
  */
 function makeFakeChild(): ChildProcess {
-  return {
+  return Object.assign(new EventEmitter(), {
     unref() { /* */ },
     pid: 999999,
-  } as unknown as ChildProcess;
+  }) as unknown as ChildProcess;
 }

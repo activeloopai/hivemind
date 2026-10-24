@@ -222,6 +222,11 @@ function trySpawnDaemon(daemonEntry: string, pidPath: string): boolean {
       // SW_HIDE: libuv applies it alongside detached. No-op on POSIX.
       windowsHide: true,
     });
+    // OS spawn failures arrive asynchronously, outside this try/catch.
+    // Without a listener, an EAGAIN/EACCES can terminate the host agent.
+    // The bounded wait below owns pidfile cleanup, including concurrent
+    // callers; do not race that ownership protocol from this callback.
+    child.once("error", () => { /* degrade to the existing timeout/null path */ });
     child.unref();
     return true;
   } catch {
