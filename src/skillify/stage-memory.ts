@@ -18,9 +18,10 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { WIKI_PROMPT_TEMPLATE } from "../hooks/spawn-wiki-worker.js";
+import { projectNameFromCwd } from "../utils/project-name.js";
 import { buildClaudeInvocation, type ClaudeGrants } from "../hooks/wiki-worker-spawn.js";
 import { resolveCliBin } from "../utils/resolve-cli-bin.js";
 import { EmbedClient } from "../embeddings/client.js";
@@ -39,7 +40,10 @@ export interface StageSessionInput {
   jsonlPath: string;
   /** Source agent: claude_code | codex | cursor | hermes. */
   agent: string;
-  /** Project name for the summary header + later org/project scoping. */
+  /**
+   * Fallback project name for the summary header + later org/project scoping,
+   * used only when the transcript records no usable session cwd.
+   */
   project: string;
 }
 
@@ -80,15 +84,40 @@ export interface StageResult {
   reason?: string;
 }
 
-function countLines(path: string): number {
+function readTranscript(path: string): string {
   try {
-    const buf = readFileSync(path, "utf-8");
-    if (!buf) return 0;
-    // Trailing newline shouldn't inflate the count.
-    return buf.endsWith("\n") ? buf.split("\n").length - 1 : buf.split("\n").length;
+    return readFileSync(path, "utf-8");
   } catch {
-    return 0;
+    return "";
   }
+}
+
+function countLines(buf: string): number {
+  if (!buf) return 0;
+  // Trailing newline shouldn't inflate the count.
+  return buf.endsWith("\n") ? buf.split("\n").length - 1 : buf.split("\n").length;
+}
+
+/**
+ * The working directory the session itself ran in, read from the transcript.
+ * Claude Code stamps `cwd` on each conversational record; Codex rollouts carry
+ * it as `payload.cwd` on `session_meta` / `turn_context`. Leading records
+ * without one (summaries, snapshots) and malformed lines are skipped. Returns
+ * null when no record yields a cwd with a usable final path segment.
+ */
+function sessionCwdFromTranscript(buf: string): string | null {
+  for (const line of buf.split("\n")) {
+    if (!line.trim()) continue;
+    let obj: unknown;
+    try { obj = JSON.parse(line); } catch { continue; }
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) continue;
+    const rec = obj as { type?: unknown; cwd?: unknown; payload?: { cwd?: unknown } | null };
+    const payloadCwd = rec.type === "session_meta" || rec.type === "turn_context" ? rec.payload?.cwd : undefined;
+    const raw = typeof rec.cwd === "string" ? rec.cwd : payloadCwd;
+    // Check emptiness without changing a valid directory name.
+    if (typeof raw === "string" && raw.trim().length > 0 && basename(raw)) return raw;
+  }
+  return null;
 }
 
 /** Spawn shape derived from a ClaudeInvocation: how to wire stdio + the prompt. */
@@ -201,13 +230,19 @@ export async function stageSession(input: StageSessionInput, opts: StageOptions)
     return { sessionId: key, ok: false, embedded: false, reason: "mkdir-failed" };
   }
 
-  const jsonlLines = countLines(input.jsonlPath);
+  const transcript = readTranscript(input.jsonlPath);
+  const jsonlLines = countLines(transcript);
+  // Backfill spans every project's history, so attribute the session to the
+  // cwd it actually ran in (as live capture does), not the caller's cwd.
+  const sessionCwd = sessionCwdFromTranscript(transcript);
+  const project = sessionCwd ? projectNameFromCwd(sessionCwd) : input.project;
   // Offset 0: backfill always extracts from scratch (no prior summary on disk).
   const prompt = WIKI_PROMPT_TEMPLATE
     .replace(/__JSONL__/g, input.jsonlPath)
     .replace(/__SUMMARY__/g, summaryPath)
     .replace(/__SESSION_ID__/g, input.sessionId)
-    .replace(/__PROJECT__/g, input.project)
+    // Function replacement: a `$` in a directory name must stay literal.
+    .replace(/__PROJECT__/g, () => project)
     .replace(/__PREV_OFFSET__/g, "0")
     .replace(/__JSONL_LINES__/g, String(jsonlLines))
     // Backfill has no server path; the source is the local session. The
@@ -255,7 +290,7 @@ export async function stageSession(input: StageSessionInput, opts: StageOptions)
   const entry: PendingMemoryEntry = {
     session_id: key,
     source_agent: input.agent,
-    project: input.project,
+    project,
     source_session_path: input.jsonlPath,
     summary_path: summaryPath,
     embedded,

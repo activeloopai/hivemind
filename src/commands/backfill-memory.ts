@@ -244,6 +244,8 @@ export type NowFn = () => number;
 /** Default stager: real stage-only extraction via claude -p + local embed. */
 function defaultStageFn(cwd: string, perSessionTimeoutMs: number): StageFn {
   const claudeBin = resolveClaudeBin();
+  // Fallback only: stageSession attributes each session to the cwd recorded
+  // in its own transcript, since the default run spans every project.
   const project = projectNameFromCwd(cwd);
   return async (s) => {
     const res = await stageSession(
