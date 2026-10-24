@@ -191,7 +191,10 @@ export function pickSessions(
   const cap2 = picked.length + globalQuota;
   for (const s of sorted) {
     if (picked.length >= cap2) break;
-    if (!taken.has(s.path)) {
+    // Reserve this phase for sessions outside the current project. Without
+    // the bucket check, newer cwd sessions consume the intended global quota
+    // and the picker becomes cwd-only whenever enough local history exists.
+    if (!s.inCwd && !taken.has(s.path)) {
       picked.push(s);
       taken.add(s.path);
     }
