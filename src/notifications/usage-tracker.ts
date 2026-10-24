@@ -3,8 +3,10 @@
  * written at SessionEnd and read at SessionStart for the savings recap.
  *
  * Storage: `~/.deeplake/usage-stats.jsonl`. JSONL, one record per session.
- * Append-only at write time. The SessionStart-side reader sums across ALL
- * records (cumulative since install — see plan).
+ * Append-only at write time; a resumed session appends a newer cumulative
+ * snapshot and the reader keeps only the last one per session. The
+ * SessionStart-side reader sums across ALL sessions (cumulative since
+ * install — see plan).
  *
  * Failure mode: every operation is fail-soft. A broken stats file must
  * never break a SessionEnd or SessionStart hook — it just means the recap
@@ -61,12 +63,20 @@ export function appendUsageRecord(record: UsageRecord): void {
  * Read all usage records. Returns [] on missing file or read error.
  * Malformed lines are skipped individually so a partially-corrupt file
  * still yields the valid records.
+ *
+ * One record per session: SessionEnd re-parses the FULL transcript each
+ * time, so a resumed session appends a cumulative snapshot that already
+ * includes every earlier snapshot for that session. Summing them would
+ * double-count, so for a nonempty `sessionId` only the last valid record
+ * is kept (at the position of that last record). Records with an empty
+ * `sessionId` can't be attributed to a session and are kept individually.
  */
 export function readUsageRecords(): UsageRecord[] {
   try {
     if (!existsSync(statsFilePath())) return [];
     const raw = readFileSync(statsFilePath(), "utf-8");
     const out: UsageRecord[] = [];
+    const lastIndexBySession = new Map<string, number>();
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -90,12 +100,13 @@ export function readUsageRecords(): UsageRecord[] {
             memorySearchBytes: typeof rec.memorySearchBytes === "number" ? rec.memorySearchBytes : 0,
             memorySearchCount: typeof rec.memorySearchCount === "number" ? rec.memorySearchCount : 0,
           });
+          if (rec.sessionId) lastIndexBySession.set(rec.sessionId, out.length - 1);
         }
       } catch {
         // skip malformed line
       }
     }
-    return out;
+    return out.filter((r, i) => !r.sessionId || lastIndexBySession.get(r.sessionId) === i);
   } catch (e: any) {
     log(`readUsageRecords failed: ${e?.message ?? String(e)}`);
     return [];
