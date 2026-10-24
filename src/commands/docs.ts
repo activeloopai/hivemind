@@ -505,7 +505,14 @@ export async function runDocsCommand(args: string[]): Promise<void> {
     let row: DocRow | null = null;
     try {
       const showCwd = flagValue(args, "--cwd") ?? process.cwd();
-      row = await getDocLatest(query, tableName, docId, { readerScope: currentScope(defaultGit(showCwd)) });
+      const explicitProject = flagValue(args, "--project");
+      const project = explicitProject === undefined
+        ? deriveProjectKey(showCwd).key
+        : resolveProjectArg(explicitProject);
+      row = await getDocLatest(query, tableName, docId, {
+        projectOrLegacy: project,
+        readerScope: currentScope(defaultGit(showCwd)),
+      });
     } catch (err) {
       if (!isMissingTableError((err as Error).message)) throw err;
     }
@@ -621,11 +628,16 @@ export async function runDocsCommand(args: string[]): Promise<void> {
       throw new Error("unreachable");
     }
     try {
+      const archiveCwd = flagValue(args, "--cwd") ?? process.cwd();
+      const explicitProject = flagValue(args, "--project");
+      const project = explicitProject === undefined
+        ? deriveProjectKey(archiveCwd).key
+        : resolveProjectArg(explicitProject);
       const out = await archiveDoc(query, tableName, {
         doc_id: docId,
         agent: cfg.userName,
         plugin_version: pluginVersion,
-      }, { project: flagValue(args, "--project") });
+      }, { project });
       console.log(`Archived doc ${out.doc_id} → v${out.version}.`);
     } catch (err) {
       console.error(`Archive failed: ${(err as Error).message}`);

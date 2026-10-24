@@ -88,6 +88,28 @@ function docRow(over: Record<string, unknown> = {}) {
   };
 }
 
+/** Apply the SELECT project predicate and record UPDATE effects like a table. */
+function useSqlAwareDocTable(rows: Array<Record<string, any>>): void {
+  queryMock.mockImplementation(async (sql: string) => {
+    if (/^SELECT/.test(sql)) {
+      const legacy = /\(project = '([^']*)' OR project = ''\)/.exec(sql);
+      if (legacy) return rows.filter((row) => row.project === legacy[1] || row.project === "");
+      const strict = /project = '([^']*)'/.exec(sql);
+      if (strict) return rows.filter((row) => row.project === strict[1]);
+      return rows;
+    }
+    if (/^UPDATE/.test(sql)) {
+      const id = /WHERE id = '([^']*)'/.exec(sql)?.[1];
+      const row = rows.find((candidate) => candidate.id === id);
+      if (row) {
+        row.status = "archived";
+        row.version = Number(row.version) + 1;
+      }
+    }
+    return [];
+  });
+}
+
 let logged: string[] = [];
 let erred: string[] = [];
 let logSpy: ReturnType<typeof vi.spyOn>;
@@ -172,6 +194,34 @@ describe("hivemind docs show", () => {
   });
   it("requires a doc-id", async () => {
     expect(await run(["show"])).toBe(1);
+  });
+
+  it("resolves a direct show lookup within the current repository", async () => {
+    const project = deriveProjectKey(process.cwd()).key;
+    const local = docRow({ project, content: "LOCAL DOC" });
+    const foreign = docRow({ project: "other-repo", content: "FOREIGN DOC", version: 99 });
+    queryMock.mockImplementation(async (sql: string) =>
+      sql.includes(`project = '${project}'`) ? [local] : [foreign],
+    );
+
+    await run(["show", "a.ts"]);
+
+    expect(logged.join("\n")).toContain("LOCAL DOC");
+    expect(logged.join("\n")).not.toContain("FOREIGN DOC");
+  });
+
+  it("keeps show project-scoped with a SQL-aware table", async () => {
+    const project = deriveProjectKey(process.cwd()).key;
+    useSqlAwareDocTable([
+      docRow({ project, content: "LOCAL DOC" }),
+      docRow({ id: "foreign-row", project: "other-repo", content: "FOREIGN DOC", version: 99 }),
+    ]);
+
+    await run(["show", "a.ts"]);
+
+    expect(logged.join("\n")).toContain("LOCAL DOC");
+    expect(logged.join("\n")).not.toContain("FOREIGN DOC");
+    expect(queryMock.mock.calls[0][0]).toContain(`(project = '${project}' OR project = '')`);
   });
 });
 
@@ -286,6 +336,63 @@ describe("hivemind docs archive", () => {
     // UPDATE-in-place (F1): archive flips status on the existing row, not a new INSERT.
     expect(sqls.some((s) => /UPDATE "hivemind_docs" SET/.test(s) && /status = 'archived'/.test(s))).toBe(true);
     expect(logged.join()).toMatch(/Archived doc a\.ts → v3/);
+  });
+
+  it("archives only the current repository's row", async () => {
+    const project = deriveProjectKey(process.cwd()).key;
+    const local = docRow({ id: "local-row", project, version: 2 });
+    const foreign = docRow({ id: "foreign-row", project: "other-repo", version: 99 });
+    queryMock.mockImplementation(async (sql: string) =>
+      sql.startsWith("SELECT") && sql.includes(`project = '${project}'`) ? [local] :
+        sql.startsWith("SELECT") ? [foreign] : [],
+    );
+
+    await run(["archive", "a.ts"]);
+
+    const update = queryMock.mock.calls.map((c) => c[0] as string).find((s) => /^UPDATE/.test(s));
+    expect(update).toContain(`WHERE id = '${local.id}'`);
+    expect(update).not.toContain(foreign.id);
+  });
+
+  it("archives a legacy row through the current-project-or-legacy selector", async () => {
+    const project = deriveProjectKey(process.cwd()).key;
+    const legacy = docRow({ id: "legacy-row", project: "", version: 2 });
+    useSqlAwareDocTable([legacy]);
+
+    await run(["archive", "a.ts"]);
+
+    const select = queryMock.mock.calls.map((c) => c[0] as string).find((s) => /^SELECT/.test(s));
+    const update = queryMock.mock.calls.map((c) => c[0] as string).find((s) => /^UPDATE/.test(s));
+    expect(select).toContain(`(project = '${project}' OR project = '')`);
+    expect(update).toContain(`WHERE id = '${legacy.id}'`);
+    expect(legacy.status).toBe("archived");
+  });
+
+  it("does not archive a foreign stamped row when the current project has no match", async () => {
+    const foreign = docRow({ id: "foreign-row", project: "other-repo", version: 99 });
+    useSqlAwareDocTable([foreign]);
+
+    expect(await run(["archive", "a.ts"])).toBe(1);
+
+    const writes = queryMock.mock.calls.map((c) => c[0] as string).filter((s) => /^(INSERT|UPDATE|DELETE)/.test(s));
+    expect(writes).toHaveLength(0);
+    expect(foreign.status).toBe("active");
+  });
+
+  it("maps explicit --project to the selected stamped row", async () => {
+    const selected = docRow({ id: "selected-row", project: "selected-project", version: 4 });
+    const foreign = docRow({ id: "foreign-row", project: "other-repo", version: 99 });
+    useSqlAwareDocTable([selected, foreign]);
+
+    await run(["archive", "a.ts", "--project", "selected-project"]);
+
+    const select = queryMock.mock.calls.map((c) => c[0] as string).find((s) => /^SELECT/.test(s));
+    const update = queryMock.mock.calls.map((c) => c[0] as string).find((s) => /^UPDATE/.test(s));
+    expect(select).toContain("project = 'selected-project'");
+    expect(update).toContain(`WHERE id = '${selected.id}'`);
+    expect(update).not.toContain(foreign.id);
+    expect(selected.status).toBe("archived");
+    expect(foreign.status).toBe("active");
   });
 });
 
