@@ -123,7 +123,7 @@ function collectDecls(
 }
 
 function extractReceiverType(receiver: TSNode): string | null {
-  // parameter_list → parameter_declaration → pointer_type or type_identifier
+  // parameter_list → parameter_declaration → pointer_type, generic_type or type_identifier
   for (let i = 0; i < receiver.namedChildCount; i++) {
     const param = receiver.namedChild(i);
     /* c8 ignore next */
@@ -131,18 +131,31 @@ function extractReceiverType(receiver: TSNode): string | null {
     const typeField = param.childForFieldName("type");
     /* c8 ignore next */
     if (typeField === null) continue;
-    if (typeField.type === "type_identifier") return typeField.text;
+    const base = receiverBaseType(typeField);
+    if (base !== null) return base;
     /* c8 ignore next */
     if (typeField.type === "pointer_type") {
-      // *Foo → Foo
+      // *Foo → Foo, *Foo[T] → Foo
       for (let j = 0; j < typeField.namedChildCount; j++) {
         const inner = typeField.namedChild(j);
         /* c8 ignore next */
-        if (inner !== null && inner.type === "type_identifier") return inner.text;
+        if (inner === null) continue;
+        const innerBase = receiverBaseType(inner);
+        if (innerBase !== null) return innerBase;
       }
     }
   }
   /* c8 ignore next */
+  return null;
+}
+
+/** Resolve a plain or generic local receiver base; unsupported shapes stay unresolved. */
+function receiverBaseType(typeNode: TSNode): string | null {
+  if (typeNode.type === "type_identifier") return typeNode.text;
+  if (typeNode.type === "generic_type") {
+    const base = typeNode.childForFieldName("type");
+    if (base !== null && base.type === "type_identifier") return base.text;
+  }
   return null;
 }
 

@@ -127,6 +127,80 @@ describe("Go extraction", () => {
     expect(call).toBeDefined();
   });
 
+  describe("generic method receivers", () => {
+    const src = [
+      "package main",
+      "type Box[T any] struct { v T }",
+      "type Pair[K comparable, V any] struct { k K; v V }",
+      "type Plain struct{}",
+      "func boxHelper() {}",
+      "func pairHelper() {}",
+      "func (b Box[T]) Get() T { boxHelper(); return b.v }",
+      "func (b *Box[T]) Set(v T) { b.v = v }",
+      "func (p Pair[K, V]) Get() V { pairHelper(); return p.v }",
+      "func (p *Pair[K, V]) Set(v V) { p.v = v }",
+      "func (p Plain) Get() int { return 0 }",
+      "func (p *Plain) Set(v int) {}",
+      "",
+    ].join("\n");
+    const ex = extractGo(src, "pkg/gen.go");
+    const methodOf = (id: string) =>
+      ex.edges.filter(e => e.relation === "method_of" && e.target === id).map(e => e.source);
+
+    it("parses generic declarations without errors", () => {
+      expect(ex.parse_errors).toHaveLength(0);
+      expect(ex.nodes.some(n => n.id === "pkg/gen.go:Box:class")).toBe(true);
+      expect(ex.nodes.some(n => n.id === "pkg/gen.go:Pair:class")).toBe(true);
+    });
+
+    it("keys same-named methods on different generic types by their base type", () => {
+      const ids = ex.nodes.filter(n => n.kind === "method").map(n => n.id).sort();
+      expect(ids).toEqual([
+        "pkg/gen.go:Box.Get:method",
+        "pkg/gen.go:Box.Set:method",
+        "pkg/gen.go:Pair.Get:method",
+        "pkg/gen.go:Pair.Set:method",
+        "pkg/gen.go:Plain.Get:method",
+        "pkg/gen.go:Plain.Set:method",
+      ]);
+      expect(ex.nodes.some(n => n.id === "pkg/gen.go:Get:method")).toBe(false);
+      expect(ex.nodes.some(n => n.id === "pkg/gen.go:Set:method")).toBe(false);
+    });
+
+    it("emits method_of from the base type for value and pointer generic receivers", () => {
+      expect(methodOf("pkg/gen.go:Box.Get:method")).toEqual(["pkg/gen.go:Box:class"]);
+      expect(methodOf("pkg/gen.go:Box.Set:method")).toEqual(["pkg/gen.go:Box:class"]);
+      expect(methodOf("pkg/gen.go:Pair.Get:method")).toEqual(["pkg/gen.go:Pair:class"]);
+      expect(methodOf("pkg/gen.go:Pair.Set:method")).toEqual(["pkg/gen.go:Pair:class"]);
+    });
+
+    it("still resolves ordinary value and pointer receivers alongside generics", () => {
+      expect(methodOf("pkg/gen.go:Plain.Get:method")).toEqual(["pkg/gen.go:Plain:class"]);
+      expect(methodOf("pkg/gen.go:Plain.Set:method")).toEqual(["pkg/gen.go:Plain:class"]);
+    });
+
+    it("attributes calls inside generic methods to the owning method", () => {
+      const calls = ex.edges
+        .filter(e => e.relation === "calls")
+        .map(e => `${e.source} -> ${e.target}`)
+        .sort();
+      expect(calls).toEqual([
+        "pkg/gen.go:Box.Get:method -> pkg/gen.go:boxHelper:function",
+        "pkg/gen.go:Pair.Get:method -> pkg/gen.go:pairHelper:function",
+      ]);
+    });
+  });
+
+  it("leaves a parenthesized receiver type unresolved (no method_of edge)", () => {
+    const ex = extractGo(
+      `package main\ntype Box[T any] struct{}\nfunc (b (Box[T])) Odd() {}\n`,
+      "pkg/odd.go",
+    );
+    const odd = ex.nodes.find(n => n.label === "Odd" && n.kind === "method");
+    expect(odd).toBeDefined();
+    expect(ex.edges.some(e => e.relation === "method_of" && e.target === odd!.id)).toBe(false);
+  });
+
   it("includes a module node for the file", () => {
     const ex = extractGo(`package main\n`, "pkg/a.go");
     expect(ex.nodes.some(n => n.kind === "module" && n.id === "pkg/a.go::module")).toBe(true);
