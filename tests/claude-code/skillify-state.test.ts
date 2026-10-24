@@ -9,6 +9,7 @@ import {
   bumpStopCounter,
   resetCounter,
   readState,
+  withRmwLock,
   recordSkill,
   advanceWatermark,
   tryAcquireWorkerLock,
@@ -377,6 +378,255 @@ describe("worker lock edge cases", () => {
     expect(fs.existsSync(path)).toBe(true);
     expect(fs.readFileSync(path, "utf-8")).toBe(before);
     releaseWorkerLock(key);
+  });
+
+  it("does not reclaim an expired RMW lock whose recorded owner is still alive", () => {
+    const fs = require("node:fs");
+    const cwd = freshCwd();
+    const { key } = deriveProjectKey(cwd);
+    track(key);
+    const path = join(STATE_DIR, `${key}.lock.rmw`);
+    fs.writeFileSync(path, `${process.pid}\n`);
+
+    const now = vi.spyOn(Date, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValue(3_000);
+    try {
+      expect(() => withRmwLock(key, () => undefined)).toThrow(/owner.*alive|still running/i);
+    } finally {
+      now.mockRestore();
+      fs.rmSync(path, { force: true });
+    }
+  });
+
+  it.each([
+    ["empty legacy marker", ""],
+    ["PID-less marker", "legacy-owner-unknown\n"],
+    ["partially numeric marker", "123garbage\n"],
+  ])("does not reclaim an expired RMW lock with an unknown owner: %s", (_label, marker) => {
+    const fs = require("node:fs");
+    const cwd = freshCwd();
+    const { key } = deriveProjectKey(cwd);
+    track(key);
+    const path = join(STATE_DIR, `${key}.lock.rmw`);
+    fs.writeFileSync(path, marker);
+
+    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+    const now = vi.spyOn(Date, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValue(3_000);
+    const callback = vi.fn();
+    try {
+      expect(() => withRmwLock(key, callback)).toThrow(/timed out.*owner.*determin/i);
+      expect(callback).not.toHaveBeenCalled();
+      expect(fs.readFileSync(path, "utf-8")).toBe(marker);
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      now.mockRestore();
+      kill.mockRestore();
+      fs.rmSync(path, { force: true });
+    }
+  });
+
+  it("treats EPERM probing a recorded PID as alive or unknown", () => {
+    const fs = require("node:fs");
+    const cwd = freshCwd();
+    const { key } = deriveProjectKey(cwd);
+    track(key);
+    const path = join(STATE_DIR, `${key}.lock.rmw`);
+    fs.writeFileSync(path, "424242\n");
+
+    const denied = Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw denied; });
+    const now = vi.spyOn(Date, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValue(3_000);
+    try {
+      expect(() => withRmwLock(key, () => undefined)).toThrow(/timed out.*424242/i);
+      expect(fs.readFileSync(path, "utf-8")).toBe("424242\n");
+    } finally {
+      now.mockRestore();
+      kill.mockRestore();
+      fs.rmSync(path, { force: true });
+    }
+  });
+
+  it("reclaims a provably dead PID marker and runs the callback", () => {
+    const fs = require("node:fs");
+    const cwd = freshCwd();
+    const { key } = deriveProjectKey(cwd);
+    track(key);
+    const path = join(STATE_DIR, `${key}.lock.rmw`);
+    fs.writeFileSync(path, "424242\n");
+
+    const gone = Object.assign(new Error("no such process"), { code: "ESRCH" });
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw gone; });
+    const now = vi.spyOn(Date, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValue(3_000);
+    try {
+      expect(withRmwLock(key, () => "recovered")).toBe("recovered");
+      expect(kill).toHaveBeenCalledWith(424242, 0);
+      expect(fs.existsSync(path)).toBe(false);
+    } finally {
+      now.mockRestore();
+      kill.mockRestore();
+    }
+  });
+
+  it("attempts dead-owner recovery only once after the total deadline", () => {
+    const fs = require("node:fs");
+    const { syncBuiltinESMExports } = require("node:module");
+    const cwd = freshCwd();
+    const { key } = deriveProjectKey(cwd);
+    track(key);
+    const path = join(STATE_DIR, `${key}.lock.rmw`);
+    fs.writeFileSync(path, "424242\n");
+
+    const successor = `${process.pid}\n`;
+    const originalUnlink = fs.unlinkSync;
+    let recoveryUnlinks = 0;
+    fs.unlinkSync = (target: Parameters<typeof fs.unlinkSync>[0]) => {
+      originalUnlink(target);
+      if (target === path) {
+        recoveryUnlinks++;
+        fs.writeFileSync(path, successor);
+      }
+    };
+    syncBuiltinESMExports();
+
+    const gone = Object.assign(new Error("no such process"), { code: "ESRCH" });
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw gone; });
+    let nowCalls = 0;
+    const now = vi.spyOn(Date, "now").mockImplementation(() => nowCalls++ === 0 ? 0 : 3_000);
+    const callback = vi.fn();
+    try {
+      expect(() => withRmwLock(key, callback)).toThrow(/timed out.*changed/i);
+      expect(callback).not.toHaveBeenCalled();
+      expect(kill).toHaveBeenCalledTimes(1);
+      expect(recoveryUnlinks).toBe(1);
+      expect(fs.readFileSync(path, "utf-8")).toBe(successor);
+    } finally {
+      fs.unlinkSync = originalUnlink;
+      syncBuiltinESMExports();
+      now.mockRestore();
+      kill.mockRestore();
+      fs.rmSync(path, { force: true });
+    }
+  });
+
+  it("does not unlink a successor that replaces a dead marker during recovery", () => {
+    const fs = require("node:fs");
+    const cwd = freshCwd();
+    const { key } = deriveProjectKey(cwd);
+    track(key);
+    const path = join(STATE_DIR, `${key}.lock.rmw`);
+    fs.writeFileSync(path, "424242\n");
+
+    const successor = `${process.pid}\n`;
+    const gone = Object.assign(new Error("no such process"), { code: "ESRCH" });
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      fs.writeFileSync(path, successor);
+      throw gone;
+    });
+    const now = vi.spyOn(Date, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValue(3_000);
+    const callback = vi.fn();
+    try {
+      expect(() => withRmwLock(key, callback)).toThrow(/timed out.*changed/i);
+      expect(callback).not.toHaveBeenCalled();
+      expect(fs.readFileSync(path, "utf-8")).toBe(successor);
+    } finally {
+      now.mockRestore();
+      kill.mockRestore();
+      fs.rmSync(path, { force: true });
+    }
+  });
+
+  it("removes its marker after a normal callback and after a thrown callback", () => {
+    const fs = require("node:fs");
+    const cwd = freshCwd();
+    const { key } = deriveProjectKey(cwd);
+    track(key);
+    const path = join(STATE_DIR, `${key}.lock.rmw`);
+
+    expect(withRmwLock(key, () => {
+      expect(fs.readFileSync(path, "utf-8")).toMatch(new RegExp(`^${process.pid}(?:\\s|$)`));
+      return "done";
+    })).toBe("done");
+    expect(fs.existsSync(path)).toBe(false);
+
+    expect(() => withRmwLock(key, () => { throw new Error("callback failed"); }))
+      .toThrow("callback failed");
+    expect(fs.existsSync(path)).toBe(false);
+  });
+
+  it("does not remove a successor marker when releasing its own lock", () => {
+    const fs = require("node:fs");
+    const cwd = freshCwd();
+    const { key } = deriveProjectKey(cwd);
+    track(key);
+    const path = join(STATE_DIR, `${key}.lock.rmw`);
+    const successor = "424242 successor\n";
+
+    withRmwLock(key, () => {
+      fs.rmSync(path);
+      fs.writeFileSync(path, successor);
+    });
+
+    expect(fs.readFileSync(path, "utf-8")).toBe(successor);
+    fs.rmSync(path, { force: true });
+  });
+
+  it.runIf(process.platform !== "win32")("bounds recovery when a dead PID marker cannot be unlinked", () => {
+    const fs = require("node:fs");
+    const cwd = freshCwd();
+    const { key } = deriveProjectKey(cwd);
+    track(key);
+    const path = join(STATE_DIR, `${key}.lock.rmw`);
+    fs.writeFileSync(path, "424242\n");
+
+    const gone = Object.assign(new Error("no such process"), { code: "ESRCH" });
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw gone; });
+    const now = vi.spyOn(Date, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValue(3_000);
+    fs.chmodSync(STATE_DIR, 0o555);
+    try {
+      expect(() => withRmwLock(key, () => undefined)).toThrow(/could not be reclaimed/i);
+      expect(fs.readFileSync(path, "utf-8")).toBe("424242\n");
+    } finally {
+      fs.chmodSync(STATE_DIR, 0o755);
+      now.mockRestore();
+      kill.mockRestore();
+      fs.rmSync(path, { force: true });
+    }
+  });
+
+  it("fails closed when an expired RMW lock is unreadable", () => {
+    const fs = require("node:fs");
+    const cwd = freshCwd();
+    const { key } = deriveProjectKey(cwd);
+    track(key);
+    const path = join(STATE_DIR, `${key}.lock.rmw`);
+    fs.mkdirSync(path, { recursive: true });
+    fs.writeFileSync(join(path, "preserve.txt"), "do not delete");
+
+    let calls = 0;
+    const now = vi.spyOn(Date, "now").mockImplementation(() => {
+      calls++;
+      if (calls === 1) return 0;
+      if (calls === 2) return 3_000;
+      throw new Error("unbounded retry");
+    });
+    try {
+      expect(() => withRmwLock(key, () => undefined)).toThrow(/owner could not be determined/i);
+      expect(calls).toBe(2);
+      expect(fs.readFileSync(join(path, "preserve.txt"), "utf-8")).toBe("do not delete");
+    } finally {
+      now.mockRestore();
+    }
   });
 });
 
