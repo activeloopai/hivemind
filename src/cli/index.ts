@@ -4,6 +4,7 @@ import { installOpenclaw, uninstallOpenclaw } from "./install-openclaw.js";
 import { installCursor, uninstallCursor } from "./install-cursor.js";
 import { installHermes, uninstallHermes } from "./install-hermes.js";
 import { installCowork, uninstallCowork } from "./install-cowork.js";
+import { installKiro, uninstallKiro } from "./install-kiro.js";
 import { installPi, uninstallPi } from "./install-pi.js";
 import {
   disableEmbeddings,
@@ -80,6 +81,7 @@ Usage:
   hivemind cursor  install | uninstall
   hivemind hermes  install | uninstall
   hivemind claude_cowork install | uninstall
+  hivemind kiro    install | uninstall
   hivemind pi      install | uninstall
       Install or remove hivemind for a specific assistant.
 
@@ -184,6 +186,7 @@ Account / org / workspace:
 Docs:  https://github.com/activeloopai/hivemind
 `.trim();
 
+/** Parse `--only=<id,id,...>` / `--only <id,...>` into a validated list of `PlatformId`s. Exits on unknown IDs. */
 function parseOnly(args: string[]): PlatformId[] | null {
   const idx = args.findIndex(a => a === "--only" || a.startsWith("--only="));
   if (idx === -1) return null;
@@ -199,10 +202,12 @@ function parseOnly(args: string[]): PlatformId[] | null {
   return ids;
 }
 
+/** Return `true` when `flag` is present in `args`. */
 function hasFlag(args: string[], flag: string): boolean {
   return args.includes(flag);
 }
 
+/** Extract the value of `--token <value>` / `--token=<value>` from `args`, or `undefined` if absent. */
 function parseToken(args: string[]): string | undefined {
   const idx = args.findIndex(a => a === "--token" || a.startsWith("--token="));
   if (idx === -1) return undefined;
@@ -223,6 +228,7 @@ function parseRef(args: string[]): string | undefined {
   return code.length > 0 ? code : undefined;
 }
 
+/** Return `true` when a `HIVEMIND_TOKEN` environment variable is set and non-empty. */
 function hasEnvToken(): boolean {
   return Boolean(process.env.HIVEMIND_TOKEN);
 }
@@ -356,6 +362,7 @@ async function runAuthGate(args: string[]): Promise<void> {
   }
 }
 
+/** Run `hivemind install` for all detected (or `--only`) platforms: auth gate, hooks, optional embeddings, session scan. */
 async function runInstallAll(args: string[]): Promise<void> {
   const only = parseOnly(args);
   const skipAuth = hasFlag(args, "--skip-auth");
@@ -365,7 +372,7 @@ async function runInstallAll(args: string[]): Promise<void> {
 
   if (targets.length === 0) {
     log("No supported assistants detected.");
-    log("Supported: Claude Code, Codex, OpenClaw, Cursor, Hermes Agent, Pi, Claude Cowork.");
+    log("Supported: Claude Code, Codex, OpenClaw, Cursor, Hermes Agent, Pi, Claude Cowork, Kiro.");
     log("Install one and rerun `hivemind install`, or target a specific assistant: `hivemind cursor install`.");
     return;
   }
@@ -451,6 +458,7 @@ async function runInstallAll(args: string[]): Promise<void> {
   log("Done. Restart each assistant to activate hooks.");
 }
 
+/** Install Hivemind for a single platform by ID. Logs and continues on error. */
 function runSingleInstall(id: PlatformId): void {
   try {
     if (id === "claude") installClaude();
@@ -460,11 +468,13 @@ function runSingleInstall(id: PlatformId): void {
     else if (id === "hermes") installHermes();
     else if (id === "pi") installPi();
     else if (id === "claude_cowork") installCowork();
+    else if (id === "kiro") installKiro();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${(err as Error).message}`);
   }
 }
 
+/** Uninstall Hivemind for a single platform by ID. Logs and continues on error. */
 function runSingleUninstall(id: PlatformId): void {
   try {
     if (id === "claude") uninstallClaude();
@@ -474,11 +484,13 @@ function runSingleUninstall(id: PlatformId): void {
     else if (id === "hermes") uninstallHermes();
     else if (id === "pi") uninstallPi();
     else if (id === "claude_cowork") uninstallCowork();
+    else if (id === "kiro") uninstallKiro();
   } catch (err) {
     warn(`  ${id.padEnd(14)} FAILED: ${(err as Error).message}`);
   }
 }
 
+/** Print the current Hivemind version, login state, and detected platforms to stdout. */
 function runStatus(): void {
   const detected = detectPlatforms();
   log(`hivemind ${getVersion()}`);
@@ -489,6 +501,7 @@ function runStatus(): void {
   for (const p of detected) log(`  ${p.id.padEnd(8)} ${p.markerDir}`);
 }
 
+/** CLI entry point — parse `process.argv` and dispatch to the appropriate command handler. */
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const cmd = args[0];
@@ -616,7 +629,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const platformCmds: PlatformId[] = ["claude", "codex", "claw", "cursor", "hermes", "pi", "claude_cowork"];
+  const platformCmds: PlatformId[] = ["claude", "codex", "claw", "cursor", "hermes", "pi", "claude_cowork", "kiro"];
   if (platformCmds.includes(cmd as PlatformId)) {
     const sub = args[1];
     if (sub === "install") {
