@@ -15,7 +15,8 @@
  */
 
 import {
-  existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, openSync, closeSync,
+  mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, openSync, closeSync,
+  fstatSync, linkSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -120,6 +121,55 @@ export function clearCache(dir: string): void {
 /** A lock older than this is treated as left behind by a crashed worker. */
 const LOCK_STALE_MS = 10 * 60_000;
 
+/** Create `lock` exclusively (O_CREAT|O_EXCL). False when it already exists. */
+function createLock(lock: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(lock, "wx", 0o600);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw e;
+  }
+  try { writeFileSync(fd, String(process.pid)); } finally { closeSync(fd); }
+  return true;
+}
+
+/**
+ * Move a stale lock out of the way without racing other recoverers: the lock
+ * is renamed (atomic, so only one recoverer gets a given file) and the moved
+ * file's inode is compared with the stale one. If another worker replaced the
+ * lock in between, the fresh lock is put back.
+ */
+function evictStaleLock(lock: string, now: number): boolean {
+  let fd: number;
+  try { fd = openSync(lock, "r"); } catch { return true; } // released meanwhile
+  let ino: number;
+  try {
+    const st = fstatSync(fd);
+    if (now - st.mtimeMs < LOCK_STALE_MS) return false;
+    ino = st.ino;
+  } finally {
+    closeSync(fd);
+  }
+  const moved = `${lock}.stale.${process.pid}`;
+  try { renameSync(lock, moved); } catch { return true; } // another recoverer took it
+  try {
+    if (fstatInode(moved) !== ino) {
+      // We moved a FRESH lock that replaced the stale one: restore it.
+      try { linkSync(moved, lock); } catch { /* a newer lock exists already */ }
+      return false;
+    }
+    return true;
+  } finally {
+    rmSync(moved, { force: true });
+  }
+}
+
+function fstatInode(path: string): number {
+  const fd = openSync(path, "r");
+  try { return fstatSync(fd).ino; } finally { closeSync(fd); }
+}
+
 /**
  * Take the per-cache sync lock. Returns a release function, or null when
  * another live worker holds it. Never throws.
@@ -128,14 +178,7 @@ export function acquireSyncLock(dir: string, now: number = Date.now()): (() => v
   try {
     ensureDir(dir);
     const lock = join(dir, "sync.lock");
-    if (existsSync(lock)) {
-      const age = now - statSync(lock).mtimeMs;
-      if (age < LOCK_STALE_MS) return null;
-      rmSync(lock, { force: true });
-    }
-    const fd = openSync(lock, "wx", 0o600);
-    writeFileSync(fd, String(process.pid));
-    closeSync(fd);
+    if (!createLock(lock) && !(evictStaleLock(lock, now) && createLock(lock))) return null;
     return () => { try { rmSync(lock, { force: true }); } catch { /* best-effort */ } };
   } catch {
     return null;

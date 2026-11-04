@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { syncRecallCache, buildPageSql, rowToDoc, type QueryFn } from "../../../src/recall/sync.js";
@@ -184,5 +184,26 @@ describe("cache helpers", () => {
     acquireSyncLock(dir, T0);
     writeFileSync(join(dir, "sync.lock"), "123");
     expect(acquireSyncLock(dir, Date.now() + 11 * 60_000)).toBeTruthy();
+    expect(readdirSync(dir).filter((f) => f.includes("stale"))).toEqual([]);
+  });
+
+  it("a live lock is never taken over, and is left in place", () => {
+    const dir = cacheDir(key, root);
+    const release = acquireSyncLock(dir);
+    expect(acquireSyncLock(dir)).toBeNull();
+    expect(acquireSyncLock(dir, Date.now() + 60_000)).toBeNull();
+    expect(existsSync(join(dir, "sync.lock"))).toBe(true);
+    release!();
+  });
+
+  it("only one of two recoverers takes over a stale lock", () => {
+    const dir = cacheDir(key, root);
+    acquireSyncLock(dir, T0);
+    const later = Date.now() + 11 * 60_000;
+    const first = acquireSyncLock(dir, later);
+    expect(first).toBeTruthy();
+    // The second recoverer sees the first one's fresh lock (mtime = now).
+    expect(acquireSyncLock(dir, Date.now())).toBeNull();
+    first!();
   });
 });
