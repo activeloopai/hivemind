@@ -1,0 +1,22 @@
+{
+  "description": "Hivemind hooks for Claude Code events newer than 2.0.55. Kept out of hooks.json on purpose: Claude Code <= 2.0.55 rejects a hooks file that names an event it does not know, and a rejected hooks.json would disable every Hivemind hook. Listed in .claude-plugin/plugin.json `hooks`, which older versions load per file and skip on error.",
+  "hooks": {
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/recall-on-failure.js\"",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/capture.js\"",
+            "timeout": 15,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -59,6 +59,9 @@ Format: **entity** (type) — what was done with it, its current state>
 ## Key Facts
 <Bullet list of atomic facts that could answer future questions.>
 
+## Errors & Fixes
+<For each error the session hit AND resolved: one bullet with the error line quoted VERBATIM as the tool printed it (no paths, no secrets), then its root cause, then the fix. Format: "- '<exact error line>' — cause: <why> — fix: <what resolved it>". Only errors that were actually fixed; if none, write: none>
+
 ## Files Modified
 <bullet list: path (new/modified/deleted) — what changed>
 

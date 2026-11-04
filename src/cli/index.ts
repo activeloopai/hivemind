@@ -29,6 +29,7 @@ import { runRulesCommand } from "../commands/rules.js";
 import { runGoalCommand } from "../commands/goal.js";
 import { runDocsCommand } from "../commands/docs.js";
 import { runContextCommand } from "../commands/context.js";
+import { runRecallCommand } from "../commands/recall.js";
 import { runBackfillMemory } from "../commands/backfill-memory.js";
 import { runFlushMemory } from "../commands/flush-memory.js";
 import { maybeAutoBackfillMemory } from "../skillify/spawn-backfill-memory-worker.js";
@@ -102,6 +103,13 @@ Usage:
       (default 8123) so the dashboard is reachable via a URL — useful
       over SSH; VS Code / Cursor Remote-SSH auto-forwards the port
       and opens it in the integrated Simple Browser tab on click.
+
+Proactive team recall (local, no embeddings):
+  hivemind recall status | mode [off|shadow|on] | sync [--full]
+                  | search <text> [--error] | stats | clear
+      Look up teammates' summaries when a command fails (and on
+      substantive prompts) and point the agent at their prior fix.
+      Runs against a local cache; shadow mode only logs would-be hits.
 
 Semantic search (embeddings):
   hivemind embeddings install                Download @huggingface/transformers
@@ -534,6 +542,11 @@ async function main(): Promise<void> {
 
   if (cmd === "docs" || cmd === "doc") {
     await runDocsCommand(args.slice(1));
+    return;
+  }
+
+  if (cmd === "recall") {
+    await runRecallCommand(args.slice(1));
     return;
   }
 

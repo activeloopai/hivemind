@@ -15,5 +15,8 @@
     "persistent-memory",
     "shared-memory",
     "agent-memory"
+  ],
+  "hooks": [
+    "./hooks/hooks-tool-failure.json"
   ]
 }
