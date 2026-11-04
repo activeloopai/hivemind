@@ -45,6 +45,12 @@ describe("hooks.json", () => {
     expect(h.timeout).toBeLessThanOrEqual(5);
   });
 
+  it("also runs recall-on-failure synchronously on successful Bash calls (piped failures exit 0)", () => {
+    const g = mainHooks.PostToolUse.find((x: { matcher?: string }) => x.matcher === "Bash");
+    expect(g.hooks).toEqual([expect.objectContaining({ command: expect.stringContaining("recall-on-failure.js"), timeout: 3 })]);
+    expect(g.hooks[0].async).toBeUndefined();
+  });
+
   it("captures failed tool calls asynchronously", () => {
     const h = commands("PostToolUseFailure").find((c: { command: string }) => c.command.includes("capture.js"));
     expect(h?.async).toBe(true);

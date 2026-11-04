@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * Local proactive recall — Claude Code PostToolUseFailure hook.
+ * Local proactive recall — Claude Code PostToolUseFailure hook, plus
+ * PostToolUse for Bash (matcher "Bash" in hooks.json).
+ *
+ * The PostToolUse path exists because agents pipe output (`cmd 2>&1 | tail`):
+ * the pipe exits 0, so a real failure arrives as a SUCCESS. There the hook
+ * only proceeds when the output contains actual error lines; clean output
+ * returns before the index is loaded.
  *
  * When a Bash / MCP tool call fails with a real error (not a grep miss, a user
  * rejection or an Edit mismatch), distill the error text and look it up in the
@@ -19,7 +25,7 @@ import { isHivemindEnabled } from "../dir-config.js";
 import { isHivemindPluginEnabled } from "../utils/plugin-state.js";
 import { log as _log } from "../utils/debug.js";
 import { entrypointPassesOnlyCliGate } from "./shared/capture-gate.js";
-import { classifyFailure, failureKey } from "../recall/error-normalize.js";
+import { classifyFailure, errorTextFromOutput, failureKey } from "../recall/error-normalize.js";
 import { runRecall, emitAdditionalContext } from "./shared/recall-run.js";
 
 const log = (msg: string) => _log("recall-failure", msg);
@@ -27,6 +33,8 @@ const log = (msg: string) => _log("recall-failure", msg);
 interface FailureHookInput {
   session_id?: string;
   cwd?: string;
+  hook_event_name?: string;
+  tool_response?: unknown;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   error?: unknown;
@@ -41,6 +49,14 @@ async function main(): Promise<void> {
   const input = await readStdin<FailureHookInput>();
   if (!isHivemindEnabled(input.cwd ?? process.cwd())) return;
 
+  // PostToolUse = the call "succeeded"; only error lines in its output count.
+  const succeeded = input.hook_event_name === "PostToolUse";
+  if (succeeded) {
+    const hidden = errorTextFromOutput(input.tool_response);
+    if (!hidden) return;
+    input.error = hidden;
+  }
+
   const verdict = classifyFailure(input);
   if (!verdict.worthy) { log(`skip ${verdict.reason} tool=${input.tool_name}`); return; }
 
@@ -52,7 +68,7 @@ async function main(): Promise<void> {
     dedupeKey: `f:${failureKey(verdict.terms)}`,
     gate: input.tool_name,
   }, log);
-  if (ctx) emitAdditionalContext("PostToolUseFailure", ctx);
+  if (ctx) emitAdditionalContext(succeeded ? "PostToolUse" : "PostToolUseFailure", ctx);
 }
 
 main().catch((e) => { log(`fatal: ${e?.message ?? e}`); process.exit(0); });

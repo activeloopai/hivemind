@@ -68,9 +68,11 @@ function errorString(e: unknown): string {
 function scrubLine(line: string): string {
   return markPorts(line)
     .replace(URL_RE, (u) => { try { return new URL(u).hostname; } catch { return ""; } })
+    // Paths before ids: a uuid / timestamp inside a path would otherwise
+    // split it, leaking its directory names into the query.
+    .replace(PATH_RE, (p) => p.split(/[\\/]/).filter(Boolean).pop() ?? "")
     .replace(UUID_RE, " ")
     .replace(ISO_TS_RE, " ")
-    .replace(PATH_RE, (p) => p.split(/[\\/]/).filter(Boolean).pop() ?? "")
     .replace(LINE_COL_RE, " ")
     .replace(HEX_RE, " ")
     .replace(NUMBER_RE, " ")
@@ -118,6 +120,28 @@ export function classifyFailure(input: FailureInput): FailureVerdict {
   const terms = uniqueTerms(query);
   if (terms.length < MIN_QUERY_TERMS) return { worthy: false, reason: "vague" };
   return { worthy: true, query, terms };
+}
+
+// A line that IS an error report (anchored at line start), as opposed to a
+// line that merely mentions the word — grep hits are "path:line: ..." and
+// never match, prose like "no errors found" never matches.
+const ERROR_LINE_RE =
+  /^\s*(?:[A-Za-z_][\w.]*(?:Error|Exception)\b(?::|\s|$)|Error:|ERROR\b|FATAL\b|fatal:|panic:|Traceback \(most recent call last\)|npm ERR!|error(?:\[[A-Z]?\d+\])?:|error [A-Z]+\d+:|E[A-Z]{3,}\b|Caused by:|Segmentation fault|[^\s:()]+\(\d+,\d+\): error |[^\s:]+:\d+:\d+: (?:fatal )?error:)/;
+
+/**
+ * Error text hidden in a SUCCESSFUL Bash result. Agents routinely run
+ * `cmd 2>&1 | tail -50`: the pipe reports exit 0, so Claude Code fires
+ * PostToolUse (not PostToolUseFailure) even though the command failed.
+ * Returns the error lines, or "" when the output looks clean (the common
+ * case — the hook then exits without loading the index).
+ */
+export function errorTextFromOutput(toolResponse: unknown): string {
+  if (!toolResponse || typeof toolResponse !== "object") return "";
+  const r = toolResponse as Record<string, unknown>;
+  const text = [r.stdout, r.stderr].filter((v) => typeof v === "string").join("\n");
+  if (!text) return "";
+  const lines = text.replace(ANSI_RE, "").split(/\r?\n/).filter((l) => ERROR_LINE_RE.test(l));
+  return lines.slice(0, MAX_LINES).join("\n");
 }
 
 /** Stable per-session dedupe key for a distilled failure query. */

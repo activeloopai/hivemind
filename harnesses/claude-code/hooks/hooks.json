@@ -61,6 +61,16 @@
             "async": true
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bundle/recall-on-failure.js\"",
+            "timeout": 3
+          }
+        ]
       }
     ],
     "Stop": [

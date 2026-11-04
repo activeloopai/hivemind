@@ -127,3 +127,52 @@ describe("ports and error-code anchors", () => {
     expect(v.worthy && v.terms).toEqual(expect.arrayContaining(["econnrefused", "port5433"]));
   });
 });
+
+describe("errorTextFromOutput — failures hidden behind a pipe (exit 0)", async () => {
+  const { errorTextFromOutput } = await import("../../../src/recall/error-normalize.js");
+
+  it("finds error lines in stdout of `cmd 2>&1 | tail`", () => {
+    const out = errorTextFromOutput({ stdout: "> build\nError: ENOENT: no such file or directory, open '/w/fixtures/seed.sql'\n    at Object.openSync (node:fs:573:18)\n", stderr: "" });
+    expect(out).toBe("Error: ENOENT: no such file or directory, open '/w/fixtures/seed.sql'");
+  });
+
+  it.each([
+    "Traceback (most recent call last):",
+    "ModuleNotFoundError: No module named 'x'",
+    "npm ERR! code ERESOLVE",
+    "fatal: not a git repository",
+    "src/a.ts(3,5): error TS2345: Argument of type",
+    "error[E0382]: borrow of moved value",
+    "panic: runtime error: index out of range",
+  ])("detects %s", (line) => {
+    expect(errorTextFromOutput({ stdout: `ok\n${line}\n` })).not.toBe("");
+  });
+
+  it.each([
+    "src/x.ts:12:    throw new Error('boom')",
+    "All checks passed, no errors found",
+    "12 passing",
+    "the Error type is exported from errors.ts",
+  ])("ignores clean output: %s", (line) => {
+    expect(errorTextFromOutput({ stdout: line, stderr: "" })).toBe("");
+  });
+
+  it("ignores non-object responses", () => {
+    expect(errorTextFromOutput(undefined)).toBe("");
+    expect(errorTextFromOutput("Error: x")).toBe("");
+  });
+});
+
+describe("errorTextFromOutput — compiler formats", async () => {
+  const { errorTextFromOutput } = await import("../../../src/recall/error-normalize.js");
+  it("detects gcc/clang 'file:line:col: error:'", () => {
+    expect(errorTextFromOutput({ stdout: "main.c:3:5: error: unknown type name 'foo'" })).not.toBe("");
+  });
+});
+
+describe("normalizeErrorText — ids inside paths", () => {
+  it("drops the whole directory even when it contains a uuid", () => {
+    expect(normalizeErrorText("Error: ENOENT: no such file or directory, open '/tmp/c/-home-x/5ccb4e69-a1ea-4d2f-96eb-bbb5efb517d0/flow/fixtures/seed.sql'"))
+      .toBe("Error: ENOENT: no such file or directory, open 'seed.sql'");
+  });
+});

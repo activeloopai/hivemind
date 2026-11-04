@@ -55,6 +55,25 @@ describe("recall-on-failure hook", () => {
     expect(JSON.parse(out[0])).toEqual({ hookSpecificOutput: { hookEventName: "PostToolUseFailure", additionalContext: "CTX" } });
   });
 
+  it("PostToolUse (piped, exit 0): looks up error lines found in the output", async () => {
+    stdinMock.mockResolvedValue({
+      session_id: "s", cwd: "/r/api", hook_event_name: "PostToolUse", tool_name: "Bash",
+      tool_response: { stdout: "Error: connect ECONNREFUSED 127.0.0.1:5432\n", stderr: "" },
+    });
+    const out = await run("recall-on-failure");
+    expect(runRecallMock.mock.calls[0][0].query).toBe("Error: connect ECONNREFUSED port5432");
+    expect(JSON.parse(out[0]).hookSpecificOutput.hookEventName).toBe("PostToolUse");
+  });
+
+  it("PostToolUse with clean output exits without a lookup", async () => {
+    stdinMock.mockResolvedValue({
+      session_id: "s", cwd: "/r/api", hook_event_name: "PostToolUse", tool_name: "Bash",
+      tool_response: { stdout: "12 passing\n", stderr: "" },
+    });
+    expect(await run("recall-on-failure")).toEqual([]);
+    expect(runRecallMock).not.toHaveBeenCalled();
+  });
+
   it("skips noise failures without a lookup", async () => {
     stdinMock.mockResolvedValue({ ...payload, tool_name: "Edit" });
     expect(await run("recall-on-failure")).toEqual([]);
