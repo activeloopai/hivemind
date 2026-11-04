@@ -344,6 +344,23 @@ describe("session-start-setup hook — .hivemind collect:false", () => {
   it("falls back to process.cwd() when stdin has no cwd", async () => {
     stdinMock.mockResolvedValue({ session_id: "sid-1" });
     await runHook();
-    expect(spawnDetachedMock).toHaveBeenCalledTimes(1);
+    const workers = spawnDetachedMock.mock.calls.map(([p]) => String(p).split("/").pop());
+    expect(workers).toEqual(["graph-deps-worker.js", "recall-sync-worker.js"]);
+  });
+});
+
+describe("session-start-setup hook — proactive-recall cache sync", () => {
+  it("spawns the recall-sync worker with the session cwd once logged in", async () => {
+    stdinMock.mockResolvedValue({ session_id: "sid-1", cwd: "/repo/x" });
+    await runHook();
+    const call = spawnDetachedMock.mock.calls.find(([p]) => String(p).endsWith("recall-sync-worker.js"));
+    expect(call?.[1]).toEqual(["/repo/x"]);
+  });
+
+  it("does not spawn the recall-sync worker without credentials", async () => {
+    loadCredsMock.mockReturnValue(null);
+    stdinMock.mockResolvedValue({ session_id: "sid-1", cwd: "/repo/x" });
+    await runHook();
+    expect(spawnDetachedMock.mock.calls.some(([p]) => String(p).endsWith("recall-sync-worker.js"))).toBe(false);
   });
 });

@@ -48,6 +48,11 @@ async function main(): Promise<void> {
   const creds = loadCredentials();
   if (!creds?.token) { log("no credentials"); return; }
 
+  // Refresh the local proactive-recall cache of teammates' summaries. Detached:
+  // the first pull on a large org can take a while, and the worker throttles
+  // itself (default once per 15 min) so this is cheap on every SessionStart.
+  spawnDetachedNodeWorker(join(__bundleDir, "recall-sync-worker.js"), [input.cwd ?? process.cwd()]);
+
   // Backfill userName if missing
   if (!creds.userName) {
     try {

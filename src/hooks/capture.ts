@@ -4,7 +4,7 @@
  * Capture hook — writes each session event as a separate row in the sessions table.
  * One INSERT per event, no concat, no race conditions.
  *
- * Used by: UserPromptSubmit, PostToolUse (async), Stop, SubagentStop
+ * Used by: UserPromptSubmit, PostToolUse / PostToolUseFailure (async), Stop, SubagentStop
  */
 
 import { readStdin } from "../utils/stdin.js";
@@ -39,6 +39,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { getInstalledVersion } from "../utils/version-check.js";
 import { entrypointPassesOnlyCliGate } from "./shared/capture-gate.js";
+import { maybeRefreshRecallCache } from "../recall/sync-trigger.js";
+import { spawnDetachedNodeWorker } from "../utils/spawn-detached.js";
 const log = (msg: string) => _log("capture", msg);
 
 function resolveEmbedDaemonPath(): string {
@@ -72,6 +74,8 @@ interface HookInput {
   tool_input?: Record<string, unknown>;
   tool_response?: Record<string, unknown>;
   tool_use_id?: string;
+  // PostToolUseFailure — no tool_response; the failure text is in `error`.
+  error?: unknown;
   // Stop / SubagentStop
   last_assistant_message?: string;
   stop_hook_active?: boolean;
@@ -89,6 +93,17 @@ async function main(): Promise<void> {
   // configured org/workspace otherwise.
   const config = resolveCaptureConfig(input.cwd ?? process.cwd(), log);
   if (!config) return;
+
+  // Long-running sessions never hit SessionStart again, so refresh the local
+  // proactive-recall cache from here once it is older than the sync interval
+  // (teammates' summaries keep changing during the day). Throttled to a stat
+  // per event; the detached worker does the read-only, incremental pull.
+  if (process.env.HIVEMIND_WIKI_WORKER !== "1") {
+    maybeRefreshRecallCache(
+      { orgId: config.orgId, workspaceId: config.workspaceId, table: config.tableName },
+      input.cwd ?? process.cwd(), __bundleDir, spawnDetachedNodeWorker,
+    );
+  }
 
   // Self-heal the owner record for sessions that were already open before this
   // shipped (SessionStart only records it for new sessions). One /proc walk on
@@ -132,7 +147,11 @@ async function main(): Promise<void> {
       tool_name: input.tool_name,
       tool_use_id: input.tool_use_id,
       tool_input: JSON.stringify(input.tool_input),
-      tool_response: JSON.stringify(input.tool_response),
+      // A failed call has no tool_response; keep its error text in the same
+      // column so the wiki worker (and its "Errors & Fixes" section) sees it.
+      tool_response: JSON.stringify(
+        input.tool_response ?? (input.error !== undefined ? { error: input.error } : undefined),
+      ),
     };
   } else if (input.last_assistant_message !== undefined) {
     log(`assistant session=${input.session_id}`);

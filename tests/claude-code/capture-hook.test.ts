@@ -33,6 +33,7 @@ const queryMock = vi.fn();
 const ensureSessionsTableMock = vi.fn();
 const apiCtorMock = vi.fn();
 const appendSessionEventMock = vi.fn();
+const refreshRecallMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: any[]) => loadConfigMock(...a) }));
@@ -65,6 +66,9 @@ vi.mock("../../src/embeddings/client.js", () => ({
     embed(_text: string, _kind?: string) { return Promise.resolve(null); }
     warmup() { return Promise.resolve(false); }
   },
+}));
+vi.mock("../../src/recall/sync-trigger.js", () => ({
+  maybeRefreshRecallCache: (...a: any[]) => refreshRecallMock(...a),
 }));
 vi.mock("../../src/hooks/session-event-cache.js", () => ({
   appendSessionEvent: (...a: any[]) => appendSessionEventMock(...a),
@@ -112,6 +116,7 @@ beforeEach(() => {
   ensureSessionsTableMock.mockReset().mockResolvedValue(undefined);
   apiCtorMock.mockReset();
   appendSessionEventMock.mockReset();
+  refreshRecallMock.mockReset();
 });
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -231,6 +236,35 @@ describe("capture hook — event-type branches", () => {
     expect(sql).toContain('tool_input');
     expect(sql).toContain('tool_response');
     expect(debugLogMock).toHaveBeenCalledWith(expect.stringMatching(/^tool=Bash session=sid-2$/));
+  });
+
+  it("refreshes the proactive-recall cache mid-session for the routed org/workspace", async () => {
+    await runHook();
+    expect(refreshRecallMock).toHaveBeenCalledTimes(1);
+    const [key, cwd] = refreshRecallMock.mock.calls[0];
+    expect(key).toEqual({ orgId: "o", workspaceId: "default", table: "memory" });
+    expect(cwd).toBe("/workspaces/proj");
+  });
+
+  it("does not refresh the recall cache from inside the wiki worker", async () => {
+    await runHook({ HIVEMIND_WIKI_WORKER: "1" });
+    expect(refreshRecallMock).not.toHaveBeenCalled();
+  });
+
+  it("tool_call (PostToolUseFailure): keeps the error text in tool_response", async () => {
+    stdinMock.mockResolvedValue({
+      session_id: "sid-3",
+      cwd: "/p",
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+      tool_use_id: "tu-2",
+      tool_input: { command: "psql" },
+      error: "Exit code 1\nERROR: table with oid 7 not found",
+    });
+    await runHook();
+    const sql = queryMock.mock.calls[0][0] as string;
+    expect(sql).toContain('"hook_event_name":"PostToolUseFailure"');
+    expect(sql).toMatch(/tool_response[^,]*error[^,]*table with oid 7 not found/);
   });
 
   it("tool_call: masks secrets in the tool input/response before insert + embed", async () => {

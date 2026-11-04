@@ -75,6 +75,16 @@ export default defineConfig({
       // on the new code without having to first bring the whole
       // (~500-file) codebase up to 80%.
       thresholds: {
+        // Local proactive recall (no embeddings). The pure core (tokenizer,
+        // BM25 index, policy, sync) is locked high; the cache / hook-runner
+        // glue has best-effort fs branches, so it sits a notch lower.
+        "src/recall/tokenize.ts": { statements: 95, branches: 90, functions: 95, lines: 95 },
+        "src/recall/lexical-index.ts": { statements: 95, branches: 80, functions: 95, lines: 95 },
+        "src/recall/policy.ts": { statements: 95, branches: 95, functions: 95, lines: 95 },
+        "src/recall/sync.ts": { statements: 90, branches: 80, functions: 95, lines: 90 },
+        "src/recall/error-normalize.ts": { statements: 90, branches: 80, functions: 95, lines: 90 },
+        "src/recall/cache.ts": { statements: 85, branches: 85, functions: 85, lines: 85 },
+        "src/hooks/shared/recall-run.ts": { statements: 80, branches: 70, functions: 75, lines: 80 },
         // PR #302 — feat: per-directory .hivemind config. The resolver is
         // fully unit-tested; the hook gate is exercised via the capture/
         // session-start wiring tests. Lock both at 90.

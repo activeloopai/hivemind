@@ -80,6 +80,11 @@ const ccHooks = [
   { entry: "dist/src/hooks/session-start-setup.js", out: "session-start-setup" },
   { entry: "dist/src/hooks/session-notifications.js", out: "session-notifications" },
   { entry: "dist/src/hooks/capture.js", out: "capture" },
+  // Local proactive recall (src/recall/): two hot-path hooks that only read
+  // the local index, plus the detached worker that syncs it.
+  { entry: "dist/src/hooks/recall-on-prompt.js", out: "recall-on-prompt" },
+  { entry: "dist/src/hooks/recall-on-failure.js", out: "recall-on-failure" },
+  { entry: "dist/src/hooks/recall-sync-worker.js", out: "recall-sync-worker" },
   { entry: "dist/src/hooks/pre-tool-use.js", out: "pre-tool-use" },
   { entry: "dist/src/hooks/session-end.js", out: "session-end" },
   { entry: "dist/src/hooks/plugin-cache-gc.js", out: "plugin-cache-gc" },
