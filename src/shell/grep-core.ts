@@ -623,6 +623,18 @@ export function extractRegexAlternationPrefilters(pattern: string): string[] | n
 }
 
 export function buildGrepSearchOptions(params: GrepMatchParams, targetPath: string): SearchOptions {
+  // `grep -v` wants the lines that do NOT match, so a row that never contains
+  // the pattern is exactly the one it must keep. Skip every content prefilter
+  // and let the line-by-line refinement do the inversion.
+  if (params.invertMatch) {
+    return {
+      pathFilter: buildPathFilter(targetPath),
+      contentScanOnly: true,
+      likeOp: process.env.HIVEMIND_GREP_LIKE === "case-sensitive" ? "LIKE" : "ILIKE",
+      escapedPattern: sqlLike(params.pattern),
+    };
+  }
+
   const hasRegexMeta = !params.fixedString && /[.*+?^${}()|[\]\\]/.test(params.pattern);
   const literalPrefilter = hasRegexMeta ? extractRegexLiteralPrefilter(params.pattern) : null;
   const alternationPrefilters = hasRegexMeta ? extractRegexAlternationPrefilters(params.pattern) : null;
