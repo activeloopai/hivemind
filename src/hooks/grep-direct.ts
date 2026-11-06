@@ -33,12 +33,18 @@ function getEmbedClient(): EmbedClient {
   return sharedEmbedClient;
 }
 
+const MAX_SEMANTIC_ALTERNATIVES = 8;
+
 function patternIsSemanticFriendly(pattern: string, fixedString: boolean): boolean {
   if (!pattern || pattern.length < 2) return false;
   if (fixedString) return true;
-  const meta = pattern.match(/[|()\[\]{}+?^$\\]/g);
-  if (!meta) return true;
-  return meta.length <= 1;
+  // `|` is not counted as a metacharacter: a synonym alternation like
+  // `data loss|concurrent writer|race condition` is exactly the kind of
+  // query embeddings answer best. Cap the number of alternatives so a
+  // pathological many-clause pattern still falls back to lexical.
+  const meta = pattern.match(/[()\[\]{}+?^$\\]/g);
+  if (meta && meta.length > 1) return false;
+  return pattern.split("|").length <= MAX_SEMANTIC_ALTERNATIVES;
 }
 
 export interface GrepParams {
