@@ -614,11 +614,12 @@ export function extractRegexAlternationPrefilters(pattern: string): string[] | n
   if (escaped || !current) return null;
   parts.push(current);
 
-  const literals = [...new Set(
-    parts
-      .map((part) => extractRegexLiteralPrefilter(part))
-      .filter((part): part is string => typeof part === "string" && part.length >= 2),
-  )];
+  const branchLiterals = parts.map((part) => extractRegexLiteralPrefilter(part));
+  // An OR prefilter must retain at least one safe anchor from every branch.
+  // Dropping an unanchored branch would turn it into a false-negative filter.
+  if (branchLiterals.some((literal) => literal === null)) return null;
+
+  const literals = [...new Set(branchLiterals.filter((part): part is string => part !== null))];
   return literals.length > 0 ? literals : null;
 }
 
