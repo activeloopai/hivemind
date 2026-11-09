@@ -2,7 +2,7 @@
 
 **Plan document:** reverse-document worktree spec (inline plan, no PRD file)
 **Audit date:** 2026-06-12
-**Worktree:** `/home/marioaldayuz/Desktop/GitHub/hivemind-doc-reverse-document`
+**Worktree:** `hivemind-doc-reverse-document`
 **Auditor:** quality-guardian
 
 ---

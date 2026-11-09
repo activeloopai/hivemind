@@ -1,7 +1,7 @@
 # Security Audit Report - Cursor Extension Dev
 **Date:** 2026-06-12
 **Auditor:** security-guardian
-**Scope:** `/home/marioaldayuz/Desktop/GitHub/cursor-extension-dev/cursor-extension/src/**` and `src/skillify/agent-roots.ts`
+**Scope:** `cursor-extension-dev/cursor-extension/src/**` and `src/skillify/agent-roots.ts`
 **Stack:** TypeScript / Node.js (VS Code Extension)
 
 ---

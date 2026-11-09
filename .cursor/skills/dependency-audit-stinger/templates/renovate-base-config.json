@@ -1,0 +1,70 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+
+  "_comment_target": "Renovate config for the @deeplake/hivemind npm package (ESM, Node >=22, npm + package-lock.json)",
+
+  "_comment_minimumReleaseAge": "Delay PRs for packages published less than 7 days ago (rush-the-window attack protection, covers the native-dep surface)",
+  "minimumReleaseAge": "7 days",
+
+  "_comment_schedule": "Open update PRs on Monday mornings to batch review",
+  "schedule": ["before 5am on monday"],
+
+  "_comment_lockFileMaintenance": "Weekly PR to refresh package-lock.json within declared semver ranges",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 5am on monday"]
+  },
+
+  "packageRules": [
+    {
+      "_comment": "Automerge devDependencies patch and minor versions (build/test only)",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
+      "_comment": "Group all patch updates into a single PR to keep the stream readable",
+      "matchUpdateTypes": ["patch"],
+      "groupName": "all patch updates",
+      "groupSlug": "all-patch"
+    },
+    {
+      "_comment": "GUARDED: pinned tree-sitter grammars are exact-pinned in package.json overrides. Never automerge; bump manually with a behavioral review and update overrides in the same PR.",
+      "matchPackageNames": [
+        "tree-sitter-c",
+        "tree-sitter-python",
+        "tree-sitter-rust"
+      ],
+      "automerge": false,
+      "minimumReleaseAge": "14 days",
+      "groupName": "pinned tree-sitter grammars (manual review)",
+      "labels": ["dependencies", "native-dep", "review-required"]
+    },
+    {
+      "_comment": "Native install-time deps: hold longer, no automerge - postinstall runs build code on consumers",
+      "matchPackageNames": ["@huggingface/transformers"],
+      "matchPackagePrefixes": ["tree-sitter"],
+      "automerge": false,
+      "minimumReleaseAge": "14 days",
+      "labels": ["dependencies", "native-dep"]
+    },
+    {
+      "_comment": "Never automerge major version bumps anywhere",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ],
+
+  "_comment_prConcurrentLimit": "Limit concurrent Renovate PRs to avoid overwhelming reviewers",
+  "prConcurrentLimit": 5,
+
+  "_comment_labels": "Label Renovate PRs for easy filtering",
+  "labels": ["dependencies", "renovate"],
+
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security", "dependencies"]
+  }
+}
