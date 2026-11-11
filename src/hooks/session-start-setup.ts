@@ -19,6 +19,7 @@ import { EmbedClient } from "../embeddings/client.js";
 import { embeddingsDisabled, embeddingsStatus } from "../embeddings/disable.js";
 import { autoUpdate } from "./shared/autoupdate.js";
 import { spawnDetachedNodeWorker } from "../utils/spawn-detached.js";
+import { maybeSpawnCaptureRecovery } from "../capture-recovery/trigger.js";
 const log = (msg: string) => _log("session-setup", msg);
 
 const __bundleDir = dirname(fileURLToPath(import.meta.url));
@@ -52,6 +53,11 @@ async function main(): Promise<void> {
   // the first pull on a large org can take a while, and the worker throttles
   // itself (default once per 15 min) so this is cheap on every SessionStart.
   spawnDetachedNodeWorker(join(__bundleDir, "recall-sync-worker.js"), [input.cwd ?? process.cwd()]);
+
+  // Upload what earlier sessions missed when their capture hooks stopped
+  // (Claude Code removes an old plugin version even while a long-running
+  // session still uses it). Detached; exits at once when there is no gap.
+  maybeSpawnCaptureRecovery(__bundleDir, input.session_id ?? "", spawnDetachedNodeWorker, { intervalMs: 0 });
 
   // Backfill userName if missing
   if (!creds.userName) {

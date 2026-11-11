@@ -34,6 +34,7 @@ const ensureSessionsTableMock = vi.fn();
 const apiCtorMock = vi.fn();
 const appendSessionEventMock = vi.fn();
 const refreshRecallMock = vi.fn();
+const recoveryMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: any[]) => loadConfigMock(...a) }));
@@ -69,6 +70,9 @@ vi.mock("../../src/embeddings/client.js", () => ({
 }));
 vi.mock("../../src/recall/sync-trigger.js", () => ({
   maybeRefreshRecallCache: (...a: any[]) => refreshRecallMock(...a),
+}));
+vi.mock("../../src/capture-recovery/trigger.js", () => ({
+  maybeSpawnCaptureRecovery: (...a: any[]) => recoveryMock(...a),
 }));
 vi.mock("../../src/hooks/session-event-cache.js", () => ({
   appendSessionEvent: (...a: any[]) => appendSessionEventMock(...a),
@@ -117,6 +121,7 @@ beforeEach(() => {
   apiCtorMock.mockReset();
   appendSessionEventMock.mockReset();
   refreshRecallMock.mockReset();
+  recoveryMock.mockReset();
 });
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -249,6 +254,16 @@ describe("capture hook — event-type branches", () => {
   it("does not refresh the recall cache from inside the wiki worker", async () => {
     await runHook({ HIVEMIND_WIKI_WORKER: "1" });
     expect(refreshRecallMock).not.toHaveBeenCalled();
+    expect(recoveryMock).not.toHaveBeenCalled();
+  });
+
+  it("offers capture-gap recovery for other sessions, excluding this one (throttled default)", async () => {
+    await runHook();
+    expect(recoveryMock).toHaveBeenCalledTimes(1);
+    const [, sessionId, , opts] = recoveryMock.mock.calls[0];
+    expect(typeof sessionId).toBe("string");
+    expect(sessionId.length).toBeGreaterThan(0);
+    expect(opts).toBeUndefined();
   });
 
   it("tool_call (PostToolUseFailure): keeps the error text in tool_response", async () => {

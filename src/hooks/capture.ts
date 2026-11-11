@@ -41,6 +41,7 @@ import { getInstalledVersion } from "../utils/version-check.js";
 import { entrypointPassesOnlyCliGate } from "./shared/capture-gate.js";
 import { maybeRefreshRecallCache } from "../recall/sync-trigger.js";
 import { spawnDetachedNodeWorker } from "../utils/spawn-detached.js";
+import { maybeSpawnCaptureRecovery } from "../capture-recovery/trigger.js";
 const log = (msg: string) => _log("capture", msg);
 
 function resolveEmbedDaemonPath(): string {
@@ -103,6 +104,9 @@ async function main(): Promise<void> {
       { orgId: config.orgId, workspaceId: config.workspaceId, table: config.tableName },
       input.cwd ?? process.cwd(), __bundleDir, spawnDetachedNodeWorker,
     );
+    // Another session's capture may have died (its plugin version removed)
+    // while it keeps running; recover it without waiting for a new session.
+    maybeSpawnCaptureRecovery(__bundleDir, input.session_id ?? "", spawnDetachedNodeWorker);
   }
 
   // Self-heal the owner record for sessions that were already open before this
