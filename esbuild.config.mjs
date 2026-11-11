@@ -85,6 +85,7 @@ const ccHooks = [
   { entry: "dist/src/hooks/recall-on-prompt.js", out: "recall-on-prompt" },
   { entry: "dist/src/hooks/recall-on-failure.js", out: "recall-on-failure" },
   { entry: "dist/src/hooks/recall-sync-worker.js", out: "recall-sync-worker" },
+  { entry: "dist/src/hooks/capture-recovery-worker.js", out: "capture-recovery-worker" },
   { entry: "dist/src/hooks/pre-tool-use.js", out: "pre-tool-use" },
   { entry: "dist/src/hooks/session-end.js", out: "session-end" },
   { entry: "dist/src/hooks/plugin-cache-gc.js", out: "plugin-cache-gc" },

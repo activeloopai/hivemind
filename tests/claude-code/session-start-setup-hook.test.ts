@@ -22,6 +22,7 @@ const ensureSessionsTableMock = vi.fn();
 const autoUpdateMock = vi.fn();
 const embedWarmupMock = vi.fn();
 const spawnDetachedMock = vi.fn();
+const recoveryMock = vi.fn();
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/commands/auth.js", () => ({
@@ -46,6 +47,9 @@ vi.mock("../../src/hooks/shared/autoupdate.js", () => ({
 // native compile can exceed the ~120s hook timeout, so it spawns a DETACHED
 // worker via spawnDetachedNodeWorker. Mock that boundary and assert the hook
 // spawns graph-deps-worker.js (and BEFORE the credentials gate).
+vi.mock("../../src/capture-recovery/trigger.js", () => ({
+  maybeSpawnCaptureRecovery: (...a: any[]) => recoveryMock(...a),
+}));
 vi.mock("../../src/utils/spawn-detached.js", () => ({
   spawnDetachedNodeWorker: (...a: any[]) => spawnDetachedMock(...a),
 }));
@@ -362,5 +366,24 @@ describe("session-start-setup hook — proactive-recall cache sync", () => {
     stdinMock.mockResolvedValue({ session_id: "sid-1", cwd: "/repo/x" });
     await runHook();
     expect(spawnDetachedMock.mock.calls.some(([p]) => String(p).endsWith("recall-sync-worker.js"))).toBe(false);
+  });
+
+  it("always runs capture-gap recovery for other sessions once logged in", async () => {
+    recoveryMock.mockClear();
+    stdinMock.mockResolvedValue({ session_id: "sid-9", cwd: "/repo/x" });
+    await runHook();
+    expect(recoveryMock).toHaveBeenCalledTimes(1);
+    const [bundleDir, sessionId, , opts] = recoveryMock.mock.calls[0];
+    expect(typeof bundleDir).toBe("string");
+    expect(sessionId).toBe("sid-9");
+    expect(opts).toEqual({ intervalMs: 0 });
+  });
+
+  it("does not run recovery without credentials", async () => {
+    recoveryMock.mockClear();
+    loadCredsMock.mockReturnValue(null);
+    stdinMock.mockResolvedValue({ session_id: "sid-9", cwd: "/repo/x" });
+    await runHook();
+    expect(recoveryMock).not.toHaveBeenCalled();
   });
 });

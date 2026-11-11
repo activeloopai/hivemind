@@ -85,6 +85,11 @@ export default defineConfig({
         "src/recall/error-normalize.ts": { statements: 90, branches: 80, functions: 95, lines: 90 },
         "src/recall/cache.ts": { statements: 85, branches: 85, functions: 85, lines: 85 },
         "src/hooks/shared/recall-run.ts": { statements: 80, branches: 70, functions: 75, lines: 80 },
+        // Capture-gap recovery: transcript → events and the gap/recovery loop
+        // are pure or fs-only and fully unit-tested; the worker is verified live.
+        "src/capture-recovery/transcript.ts": { statements: 90, branches: 80, functions: 95, lines: 95 },
+        "src/capture-recovery/recover.ts": { statements: 90, branches: 75, functions: 95, lines: 95 },
+        "src/capture-recovery/trigger.ts": { statements: 90, branches: 75, functions: 60, lines: 90 },
         // PR #302 — feat: per-directory .hivemind config. The resolver is
         // fully unit-tested; the hook gate is exercised via the capture/
         // session-start wiring tests. Lock both at 90.
