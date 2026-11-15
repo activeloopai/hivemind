@@ -1,0 +1,79 @@
+# SBOM Generation + Sigstore Attestation for @deeplake/hivemind
+# Trigger: on tag push (release artifacts only, not every commit)
+# Source: guides/02-sbom-workflow.md, research/external/03-sbom-cyclonedx-spdx-2026.md
+
+name: SBOM
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write        # Required for Sigstore/OIDC attestation
+  attestations: write    # Required for actions/attest-sbom
+
+jobs:
+  sbom:
+    name: Generate and Attest SBOM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22          # package.json engines: node >=22
+
+      # Step 1: Reproducible install + build, then pack the tarball that the
+      # `files` allowlist actually ships. Generate the SBOM from THIS, not the
+      # source tree - otherwise it lists devDependencies that never publish.
+      - name: Install, build, pack
+        run: |
+          npm ci
+          npm run build
+          npm pack            # produces deeplake-hivemind-<version>.tgz
+          mkdir -p sbom-src
+          tar -xzf deeplake-hivemind-*.tgz -C sbom-src   # expands to sbom-src/package
+        shell: bash
+
+      # Step 2: Generate CycloneDX 1.6 JSON SBOM from the packed contents
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0.24.0
+        with:
+          path: ./sbom-src/package
+          format: cyclonedx-json
+          output-file: deeplake-hivemind-sbom.cdx.json
+          artifact-name: sbom-${{ github.ref_name }}.cdx.json
+
+      # Step 3: Sanity-check the SBOM component count
+      - name: Verify SBOM
+        run: |
+          COMPONENT_COUNT=$(node -e "console.log((require('./deeplake-hivemind-sbom.cdx.json').components || []).length)")
+          echo "SBOM component count: $COMPONENT_COUNT"
+          if [ "$COMPONENT_COUNT" -lt 1 ]; then
+            echo "ERROR: SBOM has 0 components - generation likely failed"
+            exit 1
+          fi
+        shell: bash
+
+      # Step 4: Attest the SBOM with Sigstore (GitHub OIDC-backed, no keys)
+      - name: Attest SBOM
+        uses: actions/attest-sbom@v2
+        with:
+          subject-name: ${{ github.repository }}
+          subject-digest: sha256:${{ hashFiles('deeplake-hivemind-sbom.cdx.json') }}
+          sbom-path: deeplake-hivemind-sbom.cdx.json
+
+      # Step 5: Keep the SBOM as a release artifact (extend retention for compliance)
+      - name: Upload SBOM as GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.ref_name }}
+          path: deeplake-hivemind-sbom.cdx.json
+          retention-days: 90    # Increase (max 400) if a compliance horizon requires it

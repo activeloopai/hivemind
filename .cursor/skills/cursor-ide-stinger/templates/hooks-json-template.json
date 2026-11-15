@@ -1,0 +1,32 @@
+{
+  "//": "Cursor 1.7+ ~/.cursor/hooks.json wiring template (matches src/cli/install-cursor.ts).",
+  "//schema": "Array entries under each event are command objects DIRECTLY. No outer { hooks: [...] } wrapper per entry. Fields: type, command, timeout. matcher is a sibling field, used only on preToolUse.",
+  "//paths": "Replace <BUNDLE> with the absolute path to ~/.cursor/hivemind/bundle (forward slashes shown; on Windows install-cursor writes backslashes).",
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      { "type": "command", "command": "node \"<BUNDLE>/session-start.js\"", "timeout": 30 }
+    ],
+    "beforeSubmitPrompt": [
+      { "type": "command", "command": "node \"<BUNDLE>/capture.js\"", "timeout": 10 }
+    ],
+    "preToolUse": [
+      { "type": "command", "command": "node \"<BUNDLE>/pre-tool-use.js\"", "timeout": 30, "matcher": "Shell" }
+    ],
+    "postToolUse": [
+      { "type": "command", "command": "node \"<BUNDLE>/capture.js\"", "timeout": 15 }
+    ],
+    "afterAgentResponse": [
+      { "type": "command", "command": "node \"<BUNDLE>/capture.js\"", "timeout": 15 }
+    ],
+    "stop": [
+      { "type": "command", "command": "node \"<BUNDLE>/capture.js\"", "timeout": 15 },
+      { "type": "command", "command": "node \"<BUNDLE>/graph-on-stop.js\"", "timeout": 30 }
+    ],
+    "sessionEnd": [
+      { "type": "command", "command": "node \"<BUNDLE>/session-end.js\"", "timeout": 30 },
+      { "type": "command", "command": "node \"<BUNDLE>/graph-on-stop.js\"", "timeout": 30 }
+    ]
+  },
+  "_hivemindManaged": { "version": "<HIVEMIND_VERSION>" }
+}

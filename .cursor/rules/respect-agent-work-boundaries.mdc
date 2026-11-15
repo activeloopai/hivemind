@@ -1,0 +1,28 @@
+---
+description: Never modify or delete another agent's active work
+alwaysApply: true
+---
+
+# Respect agent work boundaries
+
+Never modify, delete, move, rename, or overwrite files that are part of another agent's active work. This is a hard rule.
+
+"Another agent's active work" includes anything you did not create yourself in the current task: files produced by parallel subagents, other Cursor sessions, separate worktrees, background jobs, or a human working alongside you. Recently created or untracked files are NOT evidence that a file is yours to remove.
+
+## What to do instead
+
+- Touch only the files your own assigned task owns. Stay inside that scope.
+- If you find unexpected, unfamiliar, incomplete, or "stray-looking" files (broken links, missing siblings, off-topic content), assume they belong to someone else's in-progress work. Leave them exactly as they are.
+- Surface the observation to the user and let them decide. Do not act on the assumption that they are garbage.
+- Only delete or rewrite another agent's files when the user explicitly and specifically authorizes that file's removal.
+
+## Scope claims (numbered artifacts)
+
+When working with numbered or named series (PRDs, migrations, ADRs, issues, tickets), claim only the numbers or names you were explicitly told to create. Do not reclaim, renumber, or repurpose an identifier another agent already used, even if its content looks unrelated to your task.
+
+## Examples
+
+- BAD: A parallel run leaves a `prd-032/` folder with broken links and off-topic content; you delete it as cleanup. (It was another agent's active work.)
+- GOOD: You notice the unexpected `prd-032/`, leave it untouched, and tell the user: "I see a prd-032 I did not create; it looks mid-build. Want me to leave it, or is it safe to remove?"
+- BAD: You `rm -rf` or overwrite a file you did not author because it conflicts with your output.
+- GOOD: You report the conflict and ask how to proceed.
