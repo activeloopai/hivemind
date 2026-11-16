@@ -160,16 +160,14 @@ function handleClass(node: PyNode, relativePath: string, result: FileExtraction,
       /* c8 ignore next */
       if (base === null) continue;
       // Only real base expressions are inheritance: a bare `identifier` (Base)
-      // or a dotted `attribute` (module.Base → use the final name). Skip
-      // `keyword_argument` (metaclass=Meta), *args/**kwargs, comments, etc.
-      // (codex review).
+      // or a dotted `attribute` (module.Base). Skip `keyword_argument`
+      // (metaclass=Meta), *args/**kwargs, comments, etc. (codex review).
+      // A dotted base keeps its FULL qualification (`requests.Session`, not
+      // `Session`) so the shared heritage resolver can't mistake it for a
+      // same-named local class (e.g. `class Session(requests.Session)` → self).
       let baseName: string | null = null;
       if (base.type === "identifier") baseName = base.text;
-      else if (base.type === "attribute") {
-        const attr = base.childForFieldName("attribute");
-        /* c8 ignore next */
-        baseName = attr !== null ? attr.text : null;
-      }
+      else if (base.type === "attribute") baseName = dottedAttributeName(base);
       /* c8 ignore next */
       if (baseName === null || baseName.length === 0) continue;
       result.edges.push({
@@ -214,8 +212,12 @@ function extractImports(node: PyNode, relativePath: string, result: FileExtracti
       if (child === null) continue;
       let modText: string | null = null;
       let local: string | null = null;
+      // Unaliased `import a.b` binds `a` (the top package), NOT `b` — binding
+      // `b` → a.b would fabricate `b.f()` calls. Only a single-segment
+      // `import a` binds a namespace; dotted unaliased imports keep their
+      // `imports` edge but get no binding (conservative, never guessed).
       /* c8 ignore next */
-      if (child.type === "dotted_name") { modText = child.text; local = lastDottedSegment(child.text); }
+      if (child.type === "dotted_name") { modText = child.text; local = child.text.includes(".") ? null : child.text; }
       else if (child.type === "aliased_import") {
         const name = child.childForFieldName("name");
         const alias = child.childForFieldName("alias");
@@ -440,6 +442,21 @@ function firstOfType(node: PyNode, type: string): PyNode | null {
   }
   /* c8 ignore next */
   return null;
+}
+
+/**
+ * `a.b.C` attribute chain → "a.b.C" (whitespace/comments dropped). Returns null
+ * unless every link is a plain identifier (e.g. `f().C`, `m[0].C`), so no
+ * placeholder name is ever guessed from an arbitrary expression.
+ */
+function dottedAttributeName(node: PyNode): string | null {
+  if (node.type === "identifier") return node.text;
+  if (node.type !== "attribute") return null;
+  const obj = node.childForFieldName("object");
+  const attr = node.childForFieldName("attribute");
+  if (obj === null || attr === null) return null;
+  const head = dottedAttributeName(obj);
+  return head !== null ? `${head}.${attr.text}` : null;
 }
 
 function lastDottedSegment(dotted: string): string {
