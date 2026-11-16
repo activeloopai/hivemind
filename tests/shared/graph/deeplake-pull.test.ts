@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -246,10 +246,19 @@ describe("pullSnapshot — outcome resolution", () => {
 
   it("local ts > cloud ts → local-newer (NO overwrite)", async () => {
     mkdirSync(baseDir, { recursive: true });
+    const localSnapshot: GraphSnapshot = {
+      ...FIXTURE_SNAPSHOT,
+      graph: { ...FIXTURE_SNAPSHOT.graph, repo_key: deriveProjectKey(tmpCwd).key },
+      observation: { ...FIXTURE_SNAPSHOT.observation, ts: "2026-06-03T00:00:00.000Z" },
+      nodes: [{ ...FIXTURE_SNAPSHOT.nodes[0]!, label: "local" }],
+    };
+    const snapshotPath = join(baseDir, "snapshots", "head1234abcd.json");
+    mkdirSync(join(baseDir, "snapshots"), { recursive: true });
+    writeFileSync(snapshotPath, canonicalSnapshot(localSnapshot));
     writeLastBuild(baseDir, {
-      ts: 2_000_000_000_000,  // year 2033 in epoch ms
+      ts: Date.parse("2026-06-04T00:00:00.000Z"), // valid sidecar, newer than cloud
       commit_sha: "head1234abcd",
-      snapshot_sha256: "different-local-sha",
+      snapshot_sha256: computeSnapshotSha256(localSnapshot),
       node_count: 1,
       edge_count: 0,
     });
@@ -273,11 +282,11 @@ describe("pullSnapshot — outcome resolution", () => {
     expect(result.kind).toBe("local-newer");
     if (result.kind === "local-newer") {
       expect(result.commitSha).toBe("head1234abcd");
-      expect(result.localTs).toBe(2_000_000_000_000);
+      expect(result.localTs).toBe(Date.parse("2026-06-04T00:00:00.000Z"));
       expect(result.cloudTs).toBeLessThan(result.localTs);
     }
-    // No file written
-    expect(existsSync(join(baseDir, "snapshots", "head1234abcd.json"))).toBe(false);
+    // No snapshot content was overwritten.
+    expect(readFileSync(snapshotPath, "utf8")).toBe(canonicalSnapshot(localSnapshot));
   });
 
   it("local missing → pulls (creates snapshot file + sidecars + history entry)", async () => {
@@ -326,6 +335,206 @@ describe("pullSnapshot — outcome resolution", () => {
     const parsed = JSON.parse(lastLine);
     expect(parsed.trigger).toBe("pull");
     expect(parsed.commit_sha).toBe("head1234abcd");
+  });
+
+  it("preserves a valid newer same-HEAD snapshot when its sidecar is missing", async () => {
+    const localSnapshot: GraphSnapshot = {
+      ...FIXTURE_SNAPSHOT,
+      graph: { ...FIXTURE_SNAPSHOT.graph, repo_key: deriveProjectKey(tmpCwd).key },
+      observation: { ...FIXTURE_SNAPSHOT.observation, ts: "2026-06-03T00:00:00.000Z" },
+      nodes: [{ ...FIXTURE_SNAPSHOT.nodes[0]!, label: "local" }],
+    };
+    const snapshotPath = join(baseDir, "snapshots", "head1234abcd.json");
+    mkdirSync(join(baseDir, "snapshots"), { recursive: true });
+    writeFileSync(snapshotPath, canonicalSnapshot(localSnapshot));
+
+    const { api } = makeMockApi({
+      selectReturns: [{
+        snapshot_jsonb: CLOUD_PAYLOAD,
+        snapshot_sha256: CLOUD_PAYLOAD_SHA,
+        ts: "2026-06-02T00:00:00.000Z",
+        node_count: 1, edge_count: 0,
+        worktree_id: "remote-wt",
+      }],
+    });
+    const result = await pullSnapshot(tmpCwd, {
+      loadConfig: makeConfig,
+      readHead: () => "head1234abcd",
+      makeApi: () => api,
+    });
+
+    expect(result.kind).toBe("local-newer");
+    expect(readFileSync(snapshotPath, "utf8")).toBe(canonicalSnapshot(localSnapshot));
+  });
+
+  it("repairs a same-HEAD snapshot with foreign embedded identity instead of trusting its future observation", async () => {
+    const foreignSnapshot = {
+      ...FIXTURE_SNAPSHOT,
+      graph: {
+        ...FIXTURE_SNAPSHOT.graph,
+        schema_version: 999,
+        generator: "other-generator",
+        repo_key: "WRONG-REPO",
+      },
+      observation: {
+        ...FIXTURE_SNAPSHOT.observation,
+        ts: "2099-06-03T00:00:00.000Z",
+      },
+    } as unknown as GraphSnapshot;
+    const snapshotPath = join(baseDir, "snapshots", "head1234abcd.json");
+    mkdirSync(join(baseDir, "snapshots"), { recursive: true });
+    writeFileSync(snapshotPath, canonicalSnapshot(foreignSnapshot));
+
+    const { api } = makeMockApi({
+      selectReturns: [{
+        snapshot_jsonb: CLOUD_PAYLOAD,
+        snapshot_sha256: CLOUD_PAYLOAD_SHA,
+        ts: "2026-06-02T00:00:00.000Z",
+        node_count: 1, edge_count: 0,
+        worktree_id: "remote-wt",
+      }],
+    });
+    const result = await pullSnapshot(tmpCwd, {
+      loadConfig: makeConfig,
+      readHead: () => "head1234abcd",
+      makeApi: () => api,
+    });
+
+    expect(result.kind).toBe("pulled");
+    expect(readFileSync(snapshotPath, "utf8")).toBe(CLOUD_PAYLOAD);
+  });
+
+  it("does not use a future observation as freshness evidence even with current stable identity", async () => {
+    const futureSnapshot: GraphSnapshot = {
+      ...FIXTURE_SNAPSHOT,
+      graph: { ...FIXTURE_SNAPSHOT.graph, repo_key: deriveProjectKey(tmpCwd).key },
+      observation: { ...FIXTURE_SNAPSHOT.observation, ts: "2099-06-03T00:00:00.000Z" },
+      nodes: [{ ...FIXTURE_SNAPSHOT.nodes[0]!, label: "future-local" }],
+    };
+    const snapshotPath = join(baseDir, "snapshots", "head1234abcd.json");
+    mkdirSync(join(baseDir, "snapshots"), { recursive: true });
+    writeFileSync(snapshotPath, canonicalSnapshot(futureSnapshot));
+
+    const { api } = makeMockApi({
+      selectReturns: [{
+        snapshot_jsonb: CLOUD_PAYLOAD,
+        snapshot_sha256: CLOUD_PAYLOAD_SHA,
+        ts: "2026-06-02T00:00:00.000Z",
+        node_count: 1, edge_count: 0,
+        worktree_id: "remote-wt",
+      }],
+    });
+    const result = await pullSnapshot(tmpCwd, {
+      loadConfig: makeConfig,
+      readHead: () => "head1234abcd",
+      makeApi: () => api,
+    });
+
+    expect(result.kind).toBe("pulled");
+    expect(readFileSync(snapshotPath, "utf8")).toBe(CLOUD_PAYLOAD);
+  });
+
+  it("does not let a matching future sidecar block a newer cloud snapshot", async () => {
+    const cloud: GraphSnapshot = {
+      ...FIXTURE_SNAPSHOT,
+      graph: { ...FIXTURE_SNAPSHOT.graph, repo_key: deriveProjectKey(tmpCwd).key },
+    };
+    const local: GraphSnapshot = {
+      ...cloud,
+      observation: { ...cloud.observation, ts: "2026-06-01T00:00:00.000Z" },
+      nodes: [{ ...cloud.nodes[0]!, label: "older-local" }],
+    };
+    const snapshotPath = join(baseDir, "snapshots", "head1234abcd.json");
+    mkdirSync(join(baseDir, "snapshots"), { recursive: true });
+    writeFileSync(snapshotPath, canonicalSnapshot(local));
+    writeLastBuild(baseDir, {
+      ts: Date.now() + 60_000,
+      commit_sha: "head1234abcd",
+      snapshot_sha256: computeSnapshotSha256(local),
+      node_count: 1, edge_count: 0,
+    }, worktreeIdFromCwd(tmpCwd));
+    const payload = canonicalSnapshot(cloud);
+    const { api } = makeMockApi({ selectReturns: [{
+      snapshot_jsonb: payload, snapshot_sha256: computeSnapshotSha256(cloud),
+      ts: cloud.observation.ts, node_count: 1, edge_count: 0,
+    }] });
+
+    const result = await pullSnapshot(tmpCwd, {
+      loadConfig: makeConfig, readHead: () => "head1234abcd", makeApi: () => api,
+    });
+
+    expect(result.kind).toBe("pulled");
+    expect(readFileSync(snapshotPath, "utf8")).toBe(payload);
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["null", null],
+    ["incomplete", {}],
+  ])("repairs a %s observation despite matching snapshot and sidecar hashes", async (_label, observation) => {
+    const cloud: GraphSnapshot = {
+      ...FIXTURE_SNAPSHOT,
+      graph: { ...FIXTURE_SNAPSHOT.graph, repo_key: deriveProjectKey(tmpCwd).key },
+    };
+    const malformed = { ...cloud, observation };
+    const snapshotPath = join(baseDir, "snapshots", "head1234abcd.json");
+    mkdirSync(join(baseDir, "snapshots"), { recursive: true });
+    writeFileSync(snapshotPath, JSON.stringify(malformed));
+    writeLastBuild(baseDir, {
+      ts: Date.parse(cloud.observation.ts),
+      commit_sha: "head1234abcd",
+      snapshot_sha256: computeSnapshotSha256(cloud),
+      node_count: 1, edge_count: 0,
+    }, worktreeIdFromCwd(tmpCwd));
+    const payload = canonicalSnapshot(cloud);
+    const { api } = makeMockApi({ selectReturns: [{
+      snapshot_jsonb: payload, snapshot_sha256: computeSnapshotSha256(cloud),
+      ts: cloud.observation.ts, node_count: 1, edge_count: 0,
+    }] });
+
+    const result = await pullSnapshot(tmpCwd, {
+      loadConfig: makeConfig, readHead: () => "head1234abcd", makeApi: () => api,
+    });
+
+    expect(result.kind).toBe("pulled");
+    expect(readFileSync(snapshotPath, "utf8")).toBe(payload);
+  });
+
+  it("reconciles a stale inconsistent sidecar before comparing a newer local snapshot", async () => {
+    const localSnapshot: GraphSnapshot = {
+      ...FIXTURE_SNAPSHOT,
+      graph: { ...FIXTURE_SNAPSHOT.graph, repo_key: deriveProjectKey(tmpCwd).key },
+      observation: { ...FIXTURE_SNAPSHOT.observation, ts: "2026-06-03T00:00:00.000Z" },
+      nodes: [{ ...FIXTURE_SNAPSHOT.nodes[0]!, label: "local" }],
+    };
+    const snapshotPath = join(baseDir, "snapshots", "head1234abcd.json");
+    mkdirSync(join(baseDir, "snapshots"), { recursive: true });
+    writeFileSync(snapshotPath, canonicalSnapshot(localSnapshot));
+    writeLastBuild(baseDir, {
+      ts: Date.parse("2026-06-01T00:00:00.000Z"),
+      commit_sha: "head1234abcd",
+      snapshot_sha256: CLOUD_PAYLOAD_SHA,
+      node_count: 1,
+      edge_count: 0,
+    }, worktreeIdFromCwd(tmpCwd));
+
+    const { api } = makeMockApi({
+      selectReturns: [{
+        snapshot_jsonb: CLOUD_PAYLOAD,
+        snapshot_sha256: CLOUD_PAYLOAD_SHA,
+        ts: "2026-06-02T00:00:00.000Z",
+        node_count: 1, edge_count: 0,
+        worktree_id: "remote-wt",
+      }],
+    });
+    const result = await pullSnapshot(tmpCwd, {
+      loadConfig: makeConfig,
+      readHead: () => "head1234abcd",
+      makeApi: () => api,
+    });
+
+    expect(result.kind).toBe("local-newer");
+    expect(readFileSync(snapshotPath, "utf8")).toBe(canonicalSnapshot(localSnapshot));
   });
 
   it("codex P1 regression: local sidecar points at a DIFFERENT commit → ignored, pull proceeds", async () => {
