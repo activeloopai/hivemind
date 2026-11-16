@@ -23,7 +23,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 
 import type { FileExtraction } from "./types.js";
 
@@ -62,7 +62,8 @@ export function cachePath(baseDir: string, contentSha256: string): string {
 
 /**
  * Look up the cached extraction for a given content hash. Returns null on
- * cache miss, malformed entries, or schema-version mismatch. Errors during
+ * cache miss, malformed entries, schema-version mismatch, or when the entry
+ * was extracted under a different file extension. Errors during
  * read are swallowed — a corrupt cache entry must not block the build.
  *
  * The returned extraction's `source_file` is REWRITTEN to the supplied
@@ -113,6 +114,16 @@ export function readCache(
   // to the build pipeline. Returning null here falls through to re-extract,
   // which then writes a fresh well-formed entry. Self-healing.
   if (!validateItems(cached)) {
+    return null;
+  }
+  // The key is content-only, but extractor dispatch and grammar choice depend
+  // on the file extension (.js vs .ts, and .ts vs .tsx pick different
+  // tree-sitter grammars). Identical bytes under a different extension must
+  // re-extract rather than inherit the other language/dialect's result.
+  // Compared case-sensitively: the TS extractor's grammar pick is itself
+  // case-sensitive (.TSX parses with the plain TS grammar), so folding case
+  // here could serve a tsx-grammar entry for a .TSX file.
+  if (extname(cached.source_file) !== extname(relativePath)) {
     return null;
   }
   // Rewrite source_file on every node, every edge id reference, and every
