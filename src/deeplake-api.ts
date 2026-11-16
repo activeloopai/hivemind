@@ -228,9 +228,23 @@ class Semaphore {
   private active = 0;
   constructor(private max: number) {}
 
-  async acquire(): Promise<void> {
+  async acquire(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw new Error("Query aborted");
     if (this.active < this.max) { this.active++; return; }
-    await new Promise<void>(resolve => this.waiting.push(resolve));
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = (): void => {
+        const index = this.waiting.indexOf(grant);
+        if (index < 0) return; // Already granted; query() releases its slot.
+        this.waiting.splice(index, 1);
+        reject(new Error("Query aborted"));
+      };
+      const grant = (): void => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      this.waiting.push(grant);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   release(): void {
@@ -272,7 +286,7 @@ export class DeeplakeApi {
     const startedAt = Date.now();
     const summary = summarizeSql(sql);
     traceSql(`query start: ${summary}`);
-    await this._sem.acquire();
+    await this._sem.acquire(signal);
     try {
       const rows = await this._queryWithRetry(sql, signal);
       traceSql(`query ok (${Date.now() - startedAt}ms, rows=${rows.length}): ${summary}`);
@@ -755,4 +769,3 @@ export class DeeplakeApi {
 export function _resetSdkStateForTesting(): void {
   _signalledBalanceExhausted = false;
 }
-
