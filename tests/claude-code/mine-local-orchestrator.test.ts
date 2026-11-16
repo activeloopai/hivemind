@@ -11,11 +11,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 type SpawnArgs = { bin: string; args: string[] };
 let spawnCalls: SpawnArgs[] = [];
@@ -508,7 +509,7 @@ describe("runMineLocal: orchestrator branches", () => {
       { agent: "codex", sessionRoot: "/c", encodeCwd: () => "x" },
       { agent: "claude_code", sessionRoot: "/cc", encodeCwd: () => "x" },
     ]);
-    listLocalSessions.mockReturnValueOnce([makeSession("a", old, "codex")]);
+    listLocalSessions.mockReturnValueOnce([makeSession("a", old, "codex"), makeSession("b", old, "claude_code")]);
     const mod = await importOrch();
     await mod.runMineLocal(["--dry-run"]);
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Gate CLI: claude_code"));
@@ -698,5 +699,210 @@ describe("happy-path with already-existing skill check (loadExistingSummaries)",
     await mod.runMineLocal([]);
     // The skill is fresh → should be written
     expect(writeNewSkill).toHaveBeenCalled();
+  });
+});
+
+describe("sampling budget is reserved for parseable transcript formats", () => {
+  // nativeJsonlToRows only understands native Claude Code records. Codex
+  // rollouts are discovered by listLocalSessions but always convert to zero
+  // rows, so they must not occupy slots in the N-session budget. These tests
+  // run the REAL pickSessions / nativeJsonlToRows / extractPairs against
+  // isolated tmp transcript files; only discovery and the gate spawn are mocked.
+  let tmpHome: string;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let realSource: typeof import("../../src/skillify/local-source.js");
+
+  const logged = (): string[] => logSpy.mock.calls.map((c: any[]) => String(c[0]));
+
+  function claudeTranscript(id: string, mtime: number, inCwd = false) {
+    const path = join(tmpHome, "claude", `${id}.jsonl`);
+    writeFileSync(path, [
+      JSON.stringify({ type: "user", message: { content: `fix the build in ${id}` }, timestamp: "2026-09-01T00:00:00Z" }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Fixed by pinning the toolchain." }] }, timestamp: "2026-09-01T00:00:01Z" }),
+    ].join("\n") + "\n");
+    return { agent: "claude_code", path, mtime, inCwd, sessionId: id };
+  }
+
+  function codexRollout(id: string, mtime: number) {
+    const path = join(tmpHome, "codex", `${id}.jsonl`);
+    writeFileSync(path, [
+      JSON.stringify({ type: "session_meta", payload: { id } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "refactor the parser" }] } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Refactored." }] } }),
+    ].join("\n") + "\n");
+    return { agent: "codex", path, mtime, inCwd: false, sessionId: id };
+  }
+
+  beforeEach(async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "mine-local-budget-"));
+    setFakeHome(tmpHome);
+    mkdirSync(join(tmpHome, "claude"), { recursive: true });
+    mkdirSync(join(tmpHome, "codex"), { recursive: true });
+    spawnCalls = [];
+    spawnBehavior = { exitCode: 0, stdout: JSON.stringify({ reason: "nothing", skills: [] }) };
+    vi.clearAllMocks();
+
+    realSource = await vi.importActual<typeof import("../../src/skillify/local-source.js")>("../../src/skillify/local-source.js");
+    const realExtractors = await vi.importActual<typeof import("../../src/skillify/extractors/index.js")>("../../src/skillify/extractors/index.js");
+
+    detectInstalledAgents.mockReturnValue([
+      { agent: "codex", sessionRoot: join(tmpHome, "codex"), encodeCwd: () => "__cwd_unknown__" },
+      { agent: "claude_code", sessionRoot: join(tmpHome, "claude"), encodeCwd: () => "x" },
+    ]);
+    detectHostAgent.mockReturnValue("claude_code");
+    listLocalSessions.mockReturnValue([]);
+    pickSessions.mockImplementation(realSource.pickSessions);
+    nativeJsonlToRows.mockImplementation(realSource.nativeJsonlToRows);
+    extractPairs.mockImplementation(realExtractors.extractPairs);
+    findAgentBin.mockReturnValue(process.execPath);
+    resolveSkillsRoot.mockReturnValue(join(tmpHome, "skills"));
+    listSkills.mockReturnValue([]);
+    parseFrontmatter.mockReturnValue({ fm: { description: "" }, body: "" });
+    detectAgentSkillsRoots.mockReturnValue([]);
+    fanOutSymlinks.mockReturnValue([]);
+    readLocalManifest.mockReturnValue(null);
+    writeLocalManifest.mockImplementation(() => {});
+
+    exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`__exit_${code ?? 0}__`);
+    }) as never);
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    clearFakeHome();
+    rmSync(tmpHome, { recursive: true, force: true });
+    process.removeAllListeners("exit");
+  });
+
+  it("newer Codex rollouts do not crowd older Claude sessions out of the budget", async () => {
+    const now = Date.now();
+    const codex = [
+      codexRollout("codex001", now - 2 * 60_000),
+      codexRollout("codex002", now - 3 * 60_000),
+      codexRollout("codex003", now - 4 * 60_000),
+    ];
+    const claude = [
+      claudeTranscript("claude01", now - 10 * 60_000),
+      claudeTranscript("claude02", now - 11 * 60_000),
+    ];
+    const discovered = [...codex, ...claude];
+    // Control: the unfiltered pool really would spend the whole N=2 budget on
+    // Codex — the scenario below is the regression, not a vacuous one.
+    expect(realSource.pickSessions(discovered as any, { n: 2, epsilon: 0.3 }).map(s => s.agent))
+      .toEqual(["codex", "codex"]);
+    // Control: the real converter yields nothing for a Codex rollout.
+    expect(realSource.nativeJsonlToRows(codex[0].path, "codex001", "codex")).toEqual([]);
+
+    listLocalSessions.mockReturnValueOnce(discovered);
+    const mod = await importOrch();
+    await mod.runMineLocal(["--n", "2"]);
+
+    // Discovery still sees every installed agent (unchanged).
+    expect(listLocalSessions.mock.calls[0][0].map((i: any) => i.agent)).toEqual(["codex", "claude_code"]);
+    // The picker only ever saw parseable sessions.
+    expect(pickSessions.mock.calls[0][0].map((s: any) => s.sessionId)).toEqual(["claude01", "claude02"]);
+    expect(nativeJsonlToRows.mock.calls.map((c: any[]) => c[0]).sort()).toEqual(claude.map(s => s.path).sort());
+    // Both Claude sessions reached the gate; none were skipped for lack of pairs.
+    expect(spawnCalls).toHaveLength(2);
+    expect(logged().some(l => l.includes("no usable pairs"))).toBe(false);
+    expect(logged()).toContainEqual(expect.stringContaining("Skipping 3 session(s) from codex"));
+    expect(logged()).toContainEqual(expect.stringContaining("Picking 2 session(s)"));
+    expect(logged().find(l => l.startsWith("Picking"))).toContain("claude01, claude02");
+  });
+
+  it("--only codex exits 1 with an honest unsupported-format message before discovery or gating", async () => {
+    const mod = await importOrch();
+    await expect(mod.runMineLocal(["--only", "codex"])).rejects.toThrow("__exit_1__");
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("cannot parse 'codex' transcripts yet"));
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("supported: claude_code"));
+    // Not misreported as a missing Claude Code gate.
+    expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining("requires the Claude Code CLI"));
+    expect(listLocalSessions).not.toHaveBeenCalled();
+    expect(pickSessions).not.toHaveBeenCalled();
+    expect(spawnCalls).toHaveLength(0);
+    expect(writeLocalManifest).not.toHaveBeenCalled();
+  });
+
+  it("--only codex --dry-run is rejected the same way (no plan claiming Codex can be mined)", async () => {
+    detectInstalledAgents.mockReturnValueOnce([
+      { agent: "codex", sessionRoot: join(tmpHome, "codex"), encodeCwd: () => "__cwd_unknown__" },
+    ]);
+    const mod = await importOrch();
+    await expect(mod.runMineLocal(["--only", "codex", "--dry-run"])).rejects.toThrow("__exit_1__");
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("cannot parse 'codex' transcripts yet"));
+    expect(logged().some(l => l.startsWith("Dry-run"))).toBe(false);
+  });
+
+  it("--only claude_code still mines Claude sessions", async () => {
+    const now = Date.now();
+    const claude = claudeTranscript("claude01", now - 10 * 60_000);
+    listLocalSessions.mockReturnValueOnce([claude]);
+    const mod = await importOrch();
+    await mod.runMineLocal(["--only", "claude_code"]);
+    expect(listLocalSessions.mock.calls[0][0].map((i: any) => i.agent)).toEqual(["claude_code"]);
+    expect(spawnCalls).toHaveLength(1);
+    expect(logged().some(l => l.startsWith("Skipping"))).toBe(false);
+  });
+
+  it("zero eligible sessions (Codex only) exits 1 without picking, gating or writing a manifest", async () => {
+    const now = Date.now();
+    listLocalSessions.mockReturnValueOnce([
+      codexRollout("codex001", now - 2 * 60_000),
+      codexRollout("codex002", now - 3 * 60_000),
+    ]);
+    const mod = await importOrch();
+    await expect(mod.runMineLocal([])).rejects.toThrow("__exit_1__");
+    expect(logged()).toContainEqual(expect.stringContaining("Skipping 2 session(s) from codex"));
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("No sessions in a supported transcript format"));
+    expect(pickSessions).not.toHaveBeenCalled();
+    expect(nativeJsonlToRows).not.toHaveBeenCalled();
+    expect(spawnCalls).toHaveLength(0);
+    expect(writeLocalManifest).not.toHaveBeenCalled();
+  });
+
+  it("zero eligible sessions exits 1 under --dry-run as well", async () => {
+    listLocalSessions.mockReturnValueOnce([codexRollout("codex001", Date.now() - 2 * 60_000)]);
+    const mod = await importOrch();
+    await expect(mod.runMineLocal(["--dry-run"])).rejects.toThrow("__exit_1__");
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("No sessions in a supported transcript format"));
+    expect(logged().some(l => l.startsWith("Dry-run"))).toBe(false);
+  });
+
+  it("default dry-run with only Claude sessions is unchanged: same pool, no skip line, no gate", async () => {
+    const now = Date.now();
+    const claude = [
+      claudeTranscript("claude01", now - 10 * 60_000, true),
+      claudeTranscript("claude02", now - 11 * 60_000),
+    ];
+    listLocalSessions.mockReturnValueOnce(claude);
+    const mod = await importOrch();
+    await mod.runMineLocal(["--dry-run"]);
+    expect(pickSessions.mock.calls[0][0]).toEqual(claude);
+    expect(pickSessions.mock.calls[0][1]).toEqual({ n: 8, epsilon: 0.3 });
+    expect(logged().some(l => l.startsWith("Skipping"))).toBe(false);
+    expect(logged()).toContainEqual(expect.stringContaining("Found 2 local session(s) (1 in cwd)"));
+    expect(logged()).toContainEqual(expect.stringContaining("Dry-run: would invoke claude_code gate on 2 session(s)"));
+    expect(spawnCalls).toHaveLength(0);
+    expect(nativeJsonlToRows).not.toHaveBeenCalled();
+  });
+
+  it("--n all counts only eligible sessions", async () => {
+    const now = Date.now();
+    listLocalSessions.mockReturnValueOnce([
+      codexRollout("codex001", now - 2 * 60_000),
+      claudeTranscript("claude01", now - 10 * 60_000),
+      claudeTranscript("claude02", now - 11 * 60_000),
+    ]);
+    const mod = await importOrch();
+    await mod.runMineLocal(["--n", "all", "--dry-run"]);
+    expect(pickSessions.mock.calls[0][1].n).toBe(2);
+    expect(logged()).toContainEqual(expect.stringContaining("Dry-run: would invoke claude_code gate on 2 session(s)"));
   });
 });

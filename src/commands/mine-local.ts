@@ -179,6 +179,18 @@ function runGateViaStdin(opts: {
 const loadManifest = readLocalManifest;
 const saveManifest = writeLocalManifest;
 
+// Agents whose native transcript format nativeJsonlToRows can convert.
+// Only Claude Code's record shape is parsed today; other agents' files
+// (e.g. Codex rollouts) are still discovered but always yield zero rows,
+// so letting them into the picker spends the sampling budget on sessions
+// that are dropped as "no usable pairs" without a replacement.
+const PARSEABLE_TRANSCRIPT_AGENTS: ReadonlySet<string> = new Set(["claude_code"]);
+
+/** True when mine-local can convert this agent's native transcripts to rows. */
+export function hasParseableTranscripts(agent: string): boolean {
+  return PARSEABLE_TRANSCRIPT_AGENTS.has(agent);
+}
+
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return s.slice(0, max) + `\n[…truncated ${s.length - max} chars]`;
@@ -525,6 +537,10 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
     process.exit(1);
   }
   console.log(`Detected installed agents: ${installs.map(i => i.agent).join(", ")}${onlyAgent ? ` (filtered to ${onlyAgent})` : ""}`);
+  if (onlyAgent && !hasParseableTranscripts(onlyAgent)) {
+    console.error(`mine-local cannot parse '${onlyAgent}' transcripts yet (supported: ${[...PARSEABLE_TRANSCRIPT_AGENTS].join(", ")}). Skipping mine-local.`);
+    process.exit(1);
+  }
 
   const host = detectHostAgent();
   const fallback = installs[0].agent;
@@ -556,13 +572,26 @@ async function runMineLocalImpl(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // Filter to parseable formats BEFORE picking so unsupported sessions
+  // can't crowd supported ones out of the N-session budget.
+  const eligibleSessions = allSessions.filter(s => hasParseableTranscripts(s.agent));
+  const unsupported = allSessions.length - eligibleSessions.length;
+  if (unsupported > 0) {
+    const agents = [...new Set(allSessions.filter(s => !hasParseableTranscripts(s.agent)).map(s => s.agent))];
+    console.log(`Skipping ${unsupported} session(s) from ${agents.join(", ")} — transcript format not yet supported by mine-local.`);
+  }
+  if (eligibleSessions.length === 0) {
+    console.error(`No sessions in a supported transcript format (supported: ${[...PARSEABLE_TRANSCRIPT_AGENTS].join(", ")}).`);
+    process.exit(1);
+  }
+
   const n = nRaw === "all"
-    ? allSessions.length
+    ? eligibleSessions.length
     : nRaw
       ? Math.max(1, parseInt(nRaw, 10) || DEFAULT_N)
       : DEFAULT_N;
 
-  const picked = pickSessions(allSessions, { n, epsilon: EPSILON });
+  const picked = pickSessions(eligibleSessions, { n, epsilon: EPSILON });
   console.log(`Picking ${picked.length} session(s) (ε=${EPSILON}, N=${n}): ${picked.map(s => s.sessionId.slice(0, 8)).join(", ")}`);
 
   if (dryRun) {
