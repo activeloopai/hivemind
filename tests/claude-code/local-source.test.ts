@@ -64,6 +64,18 @@ describe("pickSessions", () => {
     expect(picked.filter(s => !s.inCwd)).toHaveLength(3);
   });
 
+  it("reserves the global quota for non-cwd sessions even when cwd sessions are newer", () => {
+    // The global phase must sample outside the current project. Before the
+    // regression fix it accepted any unpicked row, so these newer cwd rows
+    // consumed the quota and no cross-project session was selected.
+    const cwd = Array.from({ length: 10 }, (_, i) => makeSession(`c${i}`, 100 - i, true));
+    const global_ = Array.from({ length: 3 }, (_, i) => makeSession(`g${i}`, 50 - i, false));
+    const picked = pickSessions([...cwd, ...global_], { n: 10, epsilon: 0.3 });
+    expect(picked).toHaveLength(10);
+    expect(picked.filter(s => s.inCwd)).toHaveLength(7);
+    expect(picked.filter(s => !s.inCwd)).toHaveLength(3);
+  });
+
   it("dedup by path: same file never appears twice across phases", () => {
     // A path appears in both buckets (shouldn't happen in practice, but the
     // contract says dedup by absolute path).
@@ -379,4 +391,3 @@ describe("detectInstalledAgents + detectHostAgent + encodeCwdClaudeCode", () => 
     expect(mod.detectHostAgent()).toBeNull();
   });
 });
-
