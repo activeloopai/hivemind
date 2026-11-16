@@ -12,6 +12,7 @@ import {
   ensureGitignoreEntries,
   localDocPath,
   pullDocs,
+  pullContextKey,
   readPullManifest,
   writePullManifest,
   GITIGNORE_ENTRIES,
@@ -28,6 +29,15 @@ function makeQuery(rows: Array<Record<string, unknown>>) {
 const row = (doc_id: string, content: string, updated_at: string, status = "active") => ({
   id: `${P}|main|${doc_id}`, doc_id, content, status, updated_at,
 });
+
+const rowForContext = (
+  project: string,
+  scope: string,
+  doc_id: string,
+  content: string,
+  updated_at: string,
+  status = "active",
+) => ({ id: `${project}|${scope}|${doc_id}`, doc_id, content, status, updated_at });
 
 describe("localDocPath", () => {
   it("wiki pages and file docs materialize in DISTINCT namespaces (no collision)", () => {
@@ -68,7 +78,11 @@ describe("pullDocs", () => {
   });
 
   it("delta protocol: the cursor bounds the next read; --force ignores it", async () => {
-    writePullManifest(dir, { cursor: "2026-07-08T11:00:00Z" });
+    writePullManifest(dir, {
+      cursor: "2026-07-08T11:00:00Z",
+      contexts: { [pullContextKey(P, "main")]: "2026-07-08T11:00:00Z" },
+      activeContext: pullContextKey(P, "main"),
+    });
     const { calls, query } = makeQuery([]);
     await pullDocs({ query, tableName: "hivemind_docs", repoRoot: dir, project: P });
     // INCLUSIVE (>=): a strict > would skip a doc written with exactly the
@@ -76,6 +90,67 @@ describe("pullDocs", () => {
     expect(calls[0]).toContain(`updated_at >= '2026-07-08T11:00:00Z'`);
     await pullDocs({ query, tableName: "hivemind_docs", repoRoot: dir, project: P, force: true });
     expect(calls[1]).not.toContain("updated_at >=");
+  });
+
+  it("does not apply one project's or branch's cursor to another pull context", async () => {
+    const featureRow = {
+      id: `${P}|b:feature|src/feature.ts`,
+      doc_id: "src/feature.ts",
+      content: "# Feature doc",
+      status: "active",
+      updated_at: "2026-07-08T09:00:00Z",
+    };
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes(`${P}|main|`)) return [row("src/main.ts", "# Main doc", "2026-07-08T10:00:00Z")];
+      if (sql.includes(`${P}|b:feature|`) && sql.includes("updated_at >=")) return [];
+      if (sql.includes(`${P}|b:feature|`)) return [featureRow];
+      return [];
+    });
+
+    await pullDocs({ query, tableName: "hivemind_docs", repoRoot: dir, project: P, scope: "main" });
+    const report = await pullDocs({ query, tableName: "hivemind_docs", repoRoot: dir, project: P, scope: "b:feature" });
+
+    expect(report.written).toEqual(["src/feature.ts.hivemind.md"]);
+    expect(readFileSync(join(dir, "src/feature.ts.hivemind.md"), "utf-8")).toBe("# Feature doc\n");
+  });
+
+  it("rematerializes a previously visited context after another context overwrites a shared path", async () => {
+    const rows = [
+      rowForContext("project-a", "main", "src/shared.ts", "# A shared", "2026-09-22T10:00:00Z"),
+      rowForContext("project-a", "main", "src/anchor.ts", "# A anchor", "2026-09-22T11:00:00Z"),
+      rowForContext("project-b", "b:feature", "src/shared.ts", "# B shared", "2026-09-22T09:00:00Z"),
+    ];
+    const calls: string[] = [];
+    const query = vi.fn(async (sql: string) => {
+      calls.push(sql);
+      const prefix = sql.match(/id LIKE '([^']*)%/)?.[1] ?? "";
+      const cursor = sql.match(/updated_at >= '([^']*)'/)?.[1] ?? "";
+      return rows.filter((candidate) =>
+        candidate.id.startsWith(prefix) && (cursor === "" || candidate.updated_at >= cursor),
+      );
+    });
+
+    await pullDocs({ query, tableName: "hivemind_docs", repoRoot: dir, project: "project-a", scope: "main" });
+    await pullDocs({ query, tableName: "hivemind_docs", repoRoot: dir, project: "project-b", scope: "b:feature" });
+    await pullDocs({ query, tableName: "hivemind_docs", repoRoot: dir, project: "project-a", scope: "main" });
+
+    expect(calls.at(-1)).not.toContain("updated_at >=");
+    expect(readFileSync(join(dir, "src/shared.ts.hivemind.md"), "utf-8")).toBe("# A shared\n");
+    expect(readFileSync(join(dir, "src/anchor.ts.hivemind.md"), "utf-8")).toBe("# A anchor\n");
+    expect(readPullManifest(dir).activeContext).toBe(pullContextKey("project-a", "main"));
+  });
+
+  it("fails safe with a full read when context ownership metadata is ambiguous", async () => {
+    writePullManifest(dir, {
+      cursor: "2026-09-22T11:00:00Z",
+      contexts: { [pullContextKey(P, "main")]: "2026-09-22T11:00:00Z" },
+    });
+    const { calls, query } = makeQuery([row("src/older.ts", "# Older doc", "2026-09-22T10:00:00Z")]);
+
+    await pullDocs({ query, tableName: "hivemind_docs", repoRoot: dir, project: P });
+
+    expect(calls[0]).not.toContain("updated_at >=");
+    expect(readFileSync(join(dir, "src/older.ts.hivemind.md"), "utf-8")).toBe("# Older doc\n");
   });
 
   it("is deterministic and mtime-stable: an unchanged doc is not rewritten", async () => {
