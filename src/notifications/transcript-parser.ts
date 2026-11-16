@@ -113,6 +113,10 @@ export function parseTranscript(
       continue;
     }
 
+    // Syntactically valid JSON is not necessarily a transcript record.
+    // Skip non-objects individually, just like malformed JSON lines.
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+
     if (typeof entry.timestamp === "string") endedAt = entry.timestamp;
     if (typeof entry.sessionId === "string" && entry.sessionId) sessionId = entry.sessionId;
 
