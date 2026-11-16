@@ -18,8 +18,9 @@
 
 import {
   readFileSync, writeFileSync, writeSync, mkdirSync, renameSync, rmdirSync,
-  existsSync, lstatSync, unlinkSync, openSync, closeSync,
+  existsSync, fstatSync, lstatSync, unlinkSync, openSync, closeSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { log as _log } from "../utils/debug.js";
 import { normalizeGitRemoteUrl, deriveProjectKey } from "../utils/repo-identity.js";
@@ -58,6 +59,62 @@ function lockPath(projectKey: string): string {
   return join(getStateDir(), `${projectKey}.lock`);
 }
 
+interface LockObservation {
+  marker: string;
+  dev: number;
+  ino: number;
+}
+
+type LockOwner =
+  | { state: "alive"; pid: number }
+  | { state: "dead"; pid: number }
+  | { state: "unknown"; pid?: number };
+
+function observeLock(path: string): LockObservation | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, "r");
+    const stat = fstatSync(fd);
+    return { marker: readFileSync(fd, "utf-8"), dev: stat.dev, ino: stat.ino };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+function sameObservedLock(path: string, observed: LockObservation): boolean {
+  try {
+    const stat = lstatSync(path);
+    return stat.dev === observed.dev
+      && stat.ino === observed.ino
+      && readFileSync(path, "utf-8") === observed.marker;
+  } catch {
+    return false;
+  }
+}
+
+function lockOwner(observed: LockObservation): LockOwner {
+  // Accept PID-only markers written by the first ownership-aware release and
+  // PID + UUID markers written by this release. Anything else is unknown.
+  const match = observed.marker.match(
+    /^([1-9]\d*)(?: [0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})?(?:\r?\n)?$/i,
+  );
+  if (!match) return { state: "unknown" };
+  const pid = Number(match[1]);
+  if (!Number.isSafeInteger(pid)) return { state: "unknown" };
+  try {
+    process.kill(pid, 0);
+    return { state: "alive", pid };
+  } catch (e: any) {
+    // Only ESRCH proves that the recorded owner is gone. EPERM and every
+    // other failure leave ownership unknown and must fail closed.
+    return e?.code === "ESRCH"
+      ? { state: "dead", pid }
+      : { state: "unknown", pid };
+  }
+}
+
 export function readState(projectKey: string): SkillifyState | null {
   // Workers call readState() first to find the session watermark. Without
   // migration here, a post-rename run sees an empty `skillify/` dir while
@@ -87,16 +144,55 @@ export function withRmwLock<T>(projectKey: string, fn: () => T): T {
   mkdirSync(getStateDir(), { recursive: true });
   const rmw = lockPath(projectKey) + ".rmw";
   const deadline = Date.now() + 2000;
+  const marker = `${process.pid} ${randomUUID()}\n`;
   let fd: number | null = null;
+  let held: LockObservation | null = null;
+  let recoveryAttempted = false;
   while (fd === null) {
     try {
-      fd = openSync(rmw, "wx");
+      const opened = openSync(rmw, "wx");
+      let identity: Pick<LockObservation, "dev" | "ino"> | null = null;
+      try {
+        const stat = fstatSync(opened);
+        identity = { dev: stat.dev, ino: stat.ino };
+        writeFileSync(opened, marker);
+        held = { marker, ...identity };
+      } catch (e) {
+        closeSync(opened);
+        try {
+          const current = lstatSync(rmw);
+          if (identity && current.dev === identity.dev && current.ino === identity.ino) unlinkSync(rmw);
+        } catch { /* best effort */ }
+        throw e;
+      }
+      fd = opened;
     } catch (e: any) {
       if (e.code !== "EEXIST") throw e;
       if (Date.now() > deadline) {
-        dlog(`rmw lock deadline exceeded for ${projectKey}, reclaiming stale lock`);
+        if (recoveryAttempted) {
+          throw new Error(`timed out acquiring RMW lock for ${projectKey}; lock changed during stale recovery`);
+        }
+        recoveryAttempted = true;
+        const observed = observeLock(rmw);
+        if (!observed) {
+          throw new Error(`timed out acquiring RMW lock for ${projectKey}; owner could not be determined`);
+        }
+        const owner = lockOwner(observed);
+        if (owner.state === "alive") {
+          throw new Error(`timed out acquiring RMW lock for ${projectKey}; owner ${owner.pid} is still running`);
+        }
+        if (owner.state === "unknown") {
+          const detail = owner.pid === undefined ? "owner could not be determined" : `owner ${owner.pid} could not be proven dead`;
+          throw new Error(`timed out acquiring RMW lock for ${projectKey}; ${detail}`);
+        }
+        if (!sameObservedLock(rmw, observed)) {
+          throw new Error(`timed out acquiring RMW lock for ${projectKey}; lock changed during stale recovery`);
+        }
+        dlog(`rmw lock deadline exceeded for ${projectKey}, reclaiming dead owner ${owner.pid}`);
         try { unlinkSync(rmw); } catch (unlinkErr: any) {
+          if (unlinkErr?.code === "ENOENT") continue;
           dlog(`stale rmw lock unlink failed for ${projectKey}: ${unlinkErr.message}`);
+          throw new Error(`timed out acquiring RMW lock for ${projectKey}; stale lock could not be reclaimed`);
         }
         continue;
       }
@@ -106,8 +202,12 @@ export function withRmwLock<T>(projectKey: string, fn: () => T): T {
   try { return fn(); }
   finally {
     closeSync(fd);
-    try { unlinkSync(rmw); } catch (unlinkErr: any) {
-      dlog(`rmw lock cleanup failed for ${projectKey}: ${unlinkErr.message}`);
+    if (held && sameObservedLock(rmw, held)) {
+      try { unlinkSync(rmw); } catch (unlinkErr: any) {
+        dlog(`rmw lock cleanup failed for ${projectKey}: ${unlinkErr.message}`);
+      }
+    } else {
+      dlog(`rmw lock marker changed before cleanup for ${projectKey}; leaving successor intact`);
     }
   }
 }
