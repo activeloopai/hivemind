@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,6 +10,7 @@ import {
   sumMetric,
   type UsageRecord,
 } from "../../src/notifications/usage-tracker.js";
+import { parseTranscript } from "../../src/notifications/transcript-parser.js";
 import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
 let TEMP_HOME = "";
@@ -136,6 +137,108 @@ describe("usage-tracker — append/read", () => {
       "utf-8",
     );
     expect(readUsageRecords().map(r => r.sessionId)).toEqual(["only-real"]);
+  });
+});
+
+describe("usage-tracker — resumed sessions (one cumulative record per session)", () => {
+  it("keeps only the last record for a repeated nonempty sessionId", () => {
+    appendUsageRecord(rec({ sessionId: "resumed", endedAt: "2026-05-13T01:00:00Z", memorySearchBytes: 1000, memorySearchCount: 1 }));
+    appendUsageRecord(rec({ sessionId: "resumed", endedAt: "2026-05-13T02:00:00Z", memorySearchBytes: 2500, memorySearchCount: 3 }));
+    const records = readUsageRecords();
+    expect(records).toEqual([
+      { endedAt: "2026-05-13T02:00:00Z", sessionId: "resumed", memorySearchBytes: 2500, memorySearchCount: 3 },
+    ]);
+    expect(sumMetric(records, "memorySearchBytes")).toBe(2500);
+    expect(sumMetric(records, "memorySearchCount")).toBe(3);
+  });
+
+  it("storage stays append-only: every snapshot line is still on disk", () => {
+    appendUsageRecord(rec({ sessionId: "resumed", memorySearchBytes: 1000 }));
+    appendUsageRecord(rec({ sessionId: "resumed", memorySearchBytes: 2500 }));
+    const lines = readFileSync(statsFilePath(), "utf-8").split("\n").filter(Boolean);
+    expect(lines).toHaveLength(2);
+  });
+
+  it("preserves distinct sessions and orders by each session's last record", () => {
+    appendUsageRecord(rec({ sessionId: "a", memorySearchBytes: 100, memorySearchCount: 1 }));
+    appendUsageRecord(rec({ sessionId: "b", memorySearchBytes: 200, memorySearchCount: 2 }));
+    appendUsageRecord(rec({ sessionId: "a", memorySearchBytes: 300, memorySearchCount: 4 }));
+    const records = readUsageRecords();
+    expect(records.map(r => [r.sessionId, r.memorySearchBytes])).toEqual([["b", 200], ["a", 300]]);
+    expect(sumMetric(records, "memorySearchBytes")).toBe(500);
+    expect(sumMetric(records, "memorySearchCount")).toBe(6);
+  });
+
+  it("keeps records with an empty sessionId independently (unknown sessions are not conflated)", () => {
+    appendUsageRecord(rec({ sessionId: "", memorySearchBytes: 10, memorySearchCount: 1 }));
+    appendUsageRecord(rec({ sessionId: "", memorySearchBytes: 20, memorySearchCount: 1 }));
+    appendUsageRecord(rec({ sessionId: "known", memorySearchBytes: 30, memorySearchCount: 1 }));
+    const records = readUsageRecords();
+    expect(records.map(r => [r.sessionId, r.memorySearchBytes])).toEqual([["", 10], ["", 20], ["known", 30]]);
+  });
+
+  it("an invalid later line does not displace the last valid record for the session", () => {
+    const file = join(TEMP_HOME, ".deeplake", "usage-stats.jsonl");
+    mkdirSync(join(TEMP_HOME, ".deeplake"));
+    const first = JSON.stringify(rec({ sessionId: "resumed", memorySearchBytes: 1000 }));
+    const second = JSON.stringify(rec({ sessionId: "resumed", memorySearchBytes: 2500 }));
+    const invalid = JSON.stringify({ sessionId: "resumed", memorySearchBytes: 99999 }); // no endedAt
+    writeFileSync(file, `${first}\n${second}\n${invalid}\nnot-json\n`, "utf-8");
+    const records = readUsageRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].memorySearchBytes).toBe(2500);
+  });
+
+  it("dedup keeps missing-counter compatibility for the last legacy snapshot", () => {
+    const file = join(TEMP_HOME, ".deeplake", "usage-stats.jsonl");
+    mkdirSync(join(TEMP_HOME, ".deeplake"));
+    const first = JSON.stringify(rec({ sessionId: "legacy", memorySearchBytes: 1000, memorySearchCount: 2 }));
+    const legacy = JSON.stringify({ endedAt: "2026-05-14T00:00:00Z", sessionId: "legacy", memorySearchBytes: 1500 });
+    writeFileSync(file, `${first}\n${legacy}\n`, "utf-8");
+    expect(readUsageRecords()).toEqual([
+      { endedAt: "2026-05-14T00:00:00Z", sessionId: "legacy", memorySearchBytes: 1500, memorySearchCount: 0 },
+    ]);
+  });
+
+  it("lifecycle: parseTranscript → appendUsageRecord across two SessionEnds → readUsageRecords counts once", () => {
+    const transcript = join(TEMP_HOME, "transcript.jsonl");
+    const toolUse = (id: string, ts: string) => ({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id, name: "Bash", input: { command: "grep -r foo ~/.deeplake/memory/" } }],
+      },
+      timestamp: ts,
+      sessionId: "real-session",
+    });
+    const toolResult = (id: string, content: string, ts: string) => ({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content }] },
+      timestamp: ts,
+      sessionId: "real-session",
+    });
+    const toJsonl = (lines: object[]) => lines.map(l => JSON.stringify(l)).join("\n") + "\n";
+
+    // First SessionEnd: one memory lookup returning 100 bytes.
+    writeFileSync(transcript, toJsonl([
+      toolUse("t1", "2026-05-13T10:00:00Z"),
+      toolResult("t1", "a".repeat(100), "2026-05-13T10:00:05Z"),
+    ]), "utf-8");
+    appendUsageRecord(parseTranscript(transcript, "fallback"));
+
+    // Resume: the transcript grows, and SessionEnd re-parses the whole file.
+    appendFileSync(transcript, toJsonl([
+      toolUse("t2", "2026-05-13T11:00:00Z"),
+      toolResult("t2", "b".repeat(250), "2026-05-13T11:00:05Z"),
+    ]), "utf-8");
+    appendUsageRecord(parseTranscript(transcript, "fallback"));
+
+    const records = readUsageRecords();
+    expect(records).toEqual([
+      { endedAt: "2026-05-13T11:00:05Z", sessionId: "real-session", memorySearchBytes: 350, memorySearchCount: 2 },
+    ]);
+    expect(sumMetric(records, "memorySearchBytes")).toBe(350);
+    expect(sumMetric(records, "memorySearchCount")).toBe(2);
   });
 });
 
