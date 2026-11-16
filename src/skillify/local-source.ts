@@ -209,6 +209,24 @@ export function pickSessions(
 }
 
 /**
+ * Classify a native `type: "user"` record. Returns the prompt text for a real
+ * user turn ("" for an image-only prompt), or null when the record is not a
+ * user turn (tool results, meta injections, empty or unrecognized content).
+ */
+function userPromptText(obj: any): string | null {
+  const c = obj?.message?.content;
+  if (typeof c === "string") return c.trim().length > 0 ? c : null;
+  if (!Array.isArray(c) || obj?.isMeta === true) return null;
+  if (c.some((b: any) => b?.type === "tool_result")) return null;
+  const text = c
+    .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+    .map((b: any) => b.text)
+    .join("\n\n");
+  if (text.trim().length > 0) return text;
+  return c.some((b: any) => b?.type === "image") ? "" : null;
+}
+
+/**
  * Convert a native Claude Code JSONL file into the SessionRow shape that
  * extractPairs() expects.
  *
@@ -218,8 +236,14 @@ export function pickSessions(
  *   { type: "system"|"attachment"|"last-prompt"|... }              ← dropped
  *
  * Semantics mirror what the production capture hook stores in Deeplake:
- *   - User: only string-content user messages (the typed prompt). Tool-result
- *     arrays sent back to the model are dropped.
+ *   - Sidechain records (`isSidechain: true`, subagent traffic) are dropped
+ *     entirely; they are not turns of the main conversation.
+ *   - User: the typed prompt, either string content or the joined text blocks
+ *     of a content array (e.g. text pasted alongside an image). Arrays that
+ *     carry any tool_result block are tool results sent back to the model and
+ *     are dropped, as are isMeta arrays and arrays with no text/image blocks.
+ *     An image-only prompt has no text to emit, but it still ends the previous
+ *     turn; its answer is discarded rather than merged into the prior pair.
  *   - Assistant: only the LAST text-bearing assistant entry per turn — the
  *     same `last_assistant_message` the Stop hook captures. Without this we
  *     would emit every intermediate "Now I'll run X" mini-narration that
@@ -235,6 +259,9 @@ export function nativeJsonlToRows(filePath: string, sessionId: string, agent: st
   // flushed on the next user_message or at EOF.
   let pendingAsstText: string | undefined;
   let pendingAsstTs: string | undefined;
+  // True after a prompt with no emittable text (image-only): its answer has
+  // no prompt to pair with, so assistant text is dropped until the next one.
+  let discardAnswer = false;
 
   const flushAssistant = (): void => {
     if (pendingAsstText && pendingAsstText.trim().length > 0) {
@@ -254,20 +281,25 @@ export function nativeJsonlToRows(filePath: string, sessionId: string, agent: st
     if (!line) continue;
     let obj: any;
     try { obj = JSON.parse(line); } catch { continue; }
+    if (obj?.isSidechain === true) continue;
     const t = obj?.type;
     const ts: string | undefined = obj?.timestamp ?? obj?.created_at;
 
     if (t === "user") {
-      const c = obj?.message?.content;
-      if (typeof c === "string" && c.trim().length > 0) {
-        flushAssistant();
+      const prompt = userPromptText(obj);
+      if (prompt === null) continue;
+      flushAssistant();
+      if (prompt.trim().length > 0) {
+        discardAnswer = false;
         rows.push({
           type: "user_message",
-          content: c,
+          content: prompt,
           creation_date: ts,
           session_id: sessionId,
           agent,
         });
+      } else {
+        discardAnswer = true;
       }
     } else if (t === "assistant") {
       const c = obj?.message?.content;
@@ -276,7 +308,7 @@ export function nativeJsonlToRows(filePath: string, sessionId: string, agent: st
           .filter((b: any) => b?.type === "text" && typeof b.text === "string")
           .map((b: any) => b.text)
           .join("\n\n");
-        if (text.trim().length > 0) {
+        if (text.trim().length > 0 && !discardAnswer) {
           pendingAsstText = text;
           pendingAsstTs = ts;
         }

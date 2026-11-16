@@ -11,6 +11,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pickSessions, nativeJsonlToRows, listLocalSessions, type SessionFile, type AgentInstall } from "../../src/skillify/local-source.js";
+import { extractPairs } from "../../src/skillify/extractors/index.js";
 
 function makeSession(id: string, mtime: number, inCwd: boolean): SessionFile {
   return {
@@ -198,6 +199,146 @@ describe("nativeJsonlToRows", () => {
     const rows = nativeJsonlToRows(path, "sid", "claude_code");
     expect(rows).toHaveLength(2);
     expect(rows[0].content).toBe("the only real one");
+  });
+});
+
+describe("nativeJsonlToRows → extractPairs: conversational boundaries", () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "mine-local-pairs-"));
+  afterAll(() => rmSync(tmpDir, { recursive: true, force: true }));
+
+  const img = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } };
+  const text = (t: string) => ({ type: "text", text: t });
+  const asst = (t: string, extra: object = {}) => ({ type: "assistant", message: { content: [text(t)] }, ...extra });
+  const toolResult = { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "x", content: "output" }] } };
+
+  function pairsFor(name: string, lines: object[]) {
+    const path = writeJsonl(tmpDir, name, lines);
+    return extractPairs(nativeJsonlToRows(path, "sid", "claude_code")).map(p => ({ prompt: p.prompt, answer: p.answer }));
+  }
+
+  it("text+image user array is a prompt and does not overwrite the previous answer", () => {
+    expect(pairsFor("text-image.jsonl", [
+      { type: "user", message: { content: "A" } },
+      asst("answerA"),
+      { type: "user", message: { content: [text("B"), img] } },
+      asst("answerB"),
+    ])).toEqual([
+      { prompt: "A", answer: "answerA" },
+      { prompt: "B", answer: "answerB" },
+    ]);
+  });
+
+  it("joins multiple text blocks of a user array", () => {
+    expect(pairsFor("multi-text.jsonl", [
+      { type: "user", message: { content: [text("part one"), img, text("part two")] } },
+      asst("answer"),
+    ])).toEqual([{ prompt: "part one\n\npart two", answer: "answer" }]);
+  });
+
+  it("image-only user turn delimits the previous answer and its own answer is not paired with the prior prompt", () => {
+    expect(pairsFor("image-only.jsonl", [
+      { type: "user", message: { content: "A" } },
+      asst("answerA"),
+      { type: "user", message: { content: [img] } },
+      asst("answer to image"),
+      { type: "user", message: { content: "C" } },
+      asst("answerC"),
+    ])).toEqual([
+      { prompt: "A", answer: "answerA" },
+      { prompt: "C", answer: "answerC" },
+    ]);
+  });
+
+  it("image-only user turn at the end drops its trailing answer", () => {
+    expect(pairsFor("image-only-eof.jsonl", [
+      { type: "user", message: { content: "A" } },
+      asst("answerA"),
+      { type: "user", message: { content: [img, text("   ")] } },
+      asst("answer to image"),
+    ])).toEqual([{ prompt: "A", answer: "answerA" }]);
+  });
+
+  it("sidechain records interleaved with the main thread are ignored", () => {
+    expect(pairsFor("sidechain-interleaved.jsonl", [
+      { type: "user", message: { content: "A" }, isSidechain: false },
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "t", name: "Task", input: {} }] } },
+      { type: "user", message: { content: "subagent task prompt" }, isSidechain: true },
+      asst("subagent answer", { isSidechain: true }),
+      { type: "user", message: { content: [text("subagent array prompt"), img] }, isSidechain: true },
+      toolResult,
+      asst("answerA"),
+    ])).toEqual([{ prompt: "A", answer: "answerA" }]);
+  });
+
+  it("sidechain assistant text after the main answer does not replace it", () => {
+    expect(pairsFor("sidechain-after.jsonl", [
+      { type: "user", message: { content: "A" } },
+      asst("answerA"),
+      asst("late subagent text", { isSidechain: true }),
+    ])).toEqual([{ prompt: "A", answer: "answerA" }]);
+  });
+
+  it("all-sidechain file yields no rows", () => {
+    const path = writeJsonl(tmpDir, "all-sidechain.jsonl", [
+      { type: "user", message: { content: "sub prompt" }, isSidechain: true },
+      asst("sub answer", { isSidechain: true }),
+      { type: "user", message: { content: [text("sub B"), img] }, isSidechain: true },
+      asst("sub answer B", { isSidechain: true }),
+    ]);
+    expect(nativeJsonlToRows(path, "sid", "claude_code")).toEqual([]);
+  });
+
+  it("tool_result user arrays (even with text or image blocks) are not prompts and do not split the turn", () => {
+    expect(pairsFor("tool-results.jsonl", [
+      { type: "user", message: { content: "A" } },
+      asst("Let me check"),
+      toolResult,
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "y", content: [text("screenshot"), img] }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "z", content: "o" }, text("extra")] } },
+      asst("final answerA"),
+    ])).toEqual([{ prompt: "A", answer: "final answerA" }]);
+  });
+
+  it("final assistant accumulation: only the last text-bearing entry of the turn is kept, across tool results", () => {
+    expect(pairsFor("accumulation.jsonl", [
+      { type: "user", message: { content: [text("B"), img] } },
+      asst("step one"),
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "t", name: "Bash", input: {} }] } },
+      toolResult,
+      asst("step two"),
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "u", name: "Read", input: {} }] } },
+      toolResult,
+      asst("final B"),
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "v", name: "Read", input: {} }] } },
+    ])).toEqual([{ prompt: "B", answer: "final B" }]);
+  });
+
+  it("null, meta, and unrecognized user content neither create prompts nor split the turn", () => {
+    const path = join(tmpDir, "unrecognized.jsonl");
+    writeFileSync(path, [
+      JSON.stringify({ type: "user", message: { content: "A" } }),
+      JSON.stringify(asst("early")),
+      "null",
+      "42",
+      JSON.stringify({ type: "user" }),
+      JSON.stringify({ type: "user", message: null }),
+      JSON.stringify({ type: "user", message: { content: null } }),
+      JSON.stringify({ type: "user", message: { content: 7 } }),
+      JSON.stringify({ type: "user", message: { content: [] } }),
+      JSON.stringify({ type: "user", message: { content: [null, { type: "document" }, { type: "text", text: 5 }] } }),
+      JSON.stringify({ type: "user", message: { content: [text("   ")] } }),
+      JSON.stringify({ type: "user", message: { content: "   " } }),
+      JSON.stringify({ type: "user", isMeta: true, message: { content: [text("injected skill body")] } }),
+      JSON.stringify({ type: "assistant", message: { content: null } }),
+      JSON.stringify({ type: "assistant", message: { content: [null, { type: "text", text: 1 }] } }),
+      JSON.stringify(asst("answerA")),
+    ].join("\n"));
+    const rows = nativeJsonlToRows(path, "sid", "claude_code");
+    expect(rows.map(r => [r.type, r.content])).toEqual([
+      ["user_message", "A"],
+      ["assistant_message", "answerA"],
+    ]);
+    expect(extractPairs(rows).map(p => [p.prompt, p.answer])).toEqual([["A", "answerA"]]);
   });
 });
 
