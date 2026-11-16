@@ -147,6 +147,49 @@ describe("anchorStatus", () => {
     const a: DocAnchor = { symbol_id: n.id, content_hash: "x" };
     expect(anchorStatus(a, snap([n]), dir)).toEqual({ state: "unreadable" });
   });
+
+  // Anchor taken on `before`, file rewritten to `after`, status re-checked.
+  function statusAfterEdit(file: string, before: string, after: string, loc: string, language: GraphNode["language"] = "typescript") {
+    const n = { ...node(`${file}:foo:function`, file, loc), language };
+    writeFileSync(join(dir, file), before);
+    const a = buildAnchor(n, dir)!;
+    expect(a).not.toBeNull();
+    writeFileSync(join(dir, file), after);
+    return anchorStatus(a, snap([n]), dir).state;
+  }
+
+  it("changed when logic between glob-like string literals is edited", () => {
+    const before = 'function foo() {\n  const inc = "**/*.ts";\n  if (ok) run(1);\n  const out = "dist/**/x";\n}\n';
+    const after = 'function foo() {\n  const inc = "**/*.ts";\n  if (!ok) run(2);\n  const out = "dist/**/x";\n}\n';
+    expect(statusAfterEdit("g.ts", before, after, "L1-L5")).toBe("changed");
+  });
+
+  it("changed when content inside a string literal is edited", () => {
+    const before = 'function foo() {\n  return "https://a.example/*";\n}\n';
+    const after = 'function foo() {\n  return "https://b.example/*";\n}\n';
+    expect(statusAfterEdit("s.ts", before, after, "L1-L3")).toBe("changed");
+  });
+
+  it("changed on a comment-only edit (bytes are hashed, comments included)", () => {
+    const before = "function foo() {\n  // old note\n  return 1;\n}\n";
+    const after = "function foo() {\n  // new note\n  return 1;\n}\n";
+    expect(statusAfterEdit("c.ts", before, after, "L1-L4")).toBe("changed");
+  });
+
+  it("fresh when only line endings change (CRLF ↔ LF)", () => {
+    const lf = "function foo() {\n  // note\n  return 1;\n}\n";
+    expect(statusAfterEdit("e.ts", lf, lf.replace(/\n/g, "\r\n"), "L1-L4")).toBe("fresh");
+    expect(statusAfterEdit("e2.ts", lf.replace(/\n/g, "\r\n"), lf, "L1-L4")).toBe("fresh");
+  });
+
+  it("changed on python indentation or multiline-string content edits", () => {
+    const before = "def foo():\n    if x:\n        return 1\n    return 2\n";
+    const indented = "def foo():\n    if x:\n        return 1\n        return 2\n";
+    expect(statusAfterEdit("p.py", before, indented, "L1-L4", "python")).toBe("changed");
+    const s1 = 'def foo():\n    s = """\n    # keep\n\n    """\n    return s\n';
+    const s2 = 'def foo():\n    s = """\n    # keep\n    """\n    return s\n';
+    expect(statusAfterEdit("q.py", s1, s2, "L1-L6", "python")).toBe("changed");
+  });
 });
 
 // ── computeStaleDocs (direct hash staleness) ────────────────────────────────
