@@ -161,6 +161,127 @@ describe("stageSession", () => {
     expect(existsSync(join(stagingDir, "claude_code-s1.embedding.json"))).toBe(false);
   });
 
+  describe("session project attribution", () => {
+    // Backfill stages history from every project, so the project stamped into
+    // the prompt and the manifest must come from the session's own cwd; the
+    // caller's `project` is only a fallback.
+    async function stageAndCapture(lines: string[]): Promise<{ prompt: string; embedded: string[] }> {
+      writeFileSync(jsonlPath, lines.join("\n") + "\n");
+      let prompt = "";
+      const embedded: string[] = [];
+      const r = await stageSession(input(), opts({
+        runAgent: async (_bin, p) => {
+          prompt = p;
+          const m = p.match(/SUMMARY FILE to write: (\S+)/);
+          if (m) writeFileSync(m[1], "# Session s1\n## What Happened\nreal content\n");
+          return true;
+        },
+        embed: async (text) => { embedded.push(text); return [0.5]; },
+      }));
+      expect(r).toMatchObject({ ok: true, embedded: true });
+      return { prompt, embedded };
+    }
+    const manifestProject = () => readPendingMemoryManifest(manifestPath)!.entries[0].project;
+
+    it("uses a foreign Claude session's own cwd, not the caller's project", async () => {
+      const { prompt, embedded } = await stageAndCapture([
+        JSON.stringify({ type: "summary", summary: "earlier" }),
+        JSON.stringify({ type: "file-history-snapshot", snapshot: {} }),
+        JSON.stringify({ type: "user", cwd: "/work/other-repo", message: { content: "hi" } }),
+        JSON.stringify({ type: "assistant", cwd: "/work/other-repo", message: { content: [] } }),
+      ]);
+      expect(prompt).toContain("PROJECT: other-repo\n");
+      expect(prompt).toContain("- **Project**: other-repo\n");
+      expect(prompt).not.toContain("PROJECT: proj\n");
+      expect(manifestProject()).toBe("other-repo");
+      expect(embedded).toEqual(["# Session s1\n## What Happened\nreal content\n"]);
+    });
+
+    it("keeps the first recorded cwd when a later record reports another", async () => {
+      const { prompt } = await stageAndCapture([
+        JSON.stringify({ type: "user", cwd: "/work/start-repo", message: { content: "hi" } }),
+        JSON.stringify({ type: "user", cwd: "/work/start-repo/sub", message: { content: "cd'd" } }),
+      ]);
+      expect(prompt).toContain("PROJECT: start-repo\n");
+      expect(manifestProject()).toBe("start-repo");
+    });
+
+    it("uses a Codex rollout's session_meta payload cwd", async () => {
+      const { prompt } = await stageAndCapture([
+        JSON.stringify({ type: "session_meta", payload: { id: "r1", cwd: "/home/u/codex-repo" } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message" } }),
+      ]);
+      expect(prompt).toContain("PROJECT: codex-repo\n");
+      expect(manifestProject()).toBe("codex-repo");
+    });
+
+    it("falls back to the provided project when no record carries a cwd", async () => {
+      const { prompt } = await stageAndCapture([
+        JSON.stringify({ type: "user", message: { content: "hi" } }),
+        JSON.stringify({ type: "assistant", message: { content: [] } }),
+        JSON.stringify({ type: "response_item", payload: { cwd: "/ignored/non-meta" } }),
+      ]);
+      expect(prompt).toContain("PROJECT: proj\n");
+      expect(prompt).toContain("- **Project**: proj\n");
+      expect(manifestProject()).toBe("proj");
+    });
+
+    it("skips malformed and unusable early records before the first usable cwd", async () => {
+      const { prompt } = await stageAndCapture([
+        "{not json",
+        "null",
+        "42",
+        JSON.stringify(["cwd", "/array/repo"]),
+        JSON.stringify({ type: "user", cwd: "" }),
+        JSON.stringify({ type: "user", cwd: "   " }),
+        JSON.stringify({ type: "user", cwd: 7 }),
+        JSON.stringify({ type: "user", cwd: "/" }),
+        JSON.stringify({ type: "session_meta", payload: null }),
+        JSON.stringify({ type: "session_meta", payload: "cwd" }),
+        JSON.stringify({ type: "user", cwd: "/srv/real-repo", message: { content: "hi" } }),
+      ]);
+      expect(prompt).toContain("PROJECT: real-repo\n");
+      expect(manifestProject()).toBe("real-repo");
+    });
+
+    it("preserves literal spaces and replacement-like text in the recorded project", async () => {
+      const { prompt } = await stageAndCapture([
+        JSON.stringify({ type: "user", cwd: "/srv/repo $& ", message: { content: "hi" } }),
+      ]);
+      expect(prompt).toContain("PROJECT: repo $& \n");
+      expect(prompt).toContain("- **Project**: repo $& \n");
+      expect(manifestProject()).toBe("repo $& ");
+    });
+
+    it("falls back when every record is malformed or lacks a usable cwd", async () => {
+      const { prompt } = await stageAndCapture([
+        "{not json",
+        "null",
+        JSON.stringify({ type: "user", cwd: "/" }),
+        JSON.stringify({ type: "user", cwd: null }),
+      ]);
+      expect(prompt).toContain("PROJECT: proj\n");
+      expect(manifestProject()).toBe("proj");
+    });
+
+    it("falls back when the transcript can't be read", async () => {
+      const jsonlDir = join(dir, "jsonl-as-dir");
+      mkdirSync(jsonlDir);
+      let prompt = "";
+      const r = await stageSession({ ...input(), jsonlPath: jsonlDir }, opts({
+        runAgent: async (_bin, p) => {
+          prompt = p;
+          const m = p.match(/SUMMARY FILE to write: (\S+)/);
+          if (m) writeFileSync(m[1], "# Session s1\n## What Happened\nreal content\n");
+          return true;
+        },
+      }));
+      expect(r.ok).toBe(true);
+      expect(prompt).toContain("PROJECT: proj\n");
+      expect(manifestProject()).toBe("proj");
+    });
+  });
+
   it("resolveClaudeBin returns a non-empty path", () => {
     expect(typeof resolveClaudeBin()).toBe("string");
     expect(resolveClaudeBin().length).toBeGreaterThan(0);
