@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as yaml from "js-yaml";
@@ -44,12 +44,28 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
   clearFakeHome();
+  vi.doUnmock("node:fs");
   vi.restoreAllMocks();
   vi.resetModules();
 });
 
-async function importInstaller(): Promise<typeof import("../../src/cli/install-hermes.js")> {
+async function importInstaller(configReadError?: NodeJS.ErrnoException): Promise<typeof import("../../src/cli/install-hermes.js")> {
   vi.resetModules();
+  if (configReadError) {
+    const configPath = join(tmpHome, ".hermes", "config.yaml");
+    vi.doMock("node:fs", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:fs")>();
+      return {
+        ...actual,
+        readFileSync: (path: unknown, ...args: unknown[]) => {
+          if (path === configPath) throw configReadError;
+          return (actual.readFileSync as (...inner: unknown[]) => unknown)(path, ...args);
+        },
+      };
+    });
+  } else {
+    vi.doUnmock("node:fs");
+  }
   vi.doMock("../../src/cli/util.js", async (importOriginal) => {
     const actual = await importOriginal<typeof import("../../src/cli/util.js")>();
     return { ...actual, pkgRoot: () => tmpPkg };
@@ -119,12 +135,56 @@ describe("installHermes — cold install", () => {
     expect(cfg.preserved_field).toBe("stay");
   });
 
-  it("re-install over a malformed config.yaml does not throw and lands a fresh entry", async () => {
+  it.each([
+    "",
+    "   \n\t",
+    "# user comment only\n  # another comment\n",
+    "---\n",
+    "--- # comment\n",
+    "...\n",
+    "---\n# comment before the document end\n... # end\n",
+    "\ufeff---\n",
+    "%YAML 1.2\n---\n...\n",
+    "%TAG !e! tag:example.com,2026:\n---\n...\n",
+  ])(
+    "accepts an empty YAML document without treating it as malformed (%j)",
+    async (raw) => {
+      mkdirSync(join(tmpHome, ".hermes"), { recursive: true });
+      writeFileSync(join(tmpHome, ".hermes", "config.yaml"), raw);
+
+      const { installHermes } = await importInstaller();
+      expect(() => installHermes()).not.toThrow();
+      expect(readConfig().mcp_servers.hivemind.command).toBe("node");
+    },
+  );
+
+  it.each(["plain scalar\n", "- array item\n", "null\n", "~\n", "!!null\n", "&empty\n"])(
+    "rejects a non-mapping YAML root without touching payloads (%j)",
+    async (raw) => {
+      mkdirSync(join(tmpHome, ".hermes"), { recursive: true });
+      const configPath = join(tmpHome, ".hermes", "config.yaml");
+      writeFileSync(configPath, raw);
+
+      const { installHermes } = await importInstaller();
+      expect(() => installHermes()).toThrow(/must contain a YAML mapping/);
+      expect(readFileSync(configPath, "utf-8")).toBe(raw);
+      expect(existsSync(join(tmpHome, ".hermes", "hivemind"))).toBe(false);
+      expect(existsSync(join(tmpHome, ".hivemind", "mcp"))).toBe(false);
+    },
+  );
+
+  it("refuses a malformed config.yaml without overwriting it or touching payloads", async () => {
     mkdirSync(join(tmpHome, ".hermes"), { recursive: true });
-    writeFileSync(join(tmpHome, ".hermes", "config.yaml"), "::: not yaml :::");
+    const configPath = join(tmpHome, ".hermes", "config.yaml");
+    writeFileSync(configPath, "::: not yaml :::");
+    chmodSync(configPath, 0o640);
+    const originalMode = statSync(configPath).mode & 0o777;
     const { installHermes } = await importInstaller();
-    expect(() => installHermes()).not.toThrow();
-    expect(readConfig().mcp_servers.hivemind).toBeDefined();
+    expect(() => installHermes()).toThrow(/not valid YAML/);
+    expect(readFileSync(configPath, "utf-8")).toBe("::: not yaml :::");
+    expect(statSync(configPath).mode & 0o777).toBe(originalMode);
+    expect(existsSync(join(tmpHome, ".hermes", "hivemind"))).toBe(false);
+    expect(existsSync(join(tmpHome, ".hivemind", "mcp"))).toBe(false);
   });
 
   it("re-install replaces stale hivemind hooks (no duplication after N re-runs)", async () => {
@@ -191,6 +251,36 @@ describe("uninstallHermes", () => {
     const cfg = readConfig();
     expect(cfg.mcp_servers.other).toEqual({ command: "node", args: ["/tmp/other.js"] });
     expect(cfg.mcp_servers.hivemind).toBeUndefined();
+  });
+
+  it("validates malformed config before removing any payload and propagates failure", async () => {
+    const { installHermes, uninstallHermes } = await importInstaller();
+    installHermes();
+    const configPath = join(tmpHome, ".hermes", "config.yaml");
+    const original = "hooks: [unterminated";
+    writeFileSync(configPath, original);
+    chmodSync(configPath, 0o640);
+    const originalMode = statSync(configPath).mode & 0o777;
+
+    expect(() => uninstallHermes()).toThrow(/not valid YAML/);
+    expect(readFileSync(configPath, "utf-8")).toBe(original);
+    expect(statSync(configPath).mode & 0o777).toBe(originalMode);
+    expect(existsSync(join(tmpHome, ".hermes", "skills", "hivemind-memory", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(tmpHome, ".hermes", "hivemind", "bundle", "capture.js"))).toBe(true);
+  });
+
+  it("does not remove payload when config reading fails at the filesystem boundary", async () => {
+    const { installHermes } = await importInstaller();
+    installHermes();
+    const configPath = join(tmpHome, ".hermes", "config.yaml");
+    const original = readFileSync(configPath, "utf-8");
+    const readError = Object.assign(new Error("injected config read failure"), { code: "EIO" });
+    const { uninstallHermes } = await importInstaller(readError);
+
+    expect(() => uninstallHermes()).toThrow(/could not be read/);
+    expect(readFileSync(configPath, "utf-8")).toBe(original);
+    expect(existsSync(join(tmpHome, ".hermes", "skills", "hivemind-memory", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(tmpHome, ".hermes", "hivemind", "bundle", "capture.js"))).toBe(true);
   });
 
   it("is a no-op (no throw) when nothing has been installed", async () => {

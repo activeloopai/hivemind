@@ -26,33 +26,61 @@ export interface UserConfig {
 let _configPath: () => string = () =>
   process.env.HIVEMIND_CONFIG_PATH ?? join(homedir(), ".deeplake", "config.json");
 
+type ConfigState = "unloaded" | "missing" | "valid" | "invalid" | "unreadable";
+
 // In-memory cache so the migration's env-var read and resulting write happen
 // at most once per process. The file on disk is the source of truth; the
 // cache only avoids re-parsing JSON on every call.
 let _cache: UserConfig | null = null;
-let _migrated = false;
+let _configState: ConfigState = "unloaded";
+let _configReadError: Error | null = null;
+let _migrationFallback: boolean | null = null;
 
 export function readUserConfig(): UserConfig {
   if (_cache !== null) return _cache;
   const path = _configPath();
-  if (!existsSync(path)) {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (err) {
+    if (isMissingFileError(err)) {
+      _configState = "missing";
+      _cache = {};
+      return _cache;
+    }
+    // Passive consumers include capture/startup hooks, so reads remain
+    // non-throwing. Keep I/O failure distinct from malformed JSON so no
+    // migration or explicit setter can mistake it for a missing config.
+    _configState = "unreadable";
+    _configReadError = err instanceof Error ? err : new Error(String(err));
     _cache = {};
     return _cache;
   }
   try {
-    const raw = readFileSync(path, "utf-8");
     const parsed = JSON.parse(raw) as unknown;
-    _cache = isPlainObject(parsed) ? (parsed as UserConfig) : {};
+    if (!isPlainObject(parsed)) {
+      _configState = "invalid";
+      _cache = {};
+    } else {
+      _configState = "valid";
+      _cache = parsed as UserConfig;
+    }
   } catch {
-    // Corrupt or unreadable — treat as empty, but DON'T overwrite (the user
-    // may want to fix it by hand). A subsequent write will overwrite.
+    // Corrupt JSON remains a non-throwing empty view for passive callers, but
+    // mutation paths refuse to overwrite the bytes the user may want to fix.
+    _configState = "invalid";
     _cache = {};
   }
   return _cache;
 }
 
+function isMissingFileError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && err.code === "ENOENT";
+}
+
 export function writeUserConfig(patch: Partial<UserConfig>): UserConfig {
   const current = readUserConfig();
+  assertConfigWritable();
   const merged = deepMerge(current, patch);
   const path = _configPath();
   const dir = dirname(path);
@@ -62,6 +90,16 @@ export function writeUserConfig(patch: Partial<UserConfig>): UserConfig {
   renameSync(tmp, path);
   _cache = merged;
   return merged;
+}
+
+/**
+ * Validate the current config for a mutation without writing it. Heavy CLI
+ * operations use this before provisioning or deleting shared resources so a
+ * malformed or unreadable file cannot fail only after those mutations.
+ */
+export function assertUserConfigWritable(): void {
+  readUserConfig();
+  assertConfigWritable();
 }
 
 // Reads the embeddings-enabled flag, performing the one-shot env-var
@@ -79,22 +117,34 @@ export function getEmbeddingsEnabled(): boolean {
   if (cfg.embeddings && typeof cfg.embeddings.enabled === "boolean") {
     return cfg.embeddings.enabled;
   }
-  if (_migrated) {
-    // Migration ran this process but couldn't persist (read-only fs etc.).
-    // Fall back to the env var directly to avoid spinning the migration on
-    // every call. Cached for the lifetime of the process.
-    return migrationValueFromEnv();
-  }
-  _migrated = true;
+  if (_migrationFallback !== null) return _migrationFallback;
+
   const enabled = migrationValueFromEnv();
+  if (_configState === "invalid" || _configState === "unreadable") {
+    // Hooks must keep running, but an invalid or unreadable file is not an
+    // empty file: do not migrate over it or infer a merge base from it.
+    _migrationFallback = enabled;
+    return enabled;
+  }
   try {
     writeUserConfig({ embeddings: { enabled } });
   } catch {
-    // Persist failed (perms, full disk, etc.) — keep the in-memory cache so
-    // the rest of the session sees a stable value.
-    _cache = { ...(cfg ?? {}), embeddings: { ...(cfg?.embeddings ?? {}), enabled } };
+    // Persist failed (permissions, full disk, etc.). Preserve the passive
+    // getter contract and cache only the fallback value, not a guessed config.
+    _migrationFallback = enabled;
   }
   return enabled;
+}
+
+function assertConfigWritable(): void {
+  const path = _configPath();
+  if (_configState === "invalid") {
+    throw new Error(`Hivemind user config at ${path} is not valid JSON; fix or remove it, then rerun.`);
+  }
+  if (_configState === "unreadable") {
+    const detail = _configReadError?.message ? `: ${_configReadError.message}` : "";
+    throw new Error(`Hivemind user config at ${path} could not be read${detail}`);
+  }
 }
 
 function migrationValueFromEnv(): boolean {
@@ -146,12 +196,16 @@ function deepMerge(base: UserConfig, patch: Partial<UserConfig>): UserConfig {
 export function _setConfigPathForTesting(fn: () => string): void {
   _configPath = fn;
   _cache = null;
-  _migrated = false;
+  _configState = "unloaded";
+  _configReadError = null;
+  _migrationFallback = null;
 }
 
 export function _resetUserConfigForTesting(): void {
   _configPath = () =>
     process.env.HIVEMIND_CONFIG_PATH ?? join(homedir(), ".deeplake", "config.json");
   _cache = null;
-  _migrated = false;
+  _configState = "unloaded";
+  _configReadError = null;
+  _migrationFallback = null;
 }
