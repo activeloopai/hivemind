@@ -34,7 +34,7 @@ function snap(nodes: GraphNode[]): GraphSnapshot {
 }
 function doc(over: Partial<DocRow> = {}): DocRow {
   return {
-    id: "row", doc_id: "a.ts", path: "/docs/p/a.ts.md", content: "old doc",
+    id: "p|main|a.ts", doc_id: "a.ts", path: "/docs/p/a.ts.md", content: "old doc",
     anchors: [], tier: "fast", status: "active", project: "p", version: 3,
     created_at: "t", updated_at: "t", agent: "m", plugin_version: "0", ...over,
   };
@@ -156,8 +156,8 @@ describe("refreshDocs", () => {
   it("refreshes a stale doc: re-anchors, gates, and setDoc version-bumps", async () => {
     const d = doc({ anchors: [{ symbol_id: foo.id, content_hash: "stale" }] });
     const { calls, query } = mockQuery([
-      () => [{ id: "r", doc_id: "a.ts", version: 3, content: "old doc", anchors: "[]", tier: "fast", status: "active", project: "p", created_at: "t", updated_at: "t" }], // getDocLatest
-      () => [], // INSERT
+      () => [{ id: "p|main|a.ts", doc_id: "a.ts", version: 3, content: "old doc", anchors: "[]", tier: "fast", status: "active", project: "p", created_at: "t", updated_at: "t" }], // getDocLatest
+      () => [], // UPDATE
     ]);
     const generate = vi.fn(async () => "new doc body");
     const report = await refreshDocs({
@@ -167,13 +167,13 @@ describe("refreshDocs", () => {
     expect(report.refreshed).toBe(1);
     expect(report.outcomes[0]).toMatchObject({ doc_id: "a.ts", status: "refreshed", version: 4 });
     expect(generate).toHaveBeenCalledOnce();
-    // 2 queries: getDocLatest + UPDATE-in-place. The UPDATE carries the FRESH
+    // SELECT + duplicate cleanup + UPDATE-in-place. The UPDATE carries the FRESH
     // anchor (recomputed from current code), not the stale stored hash.
-    expect(calls).toHaveLength(2);
-    expect(calls[1]).toMatch(/^UPDATE "hivemind_docs" SET/);
-    expect(calls[1]).toContain("new doc body");
-    expect(calls[1]).toContain(buildAnchor(foo, dir)!.content_hash);
-    expect(calls[1]).not.toContain("stale");
+    expect(calls).toHaveLength(3);
+    const update = calls.find((call) => call.startsWith("UPDATE"))!;
+    expect(update).toContain("new doc body");
+    expect(update).toContain(buildAnchor(foo, dir)!.content_hash);
+    expect(update).not.toContain("stale");
   });
 
   it("rejects an over-budget rewrite — no write happens", async () => {
@@ -235,8 +235,8 @@ describe("refreshDocs", () => {
     const d = doc({ anchors: [{ symbol_id: gone, content_hash: "x" }] });
     const emptySnap = snap([]);
     const { calls, query } = mockQuery([
-      () => [{ id: "r", doc_id: "a.ts", version: 3, content: "old", anchors: "[]", tier: "fast", status: "active", project: "p", created_at: "t", updated_at: "t" }], // getDocLatest in archiveDoc
-      () => [], // INSERT of the archived version
+      () => [{ id: "p|main|a.ts", doc_id: "a.ts", version: 3, content: "old", anchors: "[]", tier: "fast", status: "active", project: "p", created_at: "t", updated_at: "t" }], // getDocLatest in archiveDoc
+      () => [], // UPDATE to archived status
     ]);
     const generate = vi.fn(async () => "should never be called");
     const report = await refreshDocs({
@@ -249,17 +249,16 @@ describe("refreshDocs", () => {
     expect(report.outcomes[0]).toMatchObject({ doc_id: "a.ts", status: "archived", version: 4 });
     // No token spent on a deleted file.
     expect(generate).not.toHaveBeenCalled();
-    // archiveDoc = getDocLatest + UPDATE(status='archived'); nothing else.
-    expect(calls).toHaveLength(2);
-    expect(calls[1]).toMatch(/^UPDATE "hivemind_docs" SET/);
-    expect(calls[1]).toContain("status = 'archived'");
+    // archiveDoc = SELECT + bounded duplicate cleanup + status UPDATE.
+    expect(calls).toHaveLength(3);
+    expect(calls.find((call) => call.startsWith("UPDATE"))).toContain("status = 'archived'");
   });
 
   it("drops a dangling anchor when its symbol vanished from the graph", async () => {
     // doc anchored to foo + a gone symbol; snapshot only has foo.
     const d = doc({ anchors: [{ symbol_id: foo.id, content_hash: "x" }, { symbol_id: "a.ts:gone:function", content_hash: "y" }] });
     const { calls, query } = mockQuery([
-      () => [{ id: "r", doc_id: "a.ts", version: 1, content: "old", anchors: "[]", tier: "fast", status: "active", project: "p", created_at: "t", updated_at: "t" }],
+      () => [{ id: "p|main|a.ts", doc_id: "a.ts", version: 1, content: "old", anchors: "[]", tier: "fast", status: "active", project: "p", created_at: "t", updated_at: "t" }],
       () => [],
     ]);
     const report = await refreshDocs({
@@ -267,8 +266,9 @@ describe("refreshDocs", () => {
       impacted: impacted(), docsById: new Map([["a.ts", d]]), generate: async () => "small",
     });
     expect(report.refreshed).toBe(1);
-    // The INSERT must carry only foo's anchor, not the gone one.
-    expect(calls[1]).toContain(foo.id);
-    expect(calls[1]).not.toContain("a.ts:gone:function");
+    // The UPDATE must carry only foo's anchor, not the gone one.
+    const update = calls.find((call) => call.startsWith("UPDATE"))!;
+    expect(update).toContain(foo.id);
+    expect(update).not.toContain("a.ts:gone:function");
   });
 });

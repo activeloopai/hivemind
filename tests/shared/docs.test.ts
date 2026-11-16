@@ -43,6 +43,12 @@ function mockQuery(script: Array<(sql: string) => unknown>) {
   return { calls, query };
 }
 
+function updateSql(calls: string[]): string {
+  const update = calls.find((call) => call.startsWith("UPDATE"));
+  if (update === undefined) throw new Error("Expected an UPDATE query");
+  return update;
+}
+
 const TBL = "hivemind_docs";
 
 /**
@@ -51,7 +57,7 @@ const TBL = "hivemind_docs";
  */
 function fakeRow(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
   return {
-    id: "row-uuid",
+    id: "myproj|main|src/shell/deeplake-fs.ts",
     doc_id: "src/shell/deeplake-fs.ts",
     path: "/docs/myproj/deeplake-fs.ts.md",
     content: "# deeplake-fs\n\nThe VFS.",
@@ -311,22 +317,27 @@ describe("upsertDoc", () => {
 describe("editDoc", () => {
   it("reads latest, then UPDATEs in place bumping version; created_at untouched, updated_at advances", async () => {
     const { calls, query } = mockQuery([
-      () => [fakeRow({ id: "row-1", version: 1, content: "old", created_at: "2026-05-20T10:00:00.000Z" })],
+      () => [fakeRow({ version: 1, content: "old", created_at: "2026-05-20T10:00:00.000Z" })],
       () => [],
     ]);
-    const result = await editDoc(query, TBL, { doc_id: "src/shell/deeplake-fs.ts", content: "new" });
+    const result = await editDoc(
+      query,
+      TBL,
+      { doc_id: "src/shell/deeplake-fs.ts", content: "new" },
+      { project: "myproj" },
+    );
     expect(result).toEqual({ doc_id: "src/shell/deeplake-fs.ts", version: 2 });
-    expect(calls).toHaveLength(2);
-    expect(calls[0]).toMatch(/^SELECT .* FROM "hivemind_docs" WHERE doc_id = 'src\/shell\/deeplake-fs.ts'$/);
+    expect(calls).toHaveLength(3);
+    expect(calls[0]).toContain("WHERE doc_id = 'src/shell/deeplake-fs.ts' AND project = 'myproj' AND scope = 'main'");
     // UPDATE-in-place, targeting the exact row by id.
-    expect(calls[1]).toMatch(/^UPDATE "hivemind_docs" SET/);
-    expect(calls[1]).toContain(`E'new'`);
-    expect(calls[1]).toContain("version = 2");
-    expect(calls[1]).toContain(`WHERE id = 'row-1'`);
+    const update = updateSql(calls);
+    expect(update).toContain(`E'new'`);
+    expect(update).toContain("version = 2");
+    expect(update).toContain(`WHERE id = 'myproj|main|src/shell/deeplake-fs.ts'`);
     // created_at is immutable → the UPDATE must NOT touch it.
-    expect(calls[1]).not.toContain("created_at");
+    expect(update).not.toContain("created_at");
     // updated_at advances to a fresh "now" timestamp.
-    expect(calls[1]).toMatch(/updated_at = '\d{4}-\d{2}-\d{2}T[\d:.]+Z'/);
+    expect(update).toMatch(/updated_at = '\d{4}-\d{2}-\d{2}T[\d:.]+Z'/);
   });
 
   it("carries over previous content + anchors when only status changes", async () => {
@@ -334,12 +345,18 @@ describe("editDoc", () => {
       () => [fakeRow({ version: 3, content: "preserve me" })],
       () => [],
     ]);
-    const result = await editDoc(query, TBL, { doc_id: "src/shell/deeplake-fs.ts", status: "archived" });
+    const result = await editDoc(
+      query,
+      TBL,
+      { doc_id: "src/shell/deeplake-fs.ts", status: "archived" },
+      { project: "myproj" },
+    );
     expect(result.version).toBe(4);
-    expect(calls[1]).toContain(`E'preserve me'`);
-    expect(calls[1]).toContain("'archived'");
+    const update = updateSql(calls);
+    expect(update).toContain(`E'preserve me'`);
+    expect(update).toContain("'archived'");
     // prior anchors round-trip through serialize unchanged
-    expect(calls[1]).toContain(`content_hash":"abc123`);
+    expect(update).toContain(`content_hash":"abc123`);
   });
 
   it("replaces anchors when new ones are supplied", async () => {
@@ -351,9 +368,10 @@ describe("editDoc", () => {
       doc_id: "src/shell/deeplake-fs.ts",
       content: "refreshed",
       anchors: [{ symbol_id: "src/shell/deeplake-fs.ts:writeFile:function", content_hash: "def456" }],
-    });
-    expect(calls[1]).toContain("def456");
-    expect(calls[1]).not.toContain("abc123");
+    }, { project: "myproj" });
+    const update = updateSql(calls);
+    expect(update).toContain("def456");
+    expect(update).not.toContain("abc123");
   });
 
   it("throws when doc_id does not exist (SELECT only, no wasted INSERT)", async () => {
@@ -370,7 +388,7 @@ describe("editDoc", () => {
       () => [],
     ]);
     await expect(
-      editDoc(query, TBL, { doc_id: "src/shell/deeplake-fs.ts", content: "" }),
+      editDoc(query, TBL, { doc_id: "src/shell/deeplake-fs.ts", content: "" }, { project: "myproj" }),
     ).rejects.toThrow(/must not be empty/);
     expect(calls).toHaveLength(1); // SELECT only
   });
@@ -379,25 +397,25 @@ describe("editDoc", () => {
 // ── setDoc (idempotent upsert — the fork-history fix) ─────────────────────────
 
 describe("editDoc embedding policy (stale vectors)", () => {
-  const prevRow = () => [{ id: "r1", doc_id: "a.ts", version: 1, content: "old body", anchors: "[]", tier: "fast", status: "active", project: "p", created_at: "t", updated_at: "t" }];
+  const prevRow = () => [{ id: "p|main|a.ts", doc_id: "a.ts", version: 1, content: "old body", anchors: "[]", tier: "fast", status: "active", project: "p", created_at: "t", updated_at: "t" }];
 
   it("CONTENT change without a fresh vector NULLs the embedding (reindex heals missing, never stale)", async () => {
     const { calls, query } = mockQuery([prevRow, () => []]);
-    await editDoc(query, TBL, { doc_id: "a.ts", content: "new body" });
+    await editDoc(query, TBL, { doc_id: "a.ts", content: "new body" }, { project: "p" });
     const update = calls.find((c) => /^UPDATE/i.test(c))!;
     expect(update).toContain("content_embedding = NULL");
   });
 
   it("STATUS-ONLY edit leaves the existing embedding untouched", async () => {
     const { calls, query } = mockQuery([prevRow, () => []]);
-    await editDoc(query, TBL, { doc_id: "a.ts", status: "archived" });
+    await editDoc(query, TBL, { doc_id: "a.ts", status: "archived" }, { project: "p" });
     const update = calls.find((c) => /^UPDATE/i.test(c))!;
     expect(update).not.toContain("content_embedding");
   });
 
   it("a fresh vector always wins", async () => {
     const { calls, query } = mockQuery([prevRow, () => []]);
-    await editDoc(query, TBL, { doc_id: "a.ts", content: "new body", content_embedding: [0.5] });
+    await editDoc(query, TBL, { doc_id: "a.ts", content: "new body", content_embedding: [0.5] }, { project: "p" });
     const update = calls.find((c) => /^UPDATE/i.test(c))!;
     expect(update).toContain("content_embedding = ARRAY[0.5]");
   });
@@ -424,7 +442,7 @@ describe("setDoc", () => {
 
   it("propagates a new project on a version bump (not frozen at the old value)", async () => {
     const { calls, query } = mockQuery([
-      () => [fakeRow({ doc_id: "src/a.ts", version: 1, project: "old-proj" })],
+      () => [fakeRow({ id: "old-proj|main|src/a.ts", doc_id: "src/a.ts", version: 1, project: "old-proj" })],
       () => [],
     ]);
     await setDoc(query, TBL, {
@@ -432,14 +450,16 @@ describe("setDoc", () => {
       path: "/docs/p/a.ts.md",
       content: "updated",
       project: "new-proj",
-    });
-    expect(calls[1]).toContain("'new-proj'");
-    expect(calls[1]).not.toContain("'old-proj'");
+    }, { project: "old-proj" });
+    const update = calls.find((call) => call.startsWith("UPDATE"))!;
+    const assignments = update.match(/^UPDATE .* SET (.*) WHERE /s)![1];
+    expect(assignments).toMatch(/(?:^|, )project = 'new-proj'(?:,|$)/);
+    expect(assignments).not.toMatch(/(?:^|, )project = 'old-proj'(?:,|$)/);
   });
 
   it("UPDATEs the existing row in place (bumping version), never a second row", async () => {
     const { calls, query } = mockQuery([
-      () => [fakeRow({ id: "row-9", doc_id: "src/a.ts", version: 4, created_at: "2026-01-01T00:00:00.000Z" })],
+      () => [fakeRow({ id: "p|main|src/a.ts", doc_id: "src/a.ts", version: 4, project: "p", created_at: "2026-01-01T00:00:00.000Z" })],
       () => [],
     ]);
     const result = await setDoc(query, TBL, {
@@ -449,15 +469,15 @@ describe("setDoc", () => {
       project: "p",
     });
     expect(result).toEqual({ doc_id: "src/a.ts", version: 5 });
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     // A single UPDATE of the existing row — one row per doc, no new INSERT.
-    expect(calls[1]).toMatch(/^UPDATE "hivemind_docs" SET/);
-    expect(calls[1]).not.toMatch(/^INSERT/);
-    expect(calls[1]).toContain("version = 5");
-    expect(calls[1]).toContain(`WHERE id = 'row-9'`);
+    const update = updateSql(calls);
+    expect(update).not.toMatch(/^INSERT/);
+    expect(update).toContain("version = 5");
+    expect(update).toContain(`WHERE id = 'p|main|src/a.ts'`);
     // created_at is immutable → not part of the UPDATE.
-    expect(calls[1]).not.toContain("created_at");
-    expect(calls[1]).toContain(`E'updated'`);
+    expect(update).not.toContain("created_at");
+    expect(update).toContain(`E'updated'`);
   });
 });
 
@@ -466,13 +486,14 @@ describe("setDoc", () => {
 describe("archiveDoc", () => {
   it("appends a version with status='archived', preserving content", async () => {
     const { calls, query } = mockQuery([
-      () => [fakeRow({ doc_id: "src/gone.ts", version: 2, content: "keep me" })],
+      () => [fakeRow({ id: "myproj|main|src/gone.ts", doc_id: "src/gone.ts", version: 2, content: "keep me" })],
       () => [],
     ]);
-    const result = await archiveDoc(query, TBL, { doc_id: "src/gone.ts" });
+    const result = await archiveDoc(query, TBL, { doc_id: "src/gone.ts" }, { project: "myproj" });
     expect(result.version).toBe(3);
-    expect(calls[1]).toContain("'archived'");
-    expect(calls[1]).toContain(`E'keep me'`);
+    const update = updateSql(calls);
+    expect(update).toContain("'archived'");
+    expect(update).toContain(`E'keep me'`);
   });
 
   it("throws when archiving a doc that does not exist", async () => {
