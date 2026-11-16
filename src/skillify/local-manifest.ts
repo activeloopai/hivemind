@@ -19,7 +19,8 @@
  * imports the gate runner, parallelMap, etc. — heavy for a hook).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -86,7 +87,42 @@ export function readLocalManifest(path: string = LOCAL_MANIFEST_PATH): LocalMani
 /** Write the manifest, creating parent directories as needed. */
 export function writeLocalManifest(m: LocalManifest, path: string = LOCAL_MANIFEST_PATH): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(m, null, 2));
+  let destination = path;
+  let mode: number | undefined;
+  let existing;
+  try {
+    existing = lstatSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  if (existing) {
+    // Preserve a user's existing symlink instead of replacing it with a
+    // regular file carrying the symlink's usually-permissive mode bits.
+    if (existing.isSymbolicLink()) {
+      destination = realpathSync(path);
+      existing = statSync(destination);
+    }
+    if (!existing.isFile()) throw new Error(`local manifest is not a regular file: ${path}`);
+    mode = existing.mode & 0o777;
+  }
+  const tmp = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  let staged = false;
+  try {
+    // O_EXCL prevents a pre-created temp symlink from redirecting the write.
+    writeFileSync(tmp, JSON.stringify(m, null, 2), { encoding: "utf8", mode: mode ?? 0o666, flag: "wx" });
+    staged = true;
+    // Creation mode is filtered by umask. Existing files retain their exact
+    // access bits; fresh manifests still respect the caller's umask.
+    if (mode !== undefined) chmodSync(tmp, mode);
+    renameSync(tmp, destination);
+  } catch (e) {
+    // Do not remove a collision we never created. A later rename error,
+    // however, still owns the successfully staged file and must clean it up.
+    if (staged || (e as NodeJS.ErrnoException).code !== "EEXIST") {
+      try { unlinkSync(tmp); } catch { /* best effort cleanup */ }
+    }
+    throw e;
+  }
 }
 
 /**
