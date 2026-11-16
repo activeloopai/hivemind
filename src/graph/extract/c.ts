@@ -51,6 +51,11 @@ export function extractC(
 
 // ─── Pass 1 + 2 ────────────────────────────────────────────────────────────
 
+// Function nodes that so far only come from a prototype. A later definition
+// of the same function takes over the node's source_location so anchors hash
+// the body rather than the one-line prototype.
+const prototypeNodes = new WeakSet<GraphNode>();
+
 export function collectDecls(
   node: TSNode,
   relativePath: string,
@@ -65,12 +70,22 @@ export function collectDecls(
     if (child.type === "function_definition") {
       const name = extractFunctionName(child);
       if (name === null) continue;
-      pushNode(result, declByName, makeNode(relativePath, name, "function", child, true, LANG));
+      const fnNode = makeNode(relativePath, name, "function", child, true, LANG);
+      const proto = result.nodes.find((n) => n.id === fnNode.id);
+      if (proto !== undefined && prototypeNodes.has(proto)) {
+        // Same node object stays in declByName, so call edges are unaffected.
+        proto.source_location = fnNode.source_location;
+        prototypeNodes.delete(proto);
+      } else {
+        pushNode(result, declByName, fnNode);
+      }
     } else if (child.type === "declaration") {
       // typedef struct / forward declarations for functions
       const name = extractDeclName(child);
       if (name !== null) {
-        pushNode(result, declByName, makeNode(relativePath, name, "function", child, true, LANG));
+        const protoNode = makeNode(relativePath, name, "function", child, true, LANG);
+        pushNode(result, declByName, protoNode);
+        if (result.nodes.includes(protoNode)) prototypeNodes.add(protoNode);
       }
     } else if (
       child.type === "struct_specifier" ||

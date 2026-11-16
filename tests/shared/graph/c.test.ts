@@ -1,5 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { extractC } from "../../../src/graph/extract/c.js";
+import { buildAnchor } from "../../../src/docs/anchors.js";
+import type { FileExtraction } from "../../../src/graph/types.js";
 
 describe("C extraction", () => {
   it("extracts a function definition", () => {
@@ -72,5 +77,134 @@ describe("C extraction", () => {
       "src/point.c",
     );
     expect(ex.parse_errors).toHaveLength(0);
+  });
+});
+
+describe("C prototypes vs definitions → anchors", () => {
+  const REL = "src/helper.c";
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "c-proto-anchor-"));
+    mkdirSync(join(root, "src"));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function extractFile(src: string): FileExtraction {
+    writeFileSync(join(root, REL), src);
+    return extractC(readFileSync(join(root, REL), "utf-8"), REL);
+  }
+  const fnNodes = (ex: FileExtraction, label: string) =>
+    ex.nodes.filter(n => n.kind === "function" && n.label === label);
+  const calls = (ex: FileExtraction) =>
+    ex.edges.filter(e => e.relation === "calls").map(e => `${e.source} -> ${e.target}`).sort();
+
+  const PROTO_THEN_DEF = [
+    "#include <stdio.h>",          // L1
+    "static int helper(int x);",   // L2
+    "void log_it(int v);",         // L3
+    "int run(int v) {",            // L4
+    "  return helper(v) + 1;",     // L5
+    "}",                           // L6
+    "static int helper(int x) {",  // L7
+    "  log_it(x);",                // L8
+    "  return x * 2;",             // L9
+    "}",                           // L10
+    "",
+  ].join("\n");
+
+  it("prototype followed by definition points the single node at the definition body", () => {
+    const ex = extractFile(PROTO_THEN_DEF);
+    const helpers = fnNodes(ex, "helper");
+    expect(helpers).toHaveLength(1);
+    expect(helpers[0].id).toBe(`${REL}:helper:function`);
+    expect(helpers[0].source_location).toBe("L7-10");
+    // Existing metadata contract: C functions (static included) are exported.
+    expect(helpers[0].exported).toBe(true);
+    expect(helpers[0].language).toBe("c");
+    expect(ex.nodes.filter(n => n.id === helpers[0].id)).toHaveLength(1);
+
+    const anchor = buildAnchor(helpers[0], root);
+    expect(anchor).not.toBeNull();
+    expect(anchor!.symbol_id).toBe(`${REL}:helper:function`);
+  });
+
+  it("a body edit after the prototype changes the anchor hash", () => {
+    const before = buildAnchor(fnNodes(extractFile(PROTO_THEN_DEF), "helper")[0], root);
+    const edited = PROTO_THEN_DEF.replace("return x * 2;", "return x * 3;");
+    expect(edited).not.toBe(PROTO_THEN_DEF);
+    const after = buildAnchor(fnNodes(extractFile(edited), "helper")[0], root);
+    expect(before).not.toBeNull();
+    expect(after).not.toBeNull();
+    expect(after!.content_hash).not.toBe(before!.content_hash);
+  });
+
+  it("keeps call edges into and out of a prototyped-then-defined function", () => {
+    const ex = extractFile(PROTO_THEN_DEF);
+    expect(calls(ex)).toEqual([
+      `${REL}:helper:function -> ${REL}:log_it:function`,
+      `${REL}:run:function -> ${REL}:helper:function`,
+    ]);
+  });
+
+  it("prototype-only function stays a node at the prototype line", () => {
+    const ex = extractFile(PROTO_THEN_DEF);
+    const logIt = fnNodes(ex, "log_it");
+    expect(logIt).toHaveLength(1);
+    expect(logIt[0].source_location).toBe("L3");
+    expect(logIt[0].exported).toBe(true);
+    expect(buildAnchor(logIt[0], root)).not.toBeNull();
+  });
+
+  it("definition before a later prototype keeps the definition span", () => {
+    const src = [
+      "int helper(int x) {",  // L1
+      "  return x + 1;",      // L2
+      "}",                    // L3
+      "int helper(int x);",   // L4
+      "int run(void) { return helper(1); }", // L5
+      "",
+    ].join("\n");
+    const ex = extractFile(src);
+    const helpers = fnNodes(ex, "helper");
+    expect(helpers).toHaveLength(1);
+    expect(helpers[0].source_location).toBe("L1-3");
+    expect(calls(ex)).toEqual([`${REL}:run:function -> ${REL}:helper:function`]);
+
+    const before = buildAnchor(helpers[0], root)!;
+    const after = buildAnchor(
+      fnNodes(extractFile(src.replace("x + 1", "x + 2")), "helper")[0],
+      root,
+    )!;
+    expect(after.content_hash).not.toBe(before.content_hash);
+  });
+
+  it("prototype, definition, then a second prototype keeps the definition span", () => {
+    const ex = extractFile([
+      "int helper(void);",             // L1
+      "int helper(void) { return 1; }", // L2
+      "int helper(void);",             // L3
+      "",
+    ].join("\n"));
+    const helpers = fnNodes(ex, "helper");
+    expect(helpers).toHaveLength(1);
+    expect(helpers[0].source_location).toBe("L2");
+  });
+
+  it("only the first definition after a prototype replaces it", () => {
+    const ex = extractFile([
+      "int pick(void);",               // L1
+      "#ifdef FAST",                   // L2
+      "int pick(void) { return 1; }",  // L3
+      "#else",                         // L4
+      "int pick(void) { return 2; }",  // L5
+      "#endif",                        // L6
+      "",
+    ].join("\n"));
+    const picks = fnNodes(ex, "pick");
+    expect(picks).toHaveLength(1);
+    expect(picks[0].source_location).toBe("L3");
   });
 });
