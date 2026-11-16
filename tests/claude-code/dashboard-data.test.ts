@@ -7,6 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,6 +17,7 @@ vi.mock("../../src/notifications/sources/org-stats.js", () => ({
 }));
 
 import { loadDashboardData } from "../../src/dashboard/data.js";
+import { workTreeIdFor } from "../../src/graph/load-current.js";
 import { deriveProjectKey } from "../../src/skillify/state.js";
 import { setFakeHome, clearFakeHome } from "../shared/fake-home.js";
 
@@ -23,6 +25,21 @@ function snapshotsDirFor(graphsHome: string, cwd: string): { repoDir: string; sn
   const { key } = deriveProjectKey(cwd);
   const repoDir = join(graphsHome, key);
   return { repoDir, snapshotsDir: join(repoDir, "snapshots") };
+}
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+}
+
+function writeWorktreeBuild(
+  graphsHome: string,
+  cwd: string,
+  state: { commit_sha: string | null; snapshot_sha256: string },
+): void {
+  const { repoDir } = snapshotsDirFor(graphsHome, cwd);
+  const stateDir = join(repoDir, "worktrees", workTreeIdFor(cwd));
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(join(stateDir, ".last-build.json"), JSON.stringify({ ts: 1, ...state }));
 }
 
 describe("loadDashboardData", () => {
@@ -61,7 +78,7 @@ describe("loadDashboardData", () => {
     const snapshot = {
       directed: true,
       multigraph: true,
-      graph: { commit_sha: "abc123", repo_key: "ignored" },
+      graph: { commit_sha: "abc123" },
       nodes: [{ id: "a" }, { id: "b" }, { id: "c" }],
       links: [
         { source: "a", target: "b", relation: "calls" },
@@ -117,6 +134,109 @@ describe("loadDashboardData", () => {
     expect(result.graph).not.toBeNull();
     expect(result.graph!.nodeCount).toBe(1);
     expect(result.graph!.snapshotPath.endsWith("actual.json")).toBe(true);
+  });
+
+  it("rejects a legacy pointer whose snapshot metadata names another commit", async () => {
+    const { repoDir, snapshotsDir } = snapshotsDirFor(graphsHome, "/tmp");
+    mkdirSync(snapshotsDir, { recursive: true });
+    writeFileSync(join(repoDir, "latest-commit.txt"), "expected-head\n");
+    writeFileSync(join(snapshotsDir, "expected-head.json"), JSON.stringify({
+      graph: { commit_sha: "other-head" }, nodes: [{ id: "wrong" }], links: [],
+    }));
+
+    const result = await loadDashboardData({ cwd: "/tmp", graphsHome, creds: null });
+    expect(result.graph).toBeNull();
+  });
+
+  it("uses this worktree's build pointer instead of a newer sibling snapshot", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "hm-dash-git-"));
+    const sibling = join(fixtureRoot, "feature");
+    try {
+      mkdirSync(join(fixtureRoot, "src"), { recursive: true });
+      git(fixtureRoot, "init", "-b", "main");
+      git(fixtureRoot, "config", "user.email", "test@example.invalid");
+      git(fixtureRoot, "config", "user.name", "Dashboard Test");
+      git(fixtureRoot, "remote", "add", "origin", "https://example.invalid/acme/repo.git");
+      writeFileSync(join(fixtureRoot, "src", "main.ts"), "export const main = 1;\n");
+      git(fixtureRoot, "add", ".");
+      git(fixtureRoot, "commit", "-m", "main");
+      const mainSha = git(fixtureRoot, "rev-parse", "HEAD");
+      git(fixtureRoot, "branch", "feature");
+      git(fixtureRoot, "worktree", "add", sibling, "feature");
+      writeFileSync(join(sibling, "src", "feature.ts"), "export const feature = 1;\n");
+      git(sibling, "add", ".");
+      git(sibling, "commit", "-m", "feature");
+      const featureSha = git(sibling, "rev-parse", "HEAD");
+
+      const mainInfo = snapshotsDirFor(graphsHome, fixtureRoot);
+      const repoKey = deriveProjectKey(fixtureRoot).key;
+      mkdirSync(mainInfo.snapshotsDir, { recursive: true });
+      writeFileSync(join(mainInfo.snapshotsDir, `${mainSha}.json`), JSON.stringify({
+        directed: true, multigraph: true,
+        graph: { commit_sha: mainSha, repo_key: repoKey },
+        nodes: [{ id: "main" }], links: [],
+      }));
+      writeFileSync(join(mainInfo.snapshotsDir, `${featureSha}.json`), JSON.stringify({
+        directed: true, multigraph: true,
+        graph: { commit_sha: featureSha, repo_key: repoKey },
+        nodes: [{ id: "feature" }, { id: "newer" }], links: [],
+      }));
+      writeWorktreeBuild(graphsHome, fixtureRoot, { commit_sha: mainSha, snapshot_sha256: "a".repeat(64) });
+      writeWorktreeBuild(graphsHome, sibling, { commit_sha: featureSha, snapshot_sha256: "b".repeat(64) });
+
+      const result = await loadDashboardData({ cwd: fixtureRoot, graphsHome, creds: null });
+      expect(result.graph?.commitSha).toBe(mainSha);
+      expect(result.graph?.nodeCount).toBe(1);
+      expect(result.graph?.snapshotPath).toContain(`${mainSha}.json`);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not select a sibling when this worktree pointer is stale or identity-mismatched", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "hm-dash-stale-"));
+    try {
+      const { repoDir, snapshotsDir } = snapshotsDirFor(graphsHome, fixtureRoot);
+      mkdirSync(snapshotsDir, { recursive: true });
+      const repoKey = deriveProjectKey(fixtureRoot).key;
+      writeFileSync(join(snapshotsDir, "foreign.json"), JSON.stringify({
+        graph: { commit_sha: "foreign", repo_key: "different-repo" },
+        nodes: [{ id: "foreign" }], links: [],
+      }));
+      writeWorktreeBuild(graphsHome, fixtureRoot, { commit_sha: "missing", snapshot_sha256: "c".repeat(64) });
+
+      const stale = await loadDashboardData({ cwd: fixtureRoot, graphsHome, creds: null });
+      expect(stale.graph).toBeNull();
+
+      writeFileSync(join(snapshotsDir, "missing.json"), JSON.stringify({
+        graph: { commit_sha: "other-head", repo_key: repoKey },
+        nodes: [{ id: "wrong-head" }], links: [],
+      }));
+      const mismatched = await loadDashboardData({ cwd: fixtureRoot, graphsHome, creds: null });
+      expect(mismatched.graph).toBeNull();
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a commitless non-git snapshot addressable through its worktree state", async () => {
+    const loose = mkdtempSync(join(tmpdir(), "hm-dash-loose-"));
+    try {
+      const { repoDir, snapshotsDir } = snapshotsDirFor(graphsHome, loose);
+      mkdirSync(snapshotsDir, { recursive: true });
+      const repoKey = deriveProjectKey(loose).key;
+      const hash = "d".repeat(64);
+      writeFileSync(join(snapshotsDir, `${hash}.json`), JSON.stringify({
+        graph: { commit_sha: null, repo_key: repoKey },
+        nodes: [{ id: "loose" }], links: [],
+      }));
+      writeWorktreeBuild(graphsHome, loose, { commit_sha: null, snapshot_sha256: hash });
+      const result = await loadDashboardData({ cwd: loose, graphsHome, creds: null });
+      expect(result.graph?.commitSha).toBeNull();
+      expect(result.graph?.nodeCount).toBe(1);
+    } finally {
+      rmSync(loose, { recursive: true, force: true });
+    }
   });
 
   it("rejects malformed snapshot shape gracefully (no nodes/links arrays)", async () => {
