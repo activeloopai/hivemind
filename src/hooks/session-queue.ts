@@ -566,7 +566,18 @@ function readQueuedRows(path: string): QueuedSessionRow[] {
 function requeueInflight(queuePath: string, inflightPath: string): void {
   if (!existsSync(inflightPath)) return;
   const inflight = readFileSync(inflightPath, "utf-8");
-  appendFileSync(queuePath, inflight);
+  // An interrupted producer can leave an unterminated tail in the new
+  // queue. Inspect and append through the same descriptor, as the normal
+  // append path does, so recovered rows stay separate from that fragment.
+  // Do not add a separator to empty or terminated files: repeated failures
+  // must leave their byte size unchanged (including queues at the ceiling).
+  const fd = openSync(queuePath, "a+");
+  try {
+    const separator = endsWithNewline(fd, fstatSync(fd).size) ? "" : "\n";
+    appendFileSync(fd, separator + inflight);
+  } finally {
+    closeSync(fd);
+  }
   rmSync(inflightPath, { force: true });
 }
 
