@@ -36,6 +36,8 @@ const ALLOWLIST: Record<string, string> = {
     "Docs use a separate per-(org,repo) consent + project-key model, not .hivemind workspace routing.",
   "mcp/cowork-ingest.ts":
     "Claude Cowork (desktop) has no directory context — a fixed COWORK_PROJECT, nothing to route on.",
+  "kiro/kiro-ingest.ts":
+    "Kiro CLI has no directory context — sessions are captured under a fixed KIRO_PROJECT, same pattern as cowork-ingest.",
   "notifications/sources/resume-brief.ts":
     "Display-only read built from creds.workspaceId; routing it means threading a resolved workspace in — tracked follow-up, not a silent writer.",
   "notifications/sources/open-goals.ts":
