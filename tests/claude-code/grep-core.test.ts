@@ -950,6 +950,24 @@ describe("grepBothTables", () => {
     expect(out).toContain("/summaries/a.md:trailing");
   });
 
+  it("grep -v keeps files that never contain the pattern", async () => {
+    // Fake backend that applies the ILIKE content filter the way the server does:
+    // with `summary::text ILIKE '%foo%'` in the SQL, only rows containing foo return.
+    const stored = [
+      { path: "/summaries/a.md", content: "foo line\nkeep a" },
+      { path: "/summaries/b.md", content: "only b" },
+    ];
+    const api = {
+      query: vi.fn(async (sql: string) =>
+        sql.includes("ILIKE '%foo%'")
+          ? stored.filter((r) => r.content.toLowerCase().includes("foo"))
+          : stored),
+    } as any;
+    const out = await grepBothTables(api, "m", "s", { ...baseParams, invertMatch: true }, "/summaries");
+    // `grep -v foo` prints every line without foo, including all of b.md.
+    expect(out).toEqual(["/summaries/a.md:keep a", "/summaries/b.md:only b"]);
+  });
+
   it("falls back to refined output when HIVEMIND_SEMANTIC_EMIT_ALL=false even with an embedding", async () => {
     const prev = process.env.HIVEMIND_SEMANTIC_EMIT_ALL;
     process.env.HIVEMIND_SEMANTIC_EMIT_ALL = "false";
