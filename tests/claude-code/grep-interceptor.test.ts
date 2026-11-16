@@ -417,6 +417,42 @@ describe("grep interceptor", () => {
     expect(mockEmbed).not.toHaveBeenCalled();
   });
 
+  it("embeds synonym alternations like `foo|bar|baz` (issue #86)", async () => {
+    // `|` separates different surface forms of the same concept, which is
+    // the case embeddings are for. It must not count toward the
+    // regex-heavy metachar limit.
+    mockEmbed.mockResolvedValueOnce([0.4, 0.5, 0.6]);
+    const client = makeClient([]);
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    const searchSpy = vi.spyOn(grepCore, "searchDeeplakeTables").mockResolvedValue([]);
+
+    const cmd = createGrepCommand(client as never, fs, "test", "sessions");
+    await cmd.execute(["data loss|concurrent writer|race condition", "/memory"], makeCtx(fs) as never);
+
+    expect(mockEmbed).toHaveBeenCalledWith("data loss|concurrent writer|race condition", "query");
+    const opts = searchSpy.mock.calls[0][3] as { queryEmbedding: number[] | null };
+    expect(opts.queryEmbedding).toEqual([0.4, 0.5, 0.6]);
+    searchSpy.mockRestore();
+  });
+
+  it("still embeds an alternation with one other metachar", async () => {
+    mockEmbed.mockResolvedValueOnce([0.1]);
+    const client = makeClient([]);
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    const cmd = createGrepCommand(client as never, fs, "test");
+    await cmd.execute(["deploy failed|rollback?", "/memory"], makeCtx(fs) as never);
+    expect(mockEmbed).toHaveBeenCalled();
+  });
+
+  it("skips embedding on alternations with more than 8 alternatives", async () => {
+    mockEmbed.mockResolvedValue([0.5]);
+    const client = makeClient([]);
+    const fs = await DeeplakeFs.create(client as never, "test", "/memory");
+    const cmd = createGrepCommand(client as never, fs, "test");
+    await cmd.execute(["a1|a2|a3|a4|a5|a6|a7|a8|a9", "/memory"], makeCtx(fs) as never);
+    expect(mockEmbed).not.toHaveBeenCalled();
+  });
+
   it("skips embedding on very short patterns (< 2 chars)", async () => {
     mockEmbed.mockClear();
     const client = makeClient([]);
