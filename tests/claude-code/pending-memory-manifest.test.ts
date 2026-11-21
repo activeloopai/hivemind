@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import {
   upsertPendingMemoryEntry,
@@ -14,6 +14,7 @@ import {
   stagedSessionIds,
   countPendingUploads,
   readPendingMemoryManifest,
+  PENDING_MEMORY_DIR,
   type PendingMemoryEntry,
 } from "../../src/skillify/pending-memory-manifest.js";
 
@@ -45,6 +46,11 @@ afterEach(() => {
 });
 
 describe("pending-memory-manifest", () => {
+  it("stages summaries outside the agent config tree (child Write is denied there)", () => {
+    expect(PENDING_MEMORY_DIR.startsWith(join(homedir(), ".claude"))).toBe(false);
+    expect(PENDING_MEMORY_DIR).toBe(join(homedir(), ".deeplake", "hivemind", "pending-memory"));
+  });
+
   it("missing manifest reads as empty (0 staged, 0 pending)", () => {
     expect(readPendingMemoryManifest(manifestPath)).toBeNull();
     expect(stagedSessionIds(manifestPath).size).toBe(0);

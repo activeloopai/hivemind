@@ -3,7 +3,7 @@
  * `memory` table (the FLUSH phase; needs auth).
  *
  * The install-time EXTRACT phase (backfill-memory.ts) stages summaries +
- * local embeddings under ~/.claude/hivemind/pending-memory/ with manifest
+ * local embeddings under ~/.deeplake/hivemind/pending-memory/ with manifest
  * rows marked `uploaded: false`. This command — run after `hivemind login`
  * /org-select — reads those rows and INSERTs each into the chosen org's
  * memory table via the same uploadSummary() path the live wiki-worker uses,
