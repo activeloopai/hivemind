@@ -158,6 +158,12 @@ function parseHeadTailStage(stage: string): { lineLimit: number; fromEnd: boolea
   if (!tokens || tokens.length === 0) return null;
   const [cmd, ...rest] = tokens;
   if (cmd !== "head" && cmd !== "tail") return null;
+  // lineLimit 0 means "no limit" downstream, and `tail -n +N` means "from line N";
+  // neither can be expressed by a line window, so leave them to the real command.
+  const isZeroCount = (token: string, i: number) =>
+    /^-?0+$/.test(token) && (i === 0 || rest[i - 1] === "-n");
+  const isFromLine = (token: string) => cmd === "tail" && /^\+\d+$/.test(token);
+  if (rest.some((token, i) => isZeroCount(token, i) || isFromLine(token))) return null;
   if (rest.length === 0) return { lineLimit: 10, fromEnd: cmd === "tail" };
   if (rest.length === 1) {
     const count = Number(rest[0]);
@@ -363,8 +369,10 @@ export function parseCompiledBashCommand(cmd: string): CompiledSegment[] | null 
 
 function applyLineWindow(content: string, lineLimit: number, fromEnd: boolean): string {
   if (lineLimit <= 0) return content;
-  const lines = content.split("\n");
-  return (fromEnd ? lines.slice(-lineLimit) : lines.slice(0, lineLimit)).join("\n");
+  const trailingNewline = content.endsWith("\n");
+  const lines = (trailingNewline ? content.slice(0, -1) : content).split("\n");
+  const window = fromEnd ? lines.slice(-lineLimit) : lines.slice(0, lineLimit);
+  return window.join("\n") + (trailingNewline ? "\n" : "");
 }
 
 function countLines(content: string): number {
