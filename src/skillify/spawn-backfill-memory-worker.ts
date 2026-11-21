@@ -3,7 +3,7 @@
  *
  * This is the memory analogue of spawn-mine-local-worker.ts. Where that one
  * seeds local *skills*, this stages *memory* summaries from the user's past
- * agent sessions (claude_code, codex, …) into ~/.claude/hivemind/pending-memory/
+ * agent sessions (claude_code, codex, …) into ~/.deeplake/hivemind/pending-memory/
  * so a later `hivemind memory flush` (post-login) can upload them.
  *
  * Design constraints (same ordering as the mine-local spawner):

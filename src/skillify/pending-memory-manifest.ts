@@ -9,7 +9,7 @@
  *   - EXTRACT (no auth, runs at install in the background): replay the
  *     user's last 4-6 weeks of local agent sessions through the same
  *     wiki-prompt the live SessionEnd path uses, write each summary to
- *     ~/.claude/hivemind/pending-memory/<session_id>.md, compute the
+ *     ~/.deeplake/hivemind/pending-memory/<session_id>.md, compute the
  *     embedding LOCALLY via the embed daemon, and append one row here
  *     with `uploaded: false`.
  *   - FLUSH (needs auth, runs after `hivemind login`/org-select in the
@@ -80,8 +80,13 @@ export interface PendingMemoryManifest {
 
 const HIVEMIND_DIR = join(homedir(), ".claude", "hivemind");
 
-/** Directory holding the staged summary + embedding files. */
-export const PENDING_MEMORY_DIR = join(HIVEMIND_DIR, "pending-memory");
+/**
+ * Directory holding the staged summary + embedding files. Deliberately NOT
+ * under the agent's own config tree in the home directory: the agent CLI
+ * treats that tree as sensitive and denies the extraction child's Write
+ * there even with --add-dir/--allowedTools.
+ */
+export const PENDING_MEMORY_DIR = join(homedir(), ".deeplake", "hivemind", "pending-memory");
 
 /** The staging manifest / flush queue. */
 export const PENDING_MEMORY_MANIFEST_PATH = join(HIVEMIND_DIR, "pending-memory.json");

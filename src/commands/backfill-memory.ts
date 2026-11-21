@@ -16,7 +16,7 @@
  *        (default 6 weeks).
  *     3. Dedup against already-staged session ids.
  *     4. For each session: replay JSONL through the wiki prompt (claude -p),
- *        write the summary to ~/.claude/hivemind/pending-memory/<id>.md,
+ *        write the summary to ~/.deeplake/hivemind/pending-memory/<id>.md,
  *        compute the embedding LOCALLY via the embed daemon, and append an
  *        `uploaded: false` row to the manifest.
  *
