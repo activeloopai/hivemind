@@ -150,6 +150,21 @@ describe("bash-command-compiler parsing", () => {
       dirs: ["/"],
       longFormat: false,
     });
+    expect(parseCompiledSegment("ls --all /x")).toEqual({
+      kind: "ls",
+      dirs: ["/x"],
+      longFormat: false,
+    });
+    expect(parseCompiledSegment("ls --color=never /x")).toEqual({
+      kind: "ls",
+      dirs: ["/x"],
+      longFormat: false,
+    });
+    expect(parseCompiledSegment("ls -al /x")).toEqual({
+      kind: "ls",
+      dirs: ["/x"],
+      longFormat: true,
+    });
     expect(parseCompiledSegment("find /summaries -name '*.md' | wc -l")).toEqual({
       kind: "find",
       dir: "/summaries",
