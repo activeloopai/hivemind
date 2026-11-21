@@ -290,7 +290,7 @@ export function parseCompiledSegment(segment: string): CompiledSegment | null {
       .slice(1)
       .filter(token => !token.startsWith("-"))
       .flatMap(expandBraceToken);
-    const longFormat = tokens.some(token => token.startsWith("-") && token.includes("l"));
+    const longFormat = tokens.some(token => /^-[^-]/.test(token) && token.includes("l"));
     return { kind: "ls", dirs: dirs.length > 0 ? dirs : ["/"], longFormat };
   }
 
