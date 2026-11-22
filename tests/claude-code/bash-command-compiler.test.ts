@@ -244,6 +244,10 @@ describe("bash-command-compiler parsing", () => {
     expect(parseCompiledSegment("cat /a /b | wc -l")).toBeNull();
     expect(parseCompiledSegment("cat /a | head -n nope")).toBeNull();
     expect(parseCompiledSegment("head -n nope /a")).toBeNull();
+    // lineLimit 0 is the "no limit" marker and +N is "from line N": not expressible, so not compiled
+    expect(parseCompiledSegment("head -n 0 /a")).toBeNull();
+    expect(parseCompiledSegment("cat /a | head -n 0")).toBeNull();
+    expect(parseCompiledSegment("tail -n +3 /a")).toBeNull();
     expect(parseCompiledSegment("head -n 2")).toBeNull();
     expect(parseCompiledSegment("wc -l")).toBeNull();
     expect(parseCompiledSegment("find")).toBeNull();
@@ -297,6 +301,21 @@ describe("bash-command-compiler execution", () => {
     expect(output).toContain("group/");
     expect(output).toContain("2");
     expect(output).toContain("/summaries/a/file1.md:needle");
+  });
+
+  it("windows head/tail by whole lines for content with and without a trailing newline", async () => {
+    const run = (cmd: string, content: string) => executeCompiledBashCommand(
+      { query: vi.fn() } as any,
+      "memory",
+      "sessions",
+      cmd,
+      { readVirtualPathContentsFn: vi.fn(async () => new Map([["/f", content]])) as any },
+    );
+    expect(await run("tail -n 2 /f", "a\nb\nc\nd\n")).toBe("c\nd\n");
+    expect(await run("tail -n 2 /f", "a\nb\nc\nd")).toBe("c\nd");
+    expect(await run("cat /f | tail -2", "a\nb\nc\nd\n")).toBe("c\nd\n");
+    expect(await run("head -n 2 /f", "a\nb\nc\nd\n")).toBe("a\nb\n");
+    expect(await run("head -n 2 /f", "a\nb\nc\nd")).toBe("a\nb");
   });
 
   it("returns null when a required path is missing", async () => {
